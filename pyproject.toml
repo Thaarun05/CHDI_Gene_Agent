@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gene-dossier"
+version = "0.1.0"
+description = "Provenance-first Gene Dossier Platform for Huntington's disease research (CHDI-style gene dossiers)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Gene Dossier Platform" }]
+keywords = ["bioinformatics", "provenance", "huntington", "gene-dossier", "chdi"]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "sqlmodel>=0.0.16",
+    "httpx>=0.27",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# LLM synthesis / verification (system must still run without these).
+llm = [
+    "langchain>=0.2",
+    "langgraph>=0.1",
+    "langchain-openai>=0.1",
+    "langchain-anthropic>=0.1",
+]
+# Vector search / RAG (deferred; not required for MVP).
+rag = [
+    "chromadb>=0.5",
+]
+# MVP UI (deferred).
+ui = [
+    "streamlit>=1.33",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "respx>=0.21",
+    "ruff>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gene_dossier"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
