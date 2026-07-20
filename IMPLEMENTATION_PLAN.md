@@ -33,13 +33,65 @@ Validated biomedical APIs
   -> raw source responses            (raw_store: files on disk + content hash)
   -> normalized evidence records     (normalize/*: source-level factual units)
   -> provenance database             (SQLite via SQLModel: runs, api_runs, artifacts, evidence)
+  -> optional Chroma index           (semantic retrieval over EvidenceRecords; NOT source of truth)
   -> report tables / figures         (rendering: presentation layer)
-  -> LLM-written report sections     (synthesis: optional, evidence-constrained)
+  -> LLM-written report sections     (synthesis via LangChain; falls back if no API key)
   -> claim verification              (verification: rule-based first)
   -> final gene dossier              (data/outputs/{run_id}_report.md)
 ```
 
-Layer separation is mandatory:
+### Orchestration: LangGraph (core)
+
+`workflow.py` is a **LangGraph** graph that orchestrates the dossier pass:
+
+```
+create_dossier_run
+  -> resolve_gene_identity
+  -> call_source_clients
+  -> save_raw_artifacts
+  -> normalize_evidence
+  -> (optional) index_evidence_in_chroma
+  -> build_report_sections
+  -> verify_claims
+  -> render_outputs
+```
+
+Each node is a small, testable function. Graph state carries `dossier_run_id`, gene
+identifiers, coverage results, and paths to outputs. Failures in one source do not abort
+the graph.
+
+### LLM / RAG: LangChain (core package, optional keys)
+
+**LangChain** is used for:
+
+- model provider abstraction (OpenAI / Anthropic)
+- prompt templates
+- structured LLM outputs
+- embeddings
+- retriever wrappers over Chroma
+- future tool calling
+
+If no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` is set:
+
+- API retrieval + normalization + coverage + deterministic report rendering still run
+- LLM synthesis falls back to deterministic markdown from evidence records
+- embeddings / Chroma indexing may be skipped or use a local/no-op path until configured
+
+### Vector index: Chroma (MVP)
+
+**Chroma** indexes normalized `EvidenceRecord` objects (primarily `display_text` + metadata
+filters: gene, section, source, grade, assertion_type).
+
+Chroma is **not** the source of truth. Source of truth remains:
+
+1. raw artifacts on disk
+2. evidence records in the provenance database
+3. `source_id` / `raw_artifact_id` / `api_run_id` linkage
+
+Do not build complex hybrid RAG / reranking yet — keyword + metadata search first, then
+simple Chroma semantic search over evidence.
+
+### Layer separation (mandatory)
 
 - **API clients** (`tools/`): build request, call with timeout, never raise, return `ToolResult`.
   They do NOT normalize.
@@ -47,8 +99,10 @@ Layer separation is mandatory:
 - **Raw store** (`raw_store.py`): persists raw artifacts with content hashing.
 - **Database** (`db.py`): provenance store for runs, api_runs, artifacts, evidence.
 - **Coverage** (`coverage.py`): never silently omit a source; report status for every source.
+- **Retrieval** (`retrieval.py`): keyword/metadata first; Chroma semantic retrieval second.
 - **Verification** (`verification.py`): rule-based checks that every claim cites existing sources.
-- **Synthesis** (`synthesis.py`): optional LLM section writing, constrained to evidence records.
+- **Synthesis** (`synthesis.py`): LangChain section writing when keys exist; else deterministic.
+- **Workflow** (`workflow.py`): LangGraph orchestration of the full API pass.
 
 ### Reference assets (already available, external to this repo)
 
@@ -79,24 +133,24 @@ Only advance when the current file's check passes and approval is given.
 Progress legend: [ ] pending, [~] in progress, [x] done, [-] deferred.
 
 ### Phase 0 - Planning and setup
-- [~] 1. `IMPLEMENTATION_PLAN.md` (this file)
-- [ ] 2. `pyproject.toml` - deps + package config (target Python >=3.11)
-- [ ] 3. `.env.example` - env var template (no real keys)
-- [ ] 4. `README.md` - overview + quickstart
-- [ ] 5. `src/gene_dossier/__init__.py`
-- [ ] 6. `src/gene_dossier/config.py` - settings, paths, key loading
+- [x] 1. `IMPLEMENTATION_PLAN.md` (this file; stack updated for LangGraph/LangChain/Chroma)
+- [x] 2. `pyproject.toml` - deps include langchain, langgraph, chromadb as **core** deps
+- [x] 3. `.env.example` - env var template (no real keys)
+- [x] 4. `README.md` - overview + quickstart
+- [x] 5. `src/gene_dossier/__init__.py`
+- [x] 6. `src/gene_dossier/config.py` - settings, paths, key loading
 
 ### Phase 1 - Core models and tests
-- [ ] 7. `src/gene_dossier/models.py` - enums + Pydantic v2 models
-- [ ] 8. `tests/test_models.py`
+- [x] 7. `src/gene_dossier/models.py` - enums + Pydantic v2 models
+- [x] 8. `tests/test_models.py`
 
 ### Phase 2 - Source IDs
-- [ ] 9. `src/gene_dossier/source_ids.py` - deterministic source ID generation
-- [ ] 10. `tests/test_source_ids.py`
+- [x] 9. `src/gene_dossier/source_ids.py` - deterministic source ID generation
+- [x] 10. `tests/test_source_ids.py`
 
 ### Phase 3 - Raw artifact storage
-- [ ] 11. `src/gene_dossier/raw_store.py` - save/load raw artifacts + content hash
-- [ ] 12. `tests/test_raw_store.py`
+- [x] 11. `src/gene_dossier/raw_store.py` - save/load raw artifacts + content hash
+- [x] 12. `tests/test_raw_store.py`
 
 ### Phase 4 - Source registry
 - [ ] 13. `src/gene_dossier/source_registry.py` - full source map (A/B/C)
@@ -160,15 +214,16 @@ Progress legend: [ ] pending, [~] in progress, [x] done, [-] deferred.
 ### Phase 11 - Verification and report generation
 - [ ] 57. `src/gene_dossier/verification.py`
 - [ ] 58. `tests/test_verification.py`
-- [ ] 59. `src/gene_dossier/synthesis.py`
+- [ ] 59. `src/gene_dossier/synthesis.py` - LangChain prompts/structured output; deterministic fallback
 - [ ] 60. `src/gene_dossier/rendering.py`
 
-### Phase 12 - Workflow
-- [ ] 61. `src/gene_dossier/workflow.py` - `run_gene_dossier_full_api_pass(...)`
+### Phase 12 - Workflow (LangGraph)
+- [ ] 61. `src/gene_dossier/workflow.py` - LangGraph `run_gene_dossier_full_api_pass(...)`
 - [ ] 62. `scripts/run_srebf2_full_api_pass.py`
 
-### Phase 13 - Retrieval skeleton
-- [ ] 63. `src/gene_dossier/retrieval.py` - keyword search + metadata filters
+### Phase 13 - Retrieval + Chroma
+- [ ] 63. `src/gene_dossier/retrieval.py` - keyword/metadata search + Chroma semantic skeleton
+  (index EvidenceRecords after they exist; no complex hybrid RAG yet)
 
 ### Phase 14 - FastAPI
 - [ ] 64. `src/gene_dossier/api/main.py`
@@ -197,6 +252,7 @@ Allen Brain Atlas, BrainRNASeq, patents, antibodies, OMIM, DrugBank, NCATS, ERC 
 - `OMIM_API_KEY` required -> else `requires_key`.
 - `SERPAPI_API_KEY` for patents -> else `manual` / `requires_key`.
 - Antibodies, Allen Brain, BrainRNASeq: treat as semi-structured / manual if no clean API.
+- OpenAI / Anthropic keys optional: without them, skip LLM synthesis (deterministic fallback).
 
 ### Validated SREBF2 anchors (from reference report)
 Entrez `6721` (mouse `20788`), Ensembl `ENSG00000198911`, UniProt `Q12772`,
@@ -277,13 +333,16 @@ requires key / deferred / manual review):
 9. Every generated claim cites `source_id`s; verification runs and flags weak/unsupported.
 10. Code stays modular: one client per source, separate normalizers, raw store, evidence DB,
     and report generation.
+11. Workflow is orchestrated with **LangGraph**; LLM layer uses **LangChain**; evidence can be
+    indexed in **Chroma** without treating Chroma as source of truth.
+12. Without LLM API keys, retrieval + normalization + deterministic report still succeed.
 
 ---
 
 ## 10. Deferred (TODOs - not implemented yet)
 
 - HDinHD MCP integration (leave architecture notes only).
-- Chroma vector search, hybrid RAG reranking, evidence-sufficiency checks.
+- Hybrid RAG reranking and evidence-sufficiency checks (Chroma MVP index is in-scope; advanced RAG is not).
 - Streamlit UI, React UI.
 - Figure artifacts, richer report tables.
 - Gene comparison workflow.
@@ -299,3 +358,17 @@ requires key / deferred / manual review):
 - Normalizer tests use mocked sample responses (no live network).
 - Client tests confirm import + graceful failure returns `ToolResult`.
 - `pytest` for the `tests/` suite; external-API-free where possible.
+- Workflow tests may use LangGraph with mocked tool nodes (no live APIs / no LLM keys).
+
+---
+
+## 12. Dependency install note
+
+Core install (includes LangChain, LangGraph, Chroma):
+
+```bash
+pip install -e ".[dev]"
+```
+
+LLM *API keys* remain optional in `.env`. Packages are installed; synthesis/embeddings
+activate only when keys are present.
