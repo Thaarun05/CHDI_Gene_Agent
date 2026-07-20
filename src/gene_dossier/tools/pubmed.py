@@ -90,8 +90,10 @@ def _request(
     """GET an E-utilities endpoint; return :class:`ToolResult` (never raises)."""
     query = _with_api_key(params, settings)
     url = f"{EUTILS_BASE}/{path}"
+    # Provenance logging: redact api_key in both request_params and request_url.
+    # The live HTTP call still uses the full ``query`` (with real key when present).
     safe = _safe_params(query)
-    request_url = f"{url}?{urlencode(query)}"
+    request_url = f"{url}?{urlencode(safe)}"
     try:
         with httpx.Client(timeout=settings.http_timeout_seconds) as client:
             response = client.get(url, params=query)

@@ -74,11 +74,12 @@ def _get_json(
     """GET an E-utilities endpoint and return JSON as :class:`ToolResult`."""
     query = _with_api_key(params, settings)
     url = f"{EUTILS_BASE}/{path}"
-    # Full URL with query string for provenance (api_key redacted in params copy for logs).
+    # Provenance logging: redact api_key in both request_params and request_url.
+    # The live HTTP call still uses the full ``query`` (with real key when present).
     safe_params = {k: v for k, v in query.items() if k != "api_key"}
     if "api_key" in query:
         safe_params["api_key"] = "***"
-    request_url = f"{url}?{urlencode(query)}"
+    request_url = f"{url}?{urlencode(safe_params)}"
     try:
         with httpx.Client(timeout=settings.http_timeout_seconds) as client:
             response = client.get(url, params=query)

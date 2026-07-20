@@ -30,7 +30,8 @@ ORGANISM_MOUSE = 10090
 ORGANISM_RAT = 10116
 
 DEFAULT_FIELDS = (
-    "accession,id,gene_names,protein_name,organism_name,organism_id,xref_ensembl"
+    "accession,id,gene_names,protein_name,organism_name,organism_id,xref_ensembl,"
+    "cc_function,cc_subcellular_location,cc_disease,ft_domain,ft_repeat"
 )
 
 

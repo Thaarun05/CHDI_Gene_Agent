@@ -219,6 +219,8 @@ def median_expression(
     settings: Settings | None = None,
 ) -> ToolResult:
     """Fetch median gene expression across GTEx tissues."""
+    # TODO: add sample-level /expression/geneExpression fallback for box/violin plots
+    # (validated in CHDI API map §2a.3). Median endpoint remains the MVP default.
     cfg = settings or get_settings()
     params = {"gencodeId": gencode_id, "datasetId": dataset_id}
     return _request_json(
@@ -240,6 +242,8 @@ def single_tissue_eqtl(
     settings: Settings | None = None,
 ) -> ToolResult:
     """Fetch single-tissue eQTL associations for a GENCODE ID."""
+    # TODO: implement eQTL pagination (page / next pageToken). Validated map uses
+    # itemsPerPage=100000 for full retrieval; MVP caps page size to bound payloads.
     cfg = settings or get_settings()
     params: dict[str, Any] = {
         "gencodeId": gencode_id,
