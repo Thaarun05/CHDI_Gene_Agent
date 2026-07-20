@@ -135,13 +135,15 @@ def _request_json(
 
 
 def extract_canonical_transcript(lookup_payload: dict[str, Any]) -> str | None:
-    """Return the canonical transcript ID from an expanded lookup payload, if present."""
+    """Return the canonical transcript ID from an expanded lookup payload, if present.
+
+    Preserves the exact Ensembl value (including version suffix when present).
+    """
     # Prefer explicit field when Ensembl provides it.
     for key in ("canonical_transcript", "canonicalTranscript"):
         value = lookup_payload.get(key)
         if isinstance(value, str) and value.strip():
-            # Sometimes annotated as "ENST...stable_id.version"
-            return value.split(".")[0] if value else None
+            return value.strip()
 
     transcripts = lookup_payload.get("Transcript") or lookup_payload.get("transcripts") or []
     if not isinstance(transcripts, list):

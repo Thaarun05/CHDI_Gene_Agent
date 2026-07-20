@@ -185,6 +185,10 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "organism_name": organism.get("scientificName") or organism.get("commonName"),
         "organism_id": (organism.get("taxonId") or organism.get("taxonID")),
         "ensembl_xrefs": ensembl_ids,
+        # Preserve structured annotation blocks for normalize/protein.py
+        # (function, disease, domains, repeats, subcellular location).
+        "comments": entry.get("comments") if isinstance(entry.get("comments"), list) else [],
+        "features": entry.get("features") if isinstance(entry.get("features"), list) else [],
     }
 
 

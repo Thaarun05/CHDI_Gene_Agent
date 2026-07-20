@@ -28,6 +28,13 @@ ORGANISM_HUMAN = "Homo sapiens"
 ORGANISM_MOUSE = "Mus musculus"
 ORGANISM_RAT = "Rattus norvegicus"
 
+# Expected NCBI taxonomy IDs for selection safety checks.
+ORGANISM_TAXID = {
+    ORGANISM_HUMAN: 9606,
+    ORGANISM_MOUSE: 10090,
+    ORGANISM_RAT: 10116,
+}
+
 
 def _tool_result(
     *,
@@ -203,20 +210,113 @@ def _summary_uid_map(esummary_result: ToolResult) -> dict[str, dict[str, Any]]:
     return out
 
 
+def expected_taxid_for_organism(organism: str) -> int | None:
+    """Return the NCBI taxonomy ID for a known organism name, if mapped."""
+    return ORGANISM_TAXID.get(organism) or ORGANISM_TAXID.get(organism.strip())
+
+
+def _entry_symbol_matches(entry: dict[str, Any], gene_symbol: str) -> bool:
+    """True if ``name`` or ``nomenclaturesymbol`` matches ``gene_symbol`` (case-insensitive)."""
+    target = gene_symbol.strip().upper()
+    if not target:
+        return False
+    name = str(entry.get("name") or "").strip().upper()
+    nomen = str(entry.get("nomenclaturesymbol") or "").strip().upper()
+    return target in {name, nomen} and bool(target)
+
+
+def _entry_taxid(entry: dict[str, Any]) -> int | None:
+    """Extract organism taxid from an ESummary entry when present."""
+    organism = entry.get("organism") or {}
+    if not isinstance(organism, dict):
+        return None
+    raw = organism.get("taxid")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_safe_gene_entry(
+    entry: dict[str, Any],
+    gene_symbol: str,
+    *,
+    expected_taxid: int | None = None,
+) -> bool:
+    """Return True if ``entry`` is a safe match for ``gene_symbol``.
+
+    Prefers records where:
+    - ``name`` or ``nomenclaturesymbol`` matches the requested symbol
+    - ``organism.taxid`` matches ``expected_taxid`` when both are available
+    - ``nomenclaturestatus`` is Official when available
+    - ``currentid`` is empty when available (avoids retired/replaced records)
+    - ``status`` is empty / not retired when available
+    """
+    if not _entry_symbol_matches(entry, gene_symbol):
+        return False
+
+    if expected_taxid is not None:
+        taxid = _entry_taxid(entry)
+        if taxid is not None and taxid != expected_taxid:
+            return False
+
+    nomen_status = entry.get("nomenclaturestatus")
+    if nomen_status is not None and str(nomen_status).strip():
+        if str(nomen_status).strip().lower() != "official":
+            return False
+
+    current_id = entry.get("currentid")
+    if current_id is not None and str(current_id).strip():
+        return False
+
+    status = entry.get("status")
+    if status is not None and str(status).strip():
+        if str(status).strip().lower() in {"retired", "replaced", "secondary"}:
+            return False
+
+    return True
+
+
+def prefer_safe_gene_match(
+    summaries: dict[str, dict[str, Any]],
+    gene_symbol: str,
+    *,
+    expected_taxid: int | None = None,
+) -> str | None:
+    """Return the best safe Entrez ID for ``gene_symbol``, or ``None`` if ambiguous.
+
+    Does **not** fall back to the first candidate. See :func:`_is_safe_gene_entry`.
+    When multiple safe matches exist, prefer Official nomenclature, then first safe hit.
+    """
+    safe: list[tuple[int, str]] = []
+    for uid, entry in summaries.items():
+        if not _is_safe_gene_entry(entry, gene_symbol, expected_taxid=expected_taxid):
+            continue
+        nomen_status = str(entry.get("nomenclaturestatus") or "").strip().lower()
+        # Lower rank = better; Official first.
+        rank = 0 if nomen_status == "official" else 1
+        safe.append((rank, uid))
+    if not safe:
+        return None
+    safe.sort(key=lambda item: item[0])
+    return safe[0][1]
+
+
 def prefer_exact_symbol_match(
     summaries: dict[str, dict[str, Any]],
     gene_symbol: str,
+    *,
+    expected_taxid: int | None = None,
 ) -> str | None:
-    """Return the Entrez ID whose ``name`` equals ``gene_symbol`` (case-insensitive).
+    """Return a safe Entrez ID match (symbol + organism/status checks).
 
-    If multiple exact matches exist, prefer the first. Returns ``None`` if none match.
+    Kept for callers; delegates to :func:`prefer_safe_gene_match`.
     """
-    target = gene_symbol.strip().upper()
-    for uid, entry in summaries.items():
-        name = str(entry.get("name") or "").strip().upper()
-        if name == target:
-            return uid
-    return None
+    return prefer_safe_gene_match(
+        summaries, gene_symbol, expected_taxid=expected_taxid
+    )
 
 
 def lookup_gene(
@@ -225,7 +325,7 @@ def lookup_gene(
     organism: str = ORGANISM_HUMAN,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """ESearch + ESummary with exact official-symbol preference.
+    """ESearch + ESummary with safe official-symbol preference.
 
     On success, ``data`` is a dict::
 
@@ -233,12 +333,15 @@ def lookup_gene(
           "gene_symbol": ...,
           "organism": ...,
           "selected_gene_id": "6721" | null,
-          "selection_method": "exact_symbol" | "first_candidate" | "none",
+          "selection_method": "exact_symbol" | "ambiguous" | "none",
           "candidate_ids": [...],
           "esearch": <raw esearch json>,
           "esummary": <raw esummary json> | null,
           "selected_summary": <summary dict> | null,
         }
+
+    Never blindly trusts the first ESearch hit. If no safe match exists,
+    ``selection_method`` is ``"ambiguous"`` and ``selected_gene_id`` is ``null``.
 
     Never raises.
     """
@@ -306,21 +409,26 @@ def lookup_gene(
         )
 
     uid_map = _summary_uid_map(summary)
-    exact_id = prefer_exact_symbol_match(uid_map, gene_symbol)
-    if exact_id is not None:
-        selected_id = exact_id
+    expected_taxid = expected_taxid_for_organism(organism)
+    selected_id = prefer_safe_gene_match(
+        uid_map, gene_symbol, expected_taxid=expected_taxid
+    )
+    if selected_id is not None:
         method = "exact_symbol"
+        selected_summary = uid_map.get(selected_id)
     else:
-        selected_id = candidate_ids[0]
-        method = "first_candidate"
+        # Do not fall back to first_candidate — leave unresolved for human/downstream review.
+        selected_id = None
+        method = "ambiguous"
+        selected_summary = None
 
-    selected_summary = uid_map.get(selected_id)
     return _tool_result(
         endpoint_name="lookup_gene",
         gene_symbol=gene_symbol,
         request_url=summary.request_url,
         request_params={
             "organism": organism,
+            "expected_taxid": expected_taxid,
             "candidate_ids": candidate_ids,
             "selected_gene_id": selected_id,
             "selection_method": method,
@@ -330,6 +438,7 @@ def lookup_gene(
         data={
             "gene_symbol": gene_symbol,
             "organism": organism,
+            "expected_taxid": expected_taxid,
             "selected_gene_id": selected_id,
             "selection_method": method,
             "candidate_ids": candidate_ids,
@@ -346,9 +455,12 @@ __all__ = [
     "ORGANISM_HUMAN",
     "ORGANISM_MOUSE",
     "ORGANISM_RAT",
+    "ORGANISM_TAXID",
     "esearch",
     "esummary",
     "extract_id_list",
+    "expected_taxid_for_organism",
+    "prefer_safe_gene_match",
     "prefer_exact_symbol_match",
     "lookup_gene",
 ]
