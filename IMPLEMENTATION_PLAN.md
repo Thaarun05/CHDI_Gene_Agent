@@ -21,8 +21,9 @@ python scripts/run_srebf2_full_api_pass.py
 ```
 
 ...which creates a dossier run for SREBF2, attempts every configured source, stores raw
-artifacts + evidence records in SQLite, generates a source coverage report, and produces a
-partial CHDI-style markdown report with verified, source-cited claims.
+artifacts + evidence records in the provenance database (Supabase Postgres by default for
+shared/dev; SQLite for local/offline tests), generates a source coverage report, and
+produces a partial CHDI-style markdown report with verified, source-cited claims.
 
 ---
 
@@ -30,15 +31,55 @@ partial CHDI-style markdown report with verified, source-cited claims.
 
 ```
 Validated biomedical APIs
-  -> raw source responses            (raw_store: files on disk + content hash)
+  -> raw source responses            (raw_store: local files + content hash; later Storage/S3)
   -> normalized evidence records     (normalize/*: source-level factual units)
-  -> provenance database             (SQLite via SQLModel: runs, api_runs, artifacts, evidence)
+  -> provenance database             (SQLModel → Supabase Postgres OR local SQLite)
   -> optional Chroma index           (semantic retrieval over EvidenceRecords; NOT source of truth)
   -> report tables / figures         (rendering: presentation layer)
   -> LLM-written report sections     (synthesis via LangChain; falls back if no API key)
   -> claim verification              (verification: rule-based first)
   -> final gene dossier              (data/outputs/{run_id}_report.md)
 ```
+
+### Provenance truth hierarchy
+
+1. **Raw artifacts** (files on disk; later Supabase Storage / S3) = original source material.
+   Postgres/SQLite stores only **metadata** (path, hash, timestamps, source, urls) — never
+   the large raw response body.
+2. **Supabase Postgres** (main shared/dev DB) = structured source of truth for runs, evidence,
+   claims, coverage, and verification.
+3. **SQLite** = local fallback for smoke tests, in-memory unit tests, and offline development.
+4. **Chroma** = semantic search index over evidence records only. Not the source of truth.
+
+### Database: dual-backend via `DATABASE_URL`
+
+`DATABASE_URL` supports both backends. SQLModel/SQLAlchemy stays database-agnostic.
+
+| Mode | Example URL | When to use |
+|------|-------------|-------------|
+| Supabase Postgres (main) | `postgresql+psycopg://...@db.<project>.supabase.co:5432/postgres` | Shared/dev, multi-machine, hosted |
+| Local SQLite | `sqlite:///data/gene_dossier.db` | Offline / quick local runs |
+| In-memory SQLite | `sqlite://` or `sqlite:///:memory:` | Unit tests |
+
+Driver dependency: **`psycopg[binary]`** (required for Postgres).
+
+`db.py` detects the URL scheme:
+
+- **sqlite** → `check_same_thread=False`, `PRAGMA foreign_keys=ON`, create parent dirs for file DBs
+- **postgres / postgresql** → normal SQLAlchemy engine with psycopg (no SQLite pragmas)
+
+Never hardcode Supabase credentials. Use `.env` only (see `.env.example`).
+
+### Tables stored in Postgres / SQLite
+
+- `dossier_runs`
+- `api_runs`
+- `raw_artifacts` (metadata only: path, hash, type, urls — **not** response bodies)
+- `evidence_records`
+- `report_sections`
+- `claims`
+- `verification_results`
+- `source_coverage_results`
 
 ### Orchestration: LangGraph (core)
 
@@ -82,11 +123,8 @@ If no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` is set:
 **Chroma** indexes normalized `EvidenceRecord` objects (primarily `display_text` + metadata
 filters: gene, section, source, grade, assertion_type).
 
-Chroma is **not** the source of truth. Source of truth remains:
-
-1. raw artifacts on disk
-2. evidence records in the provenance database
-3. `source_id` / `raw_artifact_id` / `api_run_id` linkage
+Chroma is **not** the source of truth. Structured truth is Supabase Postgres (or SQLite locally);
+original material is raw artifacts on disk.
 
 Do not build complex hybrid RAG / reranking yet — keyword + metadata search first, then
 simple Chroma semantic search over evidence.
@@ -96,8 +134,8 @@ simple Chroma semantic search over evidence.
 - **API clients** (`tools/`): build request, call with timeout, never raise, return `ToolResult`.
   They do NOT normalize.
 - **Normalizers** (`normalize/`): turn raw responses into `EvidenceRecord`s. No network calls.
-- **Raw store** (`raw_store.py`): persists raw artifacts with content hashing.
-- **Database** (`db.py`): provenance store for runs, api_runs, artifacts, evidence.
+- **Raw store** (`raw_store.py`): persists raw artifact **bytes** locally (later Storage/S3).
+- **Database** (`db.py`): SQLModel provenance store (Postgres or SQLite via `DATABASE_URL`).
 - **Coverage** (`coverage.py`): never silently omit a source; report status for every source.
 - **Retrieval** (`retrieval.py`): keyword/metadata first; Chroma semantic retrieval second.
 - **Verification** (`verification.py`): rule-based checks that every claim cites existing sources.
@@ -133,9 +171,11 @@ Only advance when the current file's check passes and approval is given.
 Progress legend: [ ] pending, [~] in progress, [x] done, [-] deferred.
 
 ### Phase 0 - Planning and setup
-- [x] 1. `IMPLEMENTATION_PLAN.md` (this file; stack updated for LangGraph/LangChain/Chroma)
-- [x] 2. `pyproject.toml` - deps include langchain, langgraph, chromadb as **core** deps
+- [x] 1. `IMPLEMENTATION_PLAN.md` (this file; LangGraph/LangChain/Chroma + dual DB)
+- [x] 2. `pyproject.toml` - langchain, langgraph, chromadb as core deps
+- [~] 2b. `pyproject.toml` - add `psycopg[binary]` for Supabase Postgres
 - [x] 3. `.env.example` - env var template (no real keys)
+- [~] 3b. `.env.example` - document SQLite + Supabase Postgres `DATABASE_URL` examples
 - [x] 4. `README.md` - overview + quickstart
 - [x] 5. `src/gene_dossier/__init__.py`
 - [x] 6. `src/gene_dossier/config.py` - settings, paths, key loading
@@ -153,15 +193,19 @@ Progress legend: [ ] pending, [~] in progress, [x] done, [-] deferred.
 - [x] 12. `tests/test_raw_store.py`
 
 ### Phase 4 - Source registry
-- [ ] 13. `src/gene_dossier/source_registry.py` - full source map (A/B/C)
-- [ ] 14. `tests/test_source_registry.py`
+- [x] 13. `src/gene_dossier/source_registry.py` - full source map (A/B/C)
+- [x] 14. `tests/test_source_registry.py`
 
-### Phase 5 - Database
-- [ ] 15. `src/gene_dossier/db.py` - SQLModel engine + tables + helpers
-- [ ] 16. `tests/test_db.py` (basic smoke test)
+### Phase 5 - Database (dual backend)
+- [~] 15. `src/gene_dossier/db.py` - SQLModel tables + helpers; **update** for:
+  - Postgres/SQLite detection via `DATABASE_URL`
+  - `psycopg` engine path for Supabase
+  - `source_coverage_results` table
+  - metadata-only `raw_artifacts` (no response bodies)
+- [ ] 16. `tests/test_db.py` - SQLite in-memory smoke tests (no live Supabase required)
 
 ### Phase 6 - Coverage reporting
-- [ ] 17. `src/gene_dossier/coverage.py` - build + write coverage report (md + json)
+- [ ] 17. `src/gene_dossier/coverage.py` - build + write coverage report (md + json); persist rows
 - [ ] 18. `tests/test_coverage.py`
 
 ### Phase 7 - Priority A API clients (one file at a time)
@@ -253,6 +297,7 @@ Allen Brain Atlas, BrainRNASeq, patents, antibodies, OMIM, DrugBank, NCATS, ERC 
 - `SERPAPI_API_KEY` for patents -> else `manual` / `requires_key`.
 - Antibodies, Allen Brain, BrainRNASeq: treat as semi-structured / manual if no clean API.
 - OpenAI / Anthropic keys optional: without them, skip LLM synthesis (deterministic fallback).
+- `DATABASE_URL` points at Supabase Postgres for shared/dev, or SQLite for local/offline tests.
 
 ### Validated SREBF2 anchors (from reference report)
 Entrez `6721` (mouse `20788`), Ensembl `ENSG00000198911`, UniProt `Q12772`,
@@ -324,10 +369,11 @@ requires key / deferred / manual review):
 1. Codebase builds one file at a time; each file checked before advancing.
 2. `python scripts/run_srebf2_full_api_pass.py` runs end to end.
 3. Creates a dossier run for SREBF2 and attempts all configured sources.
-4. Saves raw artifacts for every successful source.
+4. Saves raw artifacts for every successful source (bytes on disk; metadata in DB).
 5. Logs failed / deferred / manual / requires_key sources (never silent).
-6. Creates evidence records for sources with implemented normalizers; stores in SQLite.
-7. Generates a source coverage report (`.md` + `.json`).
+6. Creates evidence records for sources with implemented normalizers; stores in the
+   provenance DB (Postgres or SQLite).
+7. Generates a source coverage report (`.md` + `.json`) and persists coverage rows.
 8. Generates a partial CHDI-style markdown report that separates completed / partial /
    missing / manual-review / failed / requires-key.
 9. Every generated claim cites `source_id`s; verification runs and flags weak/unsupported.
@@ -336,6 +382,8 @@ requires key / deferred / manual review):
 11. Workflow is orchestrated with **LangGraph**; LLM layer uses **LangChain**; evidence can be
     indexed in **Chroma** without treating Chroma as source of truth.
 12. Without LLM API keys, retrieval + normalization + deterministic report still succeed.
+13. `DATABASE_URL` supports Supabase Postgres (main) and SQLite (local/tests); credentials
+    only via `.env`; no large raw payloads in Postgres.
 
 ---
 
@@ -343,6 +391,7 @@ requires key / deferred / manual review):
 
 - HDinHD MCP integration (leave architecture notes only).
 - Hybrid RAG reranking and evidence-sufficiency checks (Chroma MVP index is in-scope; advanced RAG is not).
+- Supabase Storage / S3 backend for raw artifact **bytes** (local disk first).
 - Streamlit UI, React UI.
 - Figure artifacts, richer report tables.
 - Gene comparison workflow.
@@ -358,17 +407,28 @@ requires key / deferred / manual review):
 - Normalizer tests use mocked sample responses (no live network).
 - Client tests confirm import + graceful failure returns `ToolResult`.
 - `pytest` for the `tests/` suite; external-API-free where possible.
+- DB unit tests use **in-memory SQLite** — do not require Supabase credentials.
+- Optional manual smoke: point `DATABASE_URL` at Supabase and run `init_db()` once.
 - Workflow tests may use LangGraph with mocked tool nodes (no live APIs / no LLM keys).
 
 ---
 
-## 12. Dependency install note
+## 12. Dependency and database setup
 
-Core install (includes LangChain, LangGraph, Chroma):
+Core install (LangChain, LangGraph, Chroma, **psycopg**):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-LLM *API keys* remain optional in `.env`. Packages are installed; synthesis/embeddings
-activate only when keys are present.
+`.env` examples (never commit real credentials):
+
+```bash
+# Local / offline
+DATABASE_URL=sqlite:///data/gene_dossier.db
+
+# Supabase Postgres (main shared/dev) — use the SQLAlchemy+psycopg form:
+# DATABASE_URL=postgresql+psycopg://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
+LLM API keys remain optional. Supabase credentials remain in `.env` only.
