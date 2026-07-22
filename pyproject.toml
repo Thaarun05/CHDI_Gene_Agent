@@ -52,6 +52,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/gene_dossier"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/gene_dossier/assets" = "gene_dossier/assets"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
