@@ -4,17 +4,16 @@ A **provenance-first** platform that generates CHDI-style gene dossiers for Hunt
 disease research genes (SREBF2, HTT, MSH3, FAN1, PMS2, MLH1, and others).
 
 This is **not** a chatbot-first project. Facts come from validated biomedical APIs and their
-raw responses. The LLM is used only for section synthesis, Q&A, and claim verification, and
-is **never** treated as the source of truth.
+raw responses. The LLM is used only for optional section synthesis; it is **never** the
+source of truth. Chroma is an optional index only — structured truth stays in the
+provenance DB and on-disk raw artifacts.
 
 ## Core principle: provenance first
 
 - Every fact traces back to a `source_id`.
 - Every `source_id` traces back to a raw API response, artifact, or manual note.
 - No report claim exists without cited `source_id`s.
-- The system runs retrieval, normalization, and reporting **even with no LLM API key**.
-
-
+- Retrieval, normalization, and reporting run **even with no LLM API key**.
 
 ## Pipeline
 
@@ -22,38 +21,41 @@ is **never** treated as the source of truth.
 Validated biomedical APIs
   -> raw source responses         (data/raw + content hash)
   -> normalized evidence records  (source-level factual units)
-  -> provenance database          (SQLite)
-  -> report tables / figures      (presentation layer)
-  -> LLM-written report sections  (optional, evidence-constrained)
-  -> claim verification           (rule-based first)
-  -> final gene dossier           (data/outputs/{run_id}_report.md)
+  -> provenance database          (SQLite or Postgres / Supabase)
+  -> optional Chroma index        (display_text only; never source of truth)
+  -> report tables / sections     (deterministic; optional LLM synthesis)
+  -> claim verification           (rule-based)
+  -> gene dossier                 (markdown + Rancho HTML/PDF + coverage)
 ```
-
-
 
 ## Tech stack
 
-Python 3.11+, FastAPI, Pydantic v2, SQLModel + SQLite, httpx/requests, pytest.
-Optional (deferred): LangGraph/LangChain (LLM), Chroma (RAG), Streamlit (UI).
+Python 3.11+, FastAPI, Pydantic v2, SQLModel (SQLite / Postgres), httpx/requests,
+LangGraph (workflow), LangChain (optional LLM), Chroma (optional index), pytest.
+Deferred: Streamlit/React UI, hybrid RAG reranking, HDinHD MCP.
 
 ## Repository layout
 
 ```
-gene_dossier/
-  IMPLEMENTATION_PLAN.md      # build order + acceptance criteria (read this first)
+CHDI_Gene_Agent/
+  IMPLEMENTATION_PLAN.md
   pyproject.toml
   .env.example
   data/{raw,outputs,indexes}/
-  src/gene_dossier/           # config, models, db, raw_store, source registry, coverage,
-                              # workflow, synthesis, verification, retrieval, rendering
-    tools/                    # one API client per source (returns ToolResult, never raises)
-    normalize/                # raw responses -> EvidenceRecords (no network calls)
-    api/                      # FastAPI app
-  scripts/                    # CLI entry points
-  tests/                      # pytest suite (mocked responses, no live APIs)
+  src/gene_dossier/
+    config, models, db, raw_store, source_registry, coverage
+    workflow, synthesis, verification, retrieval, rendering
+    report_schema, rancho_report
+    tools/       # one API client per source (ToolResult; never raises)
+    normalize/   # raw responses -> EvidenceRecords (no network)
+    api/         # FastAPI app
+    assets/      # Rancho report branding
+  scripts/
+    run_srebf2_full_api_pass.py
+    run_source_smoke_tests.py
+    print_source_coverage_report.py
+  tests/
 ```
-
-
 
 ## Quickstart
 
@@ -65,44 +67,63 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # 3. Configure environment (all keys optional; missing keys degrade gracefully)
-cp .env.example .env    # then fill in any keys you have
+cp .env.example .env
 
-# 4. Run the SREBF2 full API pass (available once the workflow is built)
+# 4. SREBF2 full API pass (live network; soft-fails per source)
 python scripts/run_srebf2_full_api_pass.py
+# Useful flags: --no-rancho --no-pdf --no-db --sources GTEx,STRING --allow-llm
 
-# 5. Run tests
+# 5. Source smoke tests / coverage printer
+python scripts/run_source_smoke_tests.py
+python scripts/print_source_coverage_report.py --gene SREBF2
+
+# 6. API
+uvicorn gene_dossier.api.main:app --reload
+
+# 7. Tests (mocked / offline; no live APIs required)
 pytest
 ```
 
-Outputs land in `data/outputs/`:
+Outputs land in `data/outputs/` (or `--output-dir`):
 
-- `{dossier_run_id}_report.md` - partial CHDI-style dossier
-- `{dossier_run_id}_source_coverage.md` / `.json` - per-source status
+- `{dossier_run_id}_report.md` — debug CHDI-style markdown
+- `{dossier_run_id}_rancho.html` / `.pdf` — polished Rancho visual dossier
+- `{dossier_run_id}_source_coverage.md` / `.json` — per-source status
 
+## HTTP API (MVP)
 
+| Method | Path | Role |
+|--------|------|------|
+| GET | `/health` | Liveness; `database=sqlite\|postgres\|other` (no raw URL) |
+| GET | `/version` | Package version |
+| GET | `/sources` | Full source registry |
+| GET | `/sources/summary` | Counts by priority / status |
+| GET | `/sources/{name}` | One source |
+| POST | `/dossier/runs` | Start LangGraph pass (`wait=true` sync; default background) |
+| GET | `/dossier/runs/{id}` | Persisted run status |
+| GET | `/dossier/runs/{id}/evidence` | Evidence from DB |
+| GET | `/dossier/runs/{id}/coverage` | Coverage rows |
+| POST | `/dossier/runs/{id}/search` | Keyword/metadata evidence search |
+
+`wait=false` + `persist_db=false` returns **422** (background runs must be pollable).
 
 ## Source coverage
 
 The platform never silently omits a source. Every configured source reports one of:
 `success`, `failed`, `deferred`, `manual`, `requires_key`, `partial`, `skipped`,
-`not_implemented` - with raw artifact path, evidence count, and any error.
+`not_implemented` — with raw artifact path, evidence count, and any error.
 
 Priority levels:
 
 - **A** (full client + deep normalizer): NCBI Gene, PubMed, UniProt, Ensembl, GTEx, STRING,
-Reactome, ClinVar, Open Targets, MouseMine/MGI, CTD, ChEMBL, PubChem, NIH RePORTER.
+  Reactome, ClinVar, Open Targets, MouseMine/MGI, CTD, ChEMBL, PubChem, NIH RePORTER.
 - **B** (client + raw storage, basic normalizer): GEO, Harmonizome, BioGRID, WikiPathways,
-AlphaFold, PDBe, CDD, NCBI Datasets, UCSC.
+  AlphaFold, PDBe, CDD, NCBI Datasets, UCSC.
 - **C** (scaffold; manual/semi-structured/requires_key): Allen Brain, BrainRNASeq, patents,
-antibodies, OMIM, DrugBank, NCATS, ERC grants.
+  antibodies, OMIM, DrugBank, NCATS, ERC grants.
 
+## Status
 
-
-## Development rule
-
-Built one file at a time. See `IMPLEMENTATION_PLAN.md` for the full ordered checklist,
-data models, verification rules, acceptance criteria, and deferred work (HDinHD MCP, Chroma
-vector search, hybrid RAG, Streamlit/React UI, DOCX/PDF export).
-
-
-
+Phases 0–15 of `IMPLEMENTATION_PLAN.md` (numbered steps 1–66) are implemented.
+Still deferred: HDinHD MCP, hybrid RAG, Streamlit/React UI, richer figure artifacts,
+gene comparison, LLM-based verification beyond rules, human review UI.
