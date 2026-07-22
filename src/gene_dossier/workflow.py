@@ -7,7 +7,7 @@ Pipeline (each node is a small, testable function)::
       -> call_source_clients
       -> save_raw_artifacts
       -> normalize_evidence
-      -> (optional) index_evidence_in_chroma   # stub until retrieval.py
+      -> (optional) index_evidence_in_chroma   # soft-fail via retrieval.py
       -> build_report_sections
       -> verify_claims
       -> render_outputs
@@ -909,11 +909,32 @@ def node_normalize_evidence(
     return {**state, "evidence_records": evidence}
 
 
-def node_index_evidence_in_chroma(state: DossierState) -> DossierState:
-    """Optional Chroma indexing stub (implemented in retrieval.py later)."""
+def node_index_evidence_in_chroma(
+    state: DossierState, *, settings: Settings
+) -> DossierState:
+    """Optionally index evidence in Chroma (soft-fail; never aborts the graph)."""
     notes = list(state.get("synthesis_notes") or [])
-    if state.get("evidence_records"):
-        notes.append("Chroma indexing deferred (retrieval.py not wired yet).")
+    records = list(state.get("evidence_records") or [])
+    if not records:
+        notes.append("No evidence records available for Chroma indexing.")
+        return {**state, "synthesis_notes": notes}
+
+    try:
+        from gene_dossier.retrieval import index_evidence_in_chroma
+
+        status = index_evidence_in_chroma(records, settings=settings)
+        if status.available:
+            notes.append(
+                f"Chroma indexing complete: {status.indexed_count} evidence "
+                f"records indexed ({status.backend})."
+            )
+        else:
+            err = status.error or "unknown error"
+            notes.append(f"Chroma indexing unavailable: {err}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Chroma indexing failed: %s", exc)
+        notes.append(f"Chroma indexing failed: {exc}")
+
     return {**state, "synthesis_notes": notes}
 
 
@@ -1132,7 +1153,10 @@ def build_dossier_graph(
         "normalize_evidence",
         lambda s: node_normalize_evidence(s, persist_db=persist_db),
     )
-    graph.add_node("index_evidence_in_chroma", node_index_evidence_in_chroma)
+    graph.add_node(
+        "index_evidence_in_chroma",
+        lambda s: node_index_evidence_in_chroma(s, settings=cfg),
+    )
     graph.add_node(
         "build_report_sections",
         lambda s: node_build_report_sections(

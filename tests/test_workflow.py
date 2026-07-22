@@ -10,6 +10,7 @@ from gene_dossier.workflow import (
     _client_opentargets,
     _client_reactome,
     extract_gene_ids_from_tool_result,
+    node_index_evidence_in_chroma,
     node_resolve_gene_identity,
     run_gene_dossier_full_api_pass,
 )
@@ -145,3 +146,64 @@ def test_offline_srebf2_smoke_persist_db_false(tmp_path: Path):
     assert result.output_paths.get("coverage_markdown")
     assert result.output_paths.get("debug_markdown")
     assert result.evidence_records  # NCBI identity normalized
+    assert any("Chroma indexing" in note for note in result.synthesis_notes)
+
+
+def test_node_index_evidence_in_chroma_soft_fails_without_crash():
+    """Empty evidence and indexing path must never abort the workflow."""
+    settings = Settings()
+    empty = node_index_evidence_in_chroma(
+        {
+            "gene_symbol": "SREBF2",
+            "dossier_run_id": "chroma-empty",
+            "evidence_records": [],
+            "synthesis_notes": [],
+        },
+        settings=settings,
+    )
+    assert any(
+        "No evidence records available for Chroma indexing." in n
+        for n in empty["synthesis_notes"]
+    )
+
+    from gene_dossier.models import (
+        AssertionType,
+        EvidenceGrade,
+        EvidenceRecord,
+        SourceType,
+    )
+    from gene_dossier.source_ids import make_source_id
+
+    record = EvidenceRecord(
+        source_id=make_source_id(
+            "NCBI Gene", "SREBF2", AssertionType.gene_identity, "6721"
+        ),
+        dossier_run_id="chroma-one",
+        gene_symbol="SREBF2",
+        section="General",
+        source_name="NCBI Gene",
+        source_type=SourceType.curated_database,
+        assertion_type=AssertionType.gene_identity,
+        fact_type="entrez_gene_id",
+        evidence_grade=EvidenceGrade.A,
+        display_text="SREBF2 Entrez Gene ID is 6721.",
+    )
+    populated = node_index_evidence_in_chroma(
+        {
+            "gene_symbol": "SREBF2",
+            "dossier_run_id": "chroma-one",
+            "evidence_records": [record],
+            "synthesis_notes": [],
+        },
+        settings=settings,
+    )
+    notes = populated["synthesis_notes"]
+    assert notes
+    assert any("Chroma indexing" in n for n in notes)
+    # Soft-fail contract: either complete, unavailable, or failed — never raise.
+    assert any(
+        n.startswith("Chroma indexing complete:")
+        or n.startswith("Chroma indexing unavailable:")
+        or n.startswith("Chroma indexing failed:")
+        for n in notes
+    )
