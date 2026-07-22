@@ -13,11 +13,13 @@ Key endpoints (validated)::
         rma::options[only$eq'probes.id,probes.name,...']
 
     GET https://api.brain-map.org/api/v2/data/query.json?criteria=...
-        service::human_microarray_expression[probes$eq{probe_id}]
+        service::human_microarray_expression[probes$eq'{probe_id}']
 
 NOTE: Validate / fetch expression one probe at a time. Criteria encoding is
-strict — pass the criteria string as a single query parameter and let the HTTP
-client encode it.
+strict — probe IDs must be single-quoted in the service clause, and the
+criteria string is passed as a single query parameter for the HTTP client to
+encode. ``fetch_hba_expression`` retries transient Allen expression soft-fails
+(``success=false`` / Informatics service errors) with a short backoff.
 
 SREBF2 validated probe IDs: ``1051154``, ``1067243``, ``1051153``.
 
@@ -26,6 +28,8 @@ Never raises: all failures return :class:`~gene_dossier.models.ToolResult`.
 
 from __future__ import annotations
 
+import re
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -40,6 +44,10 @@ QUERY_URL = f"{ALLEN_API_BASE}/data/query.json"
 
 # Validated SREBF2 HBA probe IDs (do not apply globally to other genes).
 DEFAULT_PROBES_SREBF2 = (1051154, 1067243, 1051153)
+
+# Conservative defaults for transient Allen expression-service flakiness.
+DEFAULT_MAX_EXPRESSION_ATTEMPTS = 3
+DEFAULT_RETRY_SLEEP_SECONDS = 1.0
 
 
 def _tool_result(
@@ -69,6 +77,34 @@ def _tool_result(
     )
 
 
+def _payload_preview(payload: Any, *, limit: int = 200) -> str:
+    """Whitespace-collapsed short preview for soft-fail error messages."""
+    if isinstance(payload, dict):
+        msg = payload.get("msg") or payload.get("message") or payload
+        text = str(msg)
+    else:
+        text = str(payload or "")
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _allen_error_message(payload: Any, *, fallback: str) -> str:
+    """Build a clear error_message from an Allen JSON body."""
+    msg = None
+    if isinstance(payload, dict):
+        msg = payload.get("msg") or payload.get("message")
+    if msg is not None and str(msg).strip():
+        base = str(msg).strip()
+        # Avoid duplicating the same text as a preview when msg is already clear.
+        return base
+    preview = _payload_preview(payload)
+    if preview:
+        return f"{fallback} (preview: {preview})"
+    return fallback
+
+
 def build_probe_lookup_criteria(gene_symbol: str) -> str:
     """Build RMA criteria for HBA DNA probes matching ``gene_symbol``."""
     symbol = gene_symbol.strip()
@@ -82,8 +118,13 @@ def build_probe_lookup_criteria(gene_symbol: str) -> str:
 
 
 def build_expression_criteria(probe_id: str | int) -> str:
-    """Build service criteria for one HBA microarray probe."""
-    return f"service::human_microarray_expression[probes$eq{probe_id}]"
+    """Build service criteria for one HBA microarray probe.
+
+    Probe IDs must be single-quoted in the RMA service clause; unquoted IDs
+    return HTTP 200 with ``success=false`` ("Informatics service request failed").
+    """
+    pid = str(probe_id).strip()
+    return f"service::human_microarray_expression[probes$eq'{pid}']"
 
 
 def summarize_probe(row: dict[str, Any]) -> dict[str, Any]:
@@ -130,10 +171,8 @@ def _request_query(
                     status_code=response.status_code,
                     data=payload,
                     error_type="api_error",
-                    error_message=str(
-                        payload.get("msg")
-                        or payload.get("message")
-                        or "Allen API returned success=false"
+                    error_message=_allen_error_message(
+                        payload, fallback="Allen API returned success=false"
                     ),
                 )
             return _tool_result(
@@ -265,17 +304,55 @@ def extract_probe_ids(probe_payload: Any) -> list[int]:
     return out
 
 
+def _is_transient_expression_failure(result: ToolResult) -> bool:
+    """True when an expression soft-fail looks like Allen upstream flakiness."""
+    if result.success or result.error_type != "api_error":
+        return False
+    msg = result.error_message or ""
+    if "Informatics service request failed" in msg:
+        return True
+    if "success=false" in msg.lower():
+        return True
+    if isinstance(result.data, dict) and result.data.get("success") is False:
+        return True
+    return False
+
+
+def _expression_attempt_record(
+    *,
+    attempt: int,
+    result: ToolResult,
+) -> dict[str, Any]:
+    """Serialize one microarray_expression attempt for debugging."""
+    return {
+        "attempt": attempt,
+        "success": result.success,
+        "error_type": result.error_type,
+        "error_message": result.error_message,
+        "status_code": result.status_code,
+        "request_url": result.request_url,
+        "data": result.data,
+    }
+
+
 def fetch_hba_expression(
     gene_symbol: str,
     *,
     probe_ids: list[str | int] | None = None,
     max_probes: int = 3,
+    max_expression_attempts: int = DEFAULT_MAX_EXPRESSION_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_RETRY_SLEEP_SECONDS,
     settings: Settings | None = None,
 ) -> ToolResult:
     """Probe lookup, then expression for up to ``max_probes`` probes (one at a time).
 
     If ``probe_ids`` is provided, skip lookup and use those IDs. On success,
     ``data`` includes probe summaries and per-probe expression payloads.
+
+    Transient Allen ``success=false`` / Informatics failures on
+    ``microarray_expression`` are retried with a short backoff. Prior failed
+    attempts are preserved under ``expression_attempts`` (and on ultimately
+    failed probes under ``failed_probes``).
 
     Never raises.
     """
@@ -284,6 +361,8 @@ def fetch_hba_expression(
     probe_payload: Any = None
     probe_summaries: list[dict[str, Any]] = []
     resolved_ids: list[int] = []
+    attempts_allowed = max(1, int(max_expression_attempts))
+    sleep_seconds = max(0.0, float(retry_sleep_seconds))
 
     if probe_ids is not None:
         for pid in probe_ids:
@@ -315,40 +394,73 @@ def fetch_hba_expression(
 
     selected = resolved_ids[: max(0, max_probes)]
     expressions: dict[str, Any] = {}
+    expression_attempts: dict[str, list[dict[str, Any]]] = {}
+    failed_probes: list[dict[str, Any]] = []
     last_url = QUERY_URL
     last_params: dict[str, Any] = {
         "gene_symbol": symbol,
         "probe_ids": selected,
         "max_probes": max_probes,
+        "max_expression_attempts": attempts_allowed,
+        "retry_sleep_seconds": sleep_seconds,
     }
     last_status: int | None = None
 
     for pid in selected:
-        expr = microarray_expression(pid, gene_symbol=symbol, settings=cfg)
-        last_url = expr.request_url
-        last_params = expr.request_params
-        last_status = expr.status_code
-        if not expr.success:
-            return _tool_result(
-                endpoint_name="fetch_hba_expression",
-                gene_symbol=symbol,
-                request_url=expr.request_url,
-                request_params=expr.request_params,
-                success=False,
-                status_code=expr.status_code,
-                data={
-                    "gene_symbol": symbol,
-                    "probe_lookup": probe_payload,
-                    "probe_summaries": probe_summaries,
-                    "probe_ids": selected,
-                    "expressions": expressions,
-                    "failed_probe_id": pid,
-                },
-                error_type=expr.error_type or "expression_failed",
-                error_message=expr.error_message
-                or f"Allen microarray expression failed for probe {pid}",
-            )
-        expressions[str(pid)] = expr.data
+        attempts: list[dict[str, Any]] = []
+        expr: ToolResult | None = None
+        for attempt in range(1, attempts_allowed + 1):
+            expr = microarray_expression(pid, gene_symbol=symbol, settings=cfg)
+            last_url = expr.request_url
+            last_params = expr.request_params
+            last_status = expr.status_code
+            attempts.append(_expression_attempt_record(attempt=attempt, result=expr))
+            if expr.success:
+                expressions[str(pid)] = expr.data
+                expression_attempts[str(pid)] = attempts
+                break
+            if not _is_transient_expression_failure(expr) or attempt >= attempts_allowed:
+                failed_probes.append(
+                    {
+                        "probe_id": pid,
+                        "error_type": expr.error_type,
+                        "error_message": expr.error_message,
+                        "status_code": expr.status_code,
+                        "request_url": expr.request_url,
+                        "data": expr.data,
+                        "expression_attempts": attempts,
+                    }
+                )
+                expression_attempts[str(pid)] = attempts
+                break
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+    if not expressions:
+        first = failed_probes[0] if failed_probes else None
+        detail = (
+            (first or {}).get("error_message")
+            or "Allen microarray expression failed for all selected probes"
+        )
+        return _tool_result(
+            endpoint_name="fetch_hba_expression",
+            gene_symbol=symbol,
+            request_url=(first or {}).get("request_url") or last_url,
+            request_params=last_params,
+            success=False,
+            status_code=(first or {}).get("status_code") or last_status,
+            data={
+                "gene_symbol": symbol,
+                "probe_lookup": probe_payload,
+                "probe_summaries": probe_summaries,
+                "probe_ids": selected,
+                "expressions": expressions,
+                "failed_probes": failed_probes,
+                "expression_attempts": expression_attempts,
+            },
+            error_type=(first or {}).get("error_type") or "expression_failed",
+            error_message=detail,
+        )
 
     return _tool_result(
         endpoint_name="fetch_hba_expression",
@@ -358,6 +470,8 @@ def fetch_hba_expression(
             "gene_symbol": symbol,
             "probe_ids": selected,
             "max_probes": max_probes,
+            "max_expression_attempts": attempts_allowed,
+            "retry_sleep_seconds": sleep_seconds,
         },
         success=True,
         status_code=last_status,
@@ -368,6 +482,8 @@ def fetch_hba_expression(
             "probe_ids": selected,
             "probe_count": len(selected),
             "expressions": expressions,
+            "failed_probes": failed_probes,
+            "expression_attempts": expression_attempts,
         },
     )
 
@@ -377,6 +493,8 @@ __all__ = [
     "ALLEN_API_BASE",
     "QUERY_URL",
     "DEFAULT_PROBES_SREBF2",
+    "DEFAULT_MAX_EXPRESSION_ATTEMPTS",
+    "DEFAULT_RETRY_SLEEP_SECONDS",
     "build_probe_lookup_criteria",
     "build_expression_criteria",
     "summarize_probe",

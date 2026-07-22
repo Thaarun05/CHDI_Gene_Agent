@@ -202,6 +202,22 @@ def prefer_mgi_id(rows: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def prefer_mouse_mgi_id(rows: list[dict[str, Any]]) -> str | None:
+    """Prefer an MGI ID from Mus musculus rows; fall back to any MGI ID."""
+    for row in rows:
+        organism = str(
+            row.get("Gene.organism.name") or row.get("organism") or ""
+        )
+        mgi = (
+            row.get("Gene.primaryIdentifier")
+            or row.get("primaryIdentifier")
+            or row.get("mgi_id")
+        )
+        if mgi and str(mgi).startswith("MGI:") and "Mus musculus" in organism:
+            return str(mgi)
+    return prefer_mgi_id(rows)
+
+
 def summarize_gene_row(row: dict[str, Any]) -> dict[str, Any]:
     """Light gene-lookup summary (not evidence)."""
     return {
@@ -211,6 +227,69 @@ def summarize_gene_row(row: dict[str, Any]) -> dict[str, Any]:
         "organism": row.get("Gene.organism.name") or row.get("organism"),
         "ncbi_gene_number": row.get("Gene.ncbiGeneNumber") or row.get("ncbiGeneNumber"),
     }
+
+
+def _normalize_mgi_id(mgi_id: str | None) -> str | None:
+    """Return a cleaned MGI ID, or None when missing/blank."""
+    if mgi_id is None:
+        return None
+    cleaned = str(mgi_id).strip()
+    return cleaned or None
+
+
+def _normalize_ncbi_gene_number(ncbi_gene_number: str | int | None) -> str | None:
+    """Return a cleaned NCBI Gene number string, or None when missing/blank.
+
+    Accepts int or digit strings (e.g. ``20788`` / ``"20788"``). Also accepts
+    ``NCBIGene:20788`` / ``GeneID:20788``. Rejects blank values and MGI IDs so
+    callers get a clear invalid_request instead of a bad PathQuery.
+    """
+    if ncbi_gene_number is None:
+        return None
+    cleaned = str(ncbi_gene_number).strip()
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return cleaned
+    lower = cleaned.lower()
+    for prefix in ("ncbigene:", "geneid:"):
+        if lower.startswith(prefix):
+            tail = cleaned.split(":", 1)[1].strip()
+            if tail.isdigit():
+                return tail
+    return None
+
+
+def build_gene_symbol_lookup_query(gene_symbol: str) -> str:
+    """XML query: gene by symbol (may return multiple organisms)."""
+    return _build_query_xml(
+        view=GENE_LOOKUP_VIEWS,
+        constraint_path="Gene.symbol",
+        constraint_value=str(gene_symbol).strip(),
+        sort_order="Gene.primaryIdentifier asc",
+    )
+
+
+def _identifier_attempt_message(
+    *,
+    mgi_id: str | None,
+    ncbi_gene_number: str | int | None,
+    gene_symbol: str,
+    raw_ncbi: str | int | None = None,
+) -> str:
+    """Explain which identifiers were attempted (for soft-fail ToolResults)."""
+    parts = [
+        f"mgi_id={mgi_id!r}",
+        f"ncbi_gene_number={ncbi_gene_number!r}",
+    ]
+    if raw_ncbi is not None and str(raw_ncbi).strip() != str(ncbi_gene_number or ""):
+        parts.append(f"raw_ncbi_gene_number={raw_ncbi!r}")
+    if gene_symbol:
+        parts.append(f"gene_symbol={gene_symbol!r}")
+    return (
+        "Provide mgi_id and/or ncbi_gene_number "
+        f"(attempted: {', '.join(parts)})"
+    )
 
 
 def _query_results(
@@ -386,75 +465,166 @@ def fetch_mouse_annotations(
     """Resolve MGI (if needed) and fetch alleles, phenotypes, and stocks.
 
     Provide ``mgi_id`` and/or ``ncbi_gene_number``. When only NCBI is given,
-    runs gene lookup first. On success, ``data`` includes raw payloads plus
-    row dicts for each query.
+    runs gene lookup first. When both IDs are missing but ``gene_symbol`` is
+    set, attempts a MouseMine symbol lookup and prefers a Mus musculus MGI ID
+    from the live response (never invents MGI IDs).
 
     Never raises.
     """
     cfg = settings or get_settings()
-    resolved_mgi = mgi_id.strip() if mgi_id else None
+    raw_ncbi = ncbi_gene_number
+    resolved_mgi = _normalize_mgi_id(mgi_id)
+    ncbi = _normalize_ncbi_gene_number(ncbi_gene_number)
+    symbol = (gene_symbol or "").strip()
     gene_payload: Any = None
     gene_rows: list[dict[str, Any]] = []
     gene_summaries: list[dict[str, Any]] = []
     lookup_url = MOUSEMINE_RESULTS_URL
     lookup_params: dict[str, Any] = {}
 
-    if not resolved_mgi:
-        if ncbi_gene_number is None:
+    if not resolved_mgi and ncbi is None and not symbol:
+        # Distinguish blank/invalid ncbi from truly omitted identifiers.
+        if raw_ncbi is not None and str(raw_ncbi).strip() and ncbi is None:
             return _tool_result(
                 endpoint_name="fetch_mouse_annotations",
-                gene_symbol=gene_symbol,
+                gene_symbol=symbol,
                 request_url=MOUSEMINE_RESULTS_URL,
-                request_params={},
+                request_params={"ncbi_gene_number": raw_ncbi, "mgi_id": mgi_id},
                 success=False,
                 error_type="invalid_request",
-                error_message="Provide mgi_id and/or ncbi_gene_number",
+                error_message=(
+                    "ncbi_gene_number must be a numeric mouse Entrez ID "
+                    f"(e.g. {DEFAULT_MOUSE_NCBI_GENE}); "
+                    + _identifier_attempt_message(
+                        mgi_id=resolved_mgi,
+                        ncbi_gene_number=ncbi,
+                        gene_symbol=symbol,
+                        raw_ncbi=raw_ncbi,
+                    )
+                ),
             )
-        lookup = gene_lookup(
-            ncbi_gene_number, gene_symbol=gene_symbol, settings=cfg
+        return _tool_result(
+            endpoint_name="fetch_mouse_annotations",
+            gene_symbol=symbol,
+            request_url=MOUSEMINE_RESULTS_URL,
+            request_params={"ncbi_gene_number": raw_ncbi, "mgi_id": mgi_id},
+            success=False,
+            error_type="invalid_request",
+            error_message=_identifier_attempt_message(
+                mgi_id=resolved_mgi,
+                ncbi_gene_number=ncbi,
+                gene_symbol=symbol,
+                raw_ncbi=raw_ncbi,
+            ),
         )
-        lookup_url = lookup.request_url
-        lookup_params = lookup.request_params
-        if not lookup.success:
-            return _tool_result(
-                endpoint_name="fetch_mouse_annotations",
-                gene_symbol=gene_symbol or str(ncbi_gene_number),
-                request_url=lookup.request_url,
-                request_params=lookup.request_params,
-                success=False,
-                status_code=lookup.status_code,
-                data={"gene_lookup": lookup.data},
-                error_type=lookup.error_type or "gene_lookup_failed",
-                error_message=lookup.error_message or "MouseMine gene lookup failed",
-            )
-        gene_payload = lookup.data
-        gene_rows = rows_as_dicts(gene_payload, GENE_LOOKUP_VIEWS)
-        gene_summaries = [summarize_gene_row(r) for r in gene_rows]
-        resolved_mgi = prefer_mgi_id(gene_rows)
-        if not resolved_mgi:
-            return _tool_result(
-                endpoint_name="fetch_mouse_annotations",
-                gene_symbol=gene_symbol or str(ncbi_gene_number),
-                request_url=lookup.request_url,
-                request_params=lookup.request_params,
-                success=False,
-                status_code=lookup.status_code,
-                data={
-                    "ncbi_gene_number": str(ncbi_gene_number),
-                    "gene_lookup": gene_payload,
-                    "gene_rows": gene_rows,
-                    "gene_summaries": gene_summaries,
-                },
-                error_type="no_results",
-                error_message=f"No MGI ID for NCBI Gene {ncbi_gene_number}",
-            )
 
-    allele_res = alleles(resolved_mgi, gene_symbol=gene_symbol, settings=cfg)
+    if not resolved_mgi:
+        if ncbi is not None:
+            lookup = gene_lookup(ncbi, gene_symbol=symbol, settings=cfg)
+            lookup_url = lookup.request_url
+            lookup_params = lookup.request_params
+            if not lookup.success:
+                return _tool_result(
+                    endpoint_name="fetch_mouse_annotations",
+                    gene_symbol=symbol or ncbi,
+                    request_url=lookup.request_url,
+                    request_params=lookup.request_params,
+                    success=False,
+                    status_code=lookup.status_code,
+                    data={"gene_lookup": lookup.data, "ncbi_gene_number": ncbi},
+                    error_type=lookup.error_type or "gene_lookup_failed",
+                    error_message=(
+                        lookup.error_message
+                        or f"MouseMine gene lookup failed for ncbi_gene_number={ncbi}"
+                    ),
+                )
+            gene_payload = lookup.data
+            gene_rows = rows_as_dicts(gene_payload, GENE_LOOKUP_VIEWS)
+            gene_summaries = [summarize_gene_row(r) for r in gene_rows]
+            resolved_mgi = prefer_mouse_mgi_id(gene_rows) or prefer_mgi_id(gene_rows)
+            if not resolved_mgi:
+                return _tool_result(
+                    endpoint_name="fetch_mouse_annotations",
+                    gene_symbol=symbol or ncbi,
+                    request_url=lookup.request_url,
+                    request_params=lookup.request_params,
+                    success=False,
+                    status_code=lookup.status_code,
+                    data={
+                        "ncbi_gene_number": ncbi,
+                        "gene_lookup": gene_payload,
+                        "gene_rows": gene_rows,
+                        "gene_summaries": gene_summaries,
+                    },
+                    error_type="no_results",
+                    error_message=f"No MGI ID for NCBI Gene {ncbi}",
+                )
+        else:
+            # Symbol-only path: query MouseMine and prefer Mus musculus MGI.
+            lookup = _query_results(
+                endpoint_name="gene_symbol_lookup",
+                gene_symbol=symbol,
+                query_xml=build_gene_symbol_lookup_query(symbol),
+                settings=cfg,
+                extra_params={"gene_symbol": symbol},
+            )
+            lookup_url = lookup.request_url
+            lookup_params = lookup.request_params
+            if not lookup.success:
+                return _tool_result(
+                    endpoint_name="fetch_mouse_annotations",
+                    gene_symbol=symbol,
+                    request_url=lookup.request_url,
+                    request_params=lookup.request_params,
+                    success=False,
+                    status_code=lookup.status_code,
+                    data={"gene_lookup": lookup.data},
+                    error_type=lookup.error_type or "gene_lookup_failed",
+                    error_message=(
+                        lookup.error_message
+                        or f"MouseMine symbol lookup failed for gene_symbol={symbol!r}"
+                    ),
+                )
+            gene_payload = lookup.data
+            gene_rows = rows_as_dicts(gene_payload, GENE_LOOKUP_VIEWS)
+            gene_summaries = [summarize_gene_row(r) for r in gene_rows]
+            resolved_mgi = prefer_mouse_mgi_id(gene_rows)
+            if not resolved_mgi:
+                return _tool_result(
+                    endpoint_name="fetch_mouse_annotations",
+                    gene_symbol=symbol,
+                    request_url=lookup.request_url,
+                    request_params=lookup.request_params,
+                    success=False,
+                    status_code=lookup.status_code,
+                    data={
+                        "gene_symbol": symbol,
+                        "gene_lookup": gene_payload,
+                        "gene_rows": gene_rows,
+                        "gene_summaries": gene_summaries,
+                    },
+                    error_type="no_results",
+                    error_message=(
+                        f"No Mus musculus MGI ID for gene_symbol={symbol!r} "
+                        "(pass ncbi_gene_number such as "
+                        f"{DEFAULT_MOUSE_NCBI_GENE} when known)"
+                    ),
+                )
+            # Capture NCBI from the resolved mouse row when available.
+            for row in gene_rows:
+                if (
+                    str(row.get("Gene.primaryIdentifier") or "") == resolved_mgi
+                    and row.get("Gene.ncbiGeneNumber")
+                ):
+                    ncbi = str(row["Gene.ncbiGeneNumber"])
+                    break
+
+    allele_res = alleles(resolved_mgi, gene_symbol=symbol, settings=cfg)
     pheno_res = allele_phenotypes(
-        resolved_mgi, gene_symbol=gene_symbol, settings=cfg
+        resolved_mgi, gene_symbol=symbol, settings=cfg
     )
     stocks_res = stocks_carried_by(
-        resolved_mgi, gene_symbol=gene_symbol, settings=cfg
+        resolved_mgi, gene_symbol=symbol, settings=cfg
     )
 
     # Prefer overall success only when all three MGI-scoped queries succeed.
@@ -468,15 +638,13 @@ def fetch_mouse_annotations(
         if not res.success:
             return _tool_result(
                 endpoint_name="fetch_mouse_annotations",
-                gene_symbol=gene_symbol or resolved_mgi,
+                gene_symbol=symbol or resolved_mgi,
                 request_url=res.request_url,
                 request_params=res.request_params,
                 success=False,
                 status_code=res.status_code,
                 data={
-                    "ncbi_gene_number": (
-                        str(ncbi_gene_number) if ncbi_gene_number is not None else None
-                    ),
+                    "ncbi_gene_number": ncbi,
                     "mgi_id": resolved_mgi,
                     "gene_lookup": gene_payload,
                     "gene_rows": gene_rows,
@@ -496,21 +664,17 @@ def fetch_mouse_annotations(
 
     return _tool_result(
         endpoint_name="fetch_mouse_annotations",
-        gene_symbol=gene_symbol or resolved_mgi,
+        gene_symbol=symbol or resolved_mgi,
         request_url=allele_res.request_url or lookup_url,
         request_params={
-            "ncbi_gene_number": (
-                str(ncbi_gene_number) if ncbi_gene_number is not None else None
-            ),
+            "ncbi_gene_number": ncbi,
             "mgi_id": resolved_mgi,
             **lookup_params,
         },
         success=True,
         status_code=allele_res.status_code,
         data={
-            "ncbi_gene_number": (
-                str(ncbi_gene_number) if ncbi_gene_number is not None else None
-            ),
+            "ncbi_gene_number": ncbi,
             "mgi_id": resolved_mgi,
             "gene_lookup": gene_payload,
             "gene_rows": gene_rows,
@@ -538,11 +702,13 @@ __all__ = [
     "PHENOTYPE_VIEWS",
     "STOCKS_VIEWS",
     "build_gene_lookup_query",
+    "build_gene_symbol_lookup_query",
     "build_alleles_query",
     "build_allele_phenotypes_query",
     "build_stocks_query",
     "rows_as_dicts",
     "prefer_mgi_id",
+    "prefer_mouse_mgi_id",
     "summarize_gene_row",
     "gene_lookup",
     "alleles",

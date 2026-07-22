@@ -8,12 +8,13 @@ Key endpoints (validated)::
 
     GET https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi
         ?queries={refseq}&db=cdd&smode=auto&useid1=true&maxhit=250
-        &filter=true&evalue=0.01
+        &filter=true&evalue=0.01&tdata=hits
     GET .../bwrpsb.cgi?cdsid={cdsid}&tdata=hits&dmode=full&qdefl=true&cddefl=true
     GET .../bwrpsb.cgi?cdsid={cdsid}&tdata=aligns&alnfmt=json   (optional)
 
-NOTE: Batch CDD returns text/status for submit/poll, not normal JSON. Poll until
-``status=0`` (completed). ``alnfmt=json`` only applies when ``tdata=aligns``.
+NOTE: Batch CDD returns text/status for submit/poll when ``tdata=hits`` is set;
+without ``tdata`` NCBI often returns HTML UI. Poll until ``status=0`` (completed).
+``alnfmt=json`` only applies when ``tdata=aligns``.
 
 SREBF2 RefSeq protein example: ``NP_004590.2`` (domains include ``cd18922`` /
 ``bHLHzip_SREBP2``).
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -48,6 +50,21 @@ DEFAULT_MAX_POLLS = 30
 
 # status=0 means search completed successfully (NCBI Batch CD-Search).
 STATUS_COMPLETED = 0
+
+# Programmatic Batch CD-Search returns QM3-qcdsearch-* Search-IDs.
+_CDSID_RE = re.compile(r"(QM3-qcdsearch-[A-Za-z0-9-]+)")
+_HTML_ID_CDSID_RE = re.compile(
+    r'id=["\']id_cdsid["\'][^>]*>([^<]+)<',
+    re.IGNORECASE,
+)
+_HTML_CTRL_HANDLE_RE = re.compile(
+    r'ctrlHandle\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_HTML_NAME_CDSID_RE = re.compile(
+    r'name=["\']cdsid["\'][^>]*value=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
 
 
 def _tool_result(
@@ -77,11 +94,61 @@ def _tool_result(
     )
 
 
+def _raw_preview(raw_text: str, *, limit: int = 200) -> str:
+    """Whitespace-collapsed short preview for soft-fail error messages."""
+    collapsed = re.sub(r"\s+", " ", (raw_text or "")).strip()
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _extract_cdsid_candidate(raw: str) -> str | None:
+    """Return a QM3-qcdsearch-* token from ``raw`` when present."""
+    match = _CDSID_RE.search(raw or "")
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _extract_cdsid_from_html(raw_text: str) -> str | None:
+    """Extract cdsid from NCBI Batch CD-Search HTML UI fallbacks."""
+    text = raw_text or ""
+    for pattern in (_HTML_ID_CDSID_RE, _HTML_CTRL_HANDLE_RE, _HTML_NAME_CDSID_RE):
+        match = pattern.search(text)
+        if not match:
+            continue
+        candidate = _extract_cdsid_candidate(match.group(1).strip())
+        if candidate:
+            return candidate
+    # Last-resort scan of the whole document for a QM3 token (never invents).
+    return _extract_cdsid_candidate(text)
+
+
 def parse_status_text(raw_text: str) -> dict[str, Any]:
-    """Parse Batch CD-Search status/text response for ``cdsid`` and ``status``."""
+    """Parse Batch CD-Search status/text (or HTML UI) for ``cdsid`` and ``status``.
+
+    Text formats::
+
+        #cdsid\\tQM3-qcdsearch-...
+        #status\\t3\\tmsg\\tJob is still running
+        #status\\t0
+
+    When a completed job also emits a warning status line, keep the numeric
+    status and record every status value in ``status_lines``::
+
+        #status\\t0
+        #status\\tWarning: Too many queries.\\tmsg\\t...
+
+    HTML fallbacks (when NCBI returns the UI instead of text/plain)::
+
+        <td id="id_cdsid" ...>QM3-qcdsearch-...</td>
+        var ctrlHandle = "QM3-qcdsearch-...";
+        <input name="cdsid" value="QM3-qcdsearch-...">
+    """
     cdsid: str | None = None
     status: int | None = None
     extras: dict[str, str] = {}
+    status_lines: list[str] = []
     for line in (raw_text or "").splitlines():
         line = line.strip()
         if not line.startswith("#"):
@@ -104,13 +171,25 @@ def parse_status_text(raw_text: str) -> dict[str, Any]:
         value = value.strip()
         extras[key] = value
         if key == "cdsid":
-            cdsid = value
+            cdsid = _extract_cdsid_candidate(value) or (value or None)
         elif key == "status":
-            try:
-                status = int(value)
-            except ValueError:
-                status = None
-    return {"cdsid": cdsid, "status": status, "fields": extras}
+            # Preserve every status line (numeric completion + later warnings).
+            status_lines.append(value)
+            # Multi-field: "#status\t3\tmsg\tJob is still running"
+            token = value.split("\t", 1)[0].strip().split(None, 1)[0] if value else ""
+            if token.isdigit() or (token.startswith("-") and token[1:].isdigit()):
+                status = int(token)
+            # Non-numeric warning lines must not overwrite an existing numeric status.
+
+    if not cdsid:
+        cdsid = _extract_cdsid_from_html(raw_text or "")
+
+    return {
+        "cdsid": cdsid,
+        "status": status,
+        "fields": extras,
+        "status_lines": status_lines,
+    }
 
 
 def parse_hits_text(raw_text: str) -> list[dict[str, str]]:
@@ -293,6 +372,8 @@ def submit_search(
         "maxhit": maxhit,
         "filter": "true",
         "evalue": evalue,
+        # Without tdata, NCBI often returns the HTML UI instead of #cdsid text.
+        "tdata": "hits",
     }
     result = _get_text(
         endpoint_name="submit_search",
@@ -308,6 +389,7 @@ def submit_search(
         raw_text = str(result.data.get("raw_text") or "")
     parsed = parse_status_text(raw_text)
     if not parsed.get("cdsid"):
+        preview = _raw_preview(raw_text)
         return _tool_result(
             endpoint_name="submit_search",
             gene_symbol=gene_symbol or query_id,
@@ -317,7 +399,10 @@ def submit_search(
             status_code=result.status_code,
             data={"raw_text": raw_text, "parsed": parsed},
             error_type="parse_error",
-            error_message="Could not parse cdsid from CDD submit response",
+            error_message=(
+                "Could not parse cdsid from CDD submit response"
+                + (f" (preview: {preview})" if preview else "")
+            ),
         )
     return _tool_result(
         endpoint_name="submit_search",
@@ -345,7 +430,7 @@ def poll_status(
     """Poll Batch CD-Search status for an existing ``cdsid``."""
     cfg = settings or get_settings()
     sid = cdsid.strip()
-    params = {"cdsid": sid}
+    params = {"cdsid": sid, "tdata": "hits"}
     result = _get_text(
         endpoint_name="poll_status",
         gene_symbol=gene_symbol or sid,

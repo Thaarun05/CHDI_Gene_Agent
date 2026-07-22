@@ -15,11 +15,15 @@ Build links::
 
 For SREBF2, the expected UniProt accession is ``Q12772``.
 
+Transient HTTP/server failures (5xx / Cloudflare 52x, timeouts, connection errors)
+are retried with a short backoff inside ``_request_json``.
+
 Never raises: all failures return :class:`~gene_dossier.models.ToolResult`.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -32,6 +36,13 @@ SOURCE_NAME = "Reactome"
 CONTENT_SERVICE_BASE = "https://reactome.org/ContentService"
 DETAIL_BASE = "https://reactome.org/content/detail"
 BROWSER_BASE = "https://reactome.org/PathwayBrowser/#"
+
+# Conservative defaults for transient Reactome / edge soft-fails.
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_SLEEP_SECONDS = 1.0
+TRANSIENT_HTTP_STATUS_CODES = frozenset(
+    {500, 502, 503, 504, 520, 521, 522, 523, 524}
+)
 
 
 def _tool_result(
@@ -127,7 +138,36 @@ def summarize_pathway_detail(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _request_json(
+def _attempt_record(*, attempt: int, result: ToolResult) -> dict[str, Any]:
+    """Serialize one ContentService attempt for debugging."""
+    return {
+        "attempt": attempt,
+        "success": result.success,
+        "error_type": result.error_type,
+        "error_message": result.error_message,
+        "status_code": result.status_code,
+        "request_url": result.request_url,
+        "data": result.data,
+    }
+
+
+def _is_transient_failure(result: ToolResult) -> bool:
+    """True for retryable Reactome transport / server soft-fails."""
+    if result.success:
+        return False
+    if result.error_type == "timeout":
+        return True
+    if result.error_type != "http_error":
+        return False
+    if result.status_code in TRANSIENT_HTTP_STATUS_CODES:
+        return True
+    # Connection / transport failures from httpx often have no status code.
+    if result.status_code is None:
+        return True
+    return False
+
+
+def _request_json_once(
     *,
     endpoint_name: str,
     gene_symbol: str,
@@ -135,7 +175,7 @@ def _request_json(
     request_params: dict[str, Any],
     settings: Settings,
 ) -> ToolResult:
-    """GET a Reactome ContentService path and return :class:`ToolResult`."""
+    """GET a Reactome ContentService path once and return :class:`ToolResult`."""
     url = f"{CONTENT_SERVICE_BASE}/{path.lstrip('/')}"
     headers = {"Accept": "application/json"}
     try:
@@ -199,10 +239,71 @@ def _request_json(
         )
 
 
+def _request_json(
+    *,
+    endpoint_name: str,
+    gene_symbol: str,
+    path: str,
+    request_params: dict[str, Any],
+    settings: Settings,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_RETRY_SLEEP_SECONDS,
+) -> ToolResult:
+    """GET with conservative retry for transient HTTP/server failures."""
+    attempts_allowed = max(1, int(max_attempts))
+    sleep_seconds = max(0.0, float(retry_sleep_seconds))
+    attempts: list[dict[str, Any]] = []
+    result: ToolResult | None = None
+
+    for attempt in range(1, attempts_allowed + 1):
+        result = _request_json_once(
+            endpoint_name=endpoint_name,
+            gene_symbol=gene_symbol,
+            path=path,
+            request_params=request_params,
+            settings=settings,
+        )
+        attempts.append(_attempt_record(attempt=attempt, result=result))
+        if result.success:
+            # Keep successful payload shape unchanged for normalizers.
+            if len(attempts) > 1:
+                return result.model_copy(
+                    update={
+                        "request_params": {
+                            **result.request_params,
+                            "request_attempts": attempts,
+                        }
+                    }
+                )
+            return result
+        if not _is_transient_failure(result) or attempt >= attempts_allowed:
+            if len(attempts) > 1:
+                return result.model_copy(
+                    update={
+                        "request_params": {
+                            **result.request_params,
+                            "request_attempts": attempts,
+                        },
+                        "data": {
+                            "payload": result.data,
+                            "request_attempts": attempts,
+                        },
+                    }
+                )
+            return result
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+    assert result is not None
+    return result
+
+
 def pathways_by_uniprot(
     uniprot_accession: str,
     *,
     gene_symbol: str = "",
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_RETRY_SLEEP_SECONDS,
     settings: Settings | None = None,
 ) -> ToolResult:
     """Fetch Reactome pathways mapped to a UniProt accession.
@@ -211,14 +312,30 @@ def pathways_by_uniprot(
     """
     cfg = settings or get_settings()
     accession = uniprot_accession.strip()
+    if not accession:
+        return _tool_result(
+            endpoint_name="pathways_by_uniprot",
+            gene_symbol=gene_symbol,
+            request_url=f"{CONTENT_SERVICE_BASE}/data/mapping/UniProt/",
+            request_params={"uniprot_accession": uniprot_accession},
+            success=False,
+            error_type="invalid_request",
+            error_message="uniprot_accession is required",
+        )
     path = f"data/mapping/UniProt/{quote(accession, safe='')}/pathways"
-    params = {"uniprot_accession": accession}
+    params = {
+        "uniprot_accession": accession,
+        "max_attempts": max(1, int(max_attempts)),
+        "retry_sleep_seconds": max(0.0, float(retry_sleep_seconds)),
+    }
     return _request_json(
         endpoint_name="pathways_by_uniprot",
         gene_symbol=gene_symbol or accession,
         path=path,
         request_params=params,
         settings=cfg,
+        max_attempts=max_attempts,
+        retry_sleep_seconds=retry_sleep_seconds,
     )
 
 
@@ -226,26 +343,61 @@ def pathway_detail(
     st_id: str,
     *,
     gene_symbol: str = "",
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_RETRY_SLEEP_SECONDS,
     settings: Settings | None = None,
 ) -> ToolResult:
     """Fetch Reactome pathway detail for a stable ID (e.g. ``R-HSA-1655829``)."""
     cfg = settings or get_settings()
     stable_id = st_id.strip()
+    if not stable_id:
+        return _tool_result(
+            endpoint_name="pathway_detail",
+            gene_symbol=gene_symbol,
+            request_url=f"{CONTENT_SERVICE_BASE}/data/query/",
+            request_params={"st_id": st_id},
+            success=False,
+            error_type="invalid_request",
+            error_message="st_id is required",
+        )
     path = f"data/query/{quote(stable_id, safe='')}"
-    params = {"st_id": stable_id}
+    params = {
+        "st_id": stable_id,
+        "max_attempts": max(1, int(max_attempts)),
+        "retry_sleep_seconds": max(0.0, float(retry_sleep_seconds)),
+    }
     return _request_json(
         endpoint_name="pathway_detail",
         gene_symbol=gene_symbol or stable_id,
         path=path,
         request_params=params,
         settings=cfg,
+        max_attempts=max_attempts,
+        retry_sleep_seconds=retry_sleep_seconds,
     )
+
+
+def _unwrap_request_payload(
+    result: ToolResult,
+) -> tuple[Any, list[dict[str, Any]] | None]:
+    """Split retry wrapper from a ToolResult data payload when present."""
+    attempts = result.request_params.get("request_attempts")
+    if isinstance(attempts, list):
+        # Success-after-retry keeps raw payload in data; attempts live in params.
+        if isinstance(result.data, dict) and "request_attempts" in result.data:
+            return result.data.get("payload"), attempts
+        return result.data, attempts
+    if isinstance(result.data, dict) and "request_attempts" in result.data:
+        return result.data.get("payload"), result.data.get("request_attempts")
+    return result.data, None
 
 
 def fetch_pathways(
     uniprot_accession: str,
     *,
     gene_symbol: str = "",
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_RETRY_SLEEP_SECONDS,
     settings: Settings | None = None,
 ) -> ToolResult:
     """Fetch pathways for a UniProt accession and attach light summaries + links.
@@ -260,14 +412,37 @@ def fetch_pathways(
           "pathway_count": N,
         }
 
+    When retries occurred, ``request_attempts`` is also included for debugging.
+
     Never raises.
     """
     cfg = settings or get_settings()
     accession = uniprot_accession.strip()
+    if not accession:
+        return _tool_result(
+            endpoint_name="fetch_pathways",
+            gene_symbol=gene_symbol,
+            request_url=f"{CONTENT_SERVICE_BASE}/data/mapping/UniProt/",
+            request_params={"uniprot_accession": uniprot_accession},
+            success=False,
+            error_type="invalid_request",
+            error_message="uniprot_accession is required",
+        )
     result = pathways_by_uniprot(
-        accession, gene_symbol=gene_symbol, settings=cfg
+        accession,
+        gene_symbol=gene_symbol,
+        max_attempts=max_attempts,
+        retry_sleep_seconds=retry_sleep_seconds,
+        settings=cfg,
     )
+    payload, attempts = _unwrap_request_payload(result)
     if not result.success:
+        fail_data: dict[str, Any] = {
+            "uniprot_accession": accession,
+            "pathways": payload,
+        }
+        if attempts is not None:
+            fail_data["request_attempts"] = attempts
         return _tool_result(
             endpoint_name="fetch_pathways",
             gene_symbol=gene_symbol or accession,
@@ -275,17 +450,26 @@ def fetch_pathways(
             request_params=result.request_params,
             success=False,
             status_code=result.status_code,
-            data={"uniprot_accession": accession, "pathways": result.data},
+            data=fail_data,
             error_type=result.error_type or "pathways_failed",
             error_message=result.error_message or "Reactome pathways fetch failed",
         )
 
-    raw = result.data if isinstance(result.data, list) else []
+    raw = payload if isinstance(payload, list) else []
     summaries = [
         summarize_pathway(row, uniprot_accession=accession)
         for row in raw
         if isinstance(row, dict)
     ]
+    data: dict[str, Any] = {
+        "uniprot_accession": accession,
+        "gene_symbol": gene_symbol or None,
+        "pathways": payload,
+        "pathway_summaries": summaries,
+        "pathway_count": len(summaries),
+    }
+    if attempts is not None:
+        data["request_attempts"] = attempts
     return _tool_result(
         endpoint_name="fetch_pathways",
         gene_symbol=gene_symbol or accession,
@@ -293,13 +477,7 @@ def fetch_pathways(
         request_params=result.request_params,
         success=True,
         status_code=result.status_code,
-        data={
-            "uniprot_accession": accession,
-            "gene_symbol": gene_symbol or None,
-            "pathways": result.data,
-            "pathway_summaries": summaries,
-            "pathway_count": len(summaries),
-        },
+        data=data,
     )
 
 
@@ -308,6 +486,9 @@ __all__ = [
     "CONTENT_SERVICE_BASE",
     "DETAIL_BASE",
     "BROWSER_BASE",
+    "DEFAULT_MAX_ATTEMPTS",
+    "DEFAULT_RETRY_SLEEP_SECONDS",
+    "TRANSIENT_HTTP_STATUS_CODES",
     "pathway_detail_url",
     "pathway_browser_url",
     "summarize_pathway",

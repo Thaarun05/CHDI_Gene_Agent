@@ -13,7 +13,8 @@ Key endpoints (validated)::
 
 NOTE: Parse rows where ``gene_id`` / ``id`` matches the requested symbol
 (case-insensitive). Prefer exact matches by default to avoid short-symbol
-false positives.
+false positives. Downloads send polite ``User-Agent`` / ``Accept`` / ``Referer``
+headers only; HTTP 403 is reported as ``access_forbidden`` (no access bypass).
 
 Never raises: all failures return :class:`~gene_dossier.models.ToolResult`.
 """
@@ -36,6 +37,15 @@ HUMAN_CSV_URL = (
 MOUSE_CSV_URL = (
     "https://brainrnaseq.org/wp-content/uploads/2022/09/fe-wp-dataset-120.csv"
 )
+
+# Polite identification only — not a browser spoof and not an access bypass.
+REQUEST_HEADERS = {
+    "User-Agent": "GeneDossier/0.1.0 (research; provenance-first gene dossier client)",
+    "Accept": "text/csv,text/plain,*/*;q=0.8",
+    "Referer": "https://brainrnaseq.org/",
+}
+SAFE_RESPONSE_HEADER_KEYS = ("content-type", "server", "cf-ray")
+RAW_TEXT_PREVIEW_LIMIT = 500
 
 SpeciesChoice = Literal["human", "mouse"]
 
@@ -177,25 +187,45 @@ def summarize_expression_row(
     }
 
 
+def _raw_text_preview(text: str, *, limit: int = RAW_TEXT_PREVIEW_LIMIT) -> str:
+    """Short whitespace-collapsed preview for soft-fail diagnostics."""
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _safe_response_headers(headers: Any) -> dict[str, str]:
+    """Keep a small, non-sensitive response-header subset for debugging."""
+    out: dict[str, str] = {}
+    if headers is None:
+        return out
+    for key in SAFE_RESPONSE_HEADER_KEYS:
+        value = headers.get(key)
+        if value is not None and str(value).strip():
+            out[key] = str(value)
+    return out
+
+
 def download_csv(
     species: SpeciesChoice = "human",
     *,
     gene_symbol: str = "",
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Download a BrainRNASeq CSV bulk file (raw text preserved)."""
+    """Download a BrainRNASeq CSV bulk file (raw text preserved on success)."""
     cfg = settings or get_settings()
     url = csv_url_for_species(species)
-    request_params = {"species": species, "url": url}
+    request_params = {
+        "species": species,
+        "url": url,
+        "request_headers": dict(REQUEST_HEADERS),
+    }
     try:
         with httpx.Client(timeout=cfg.http_timeout_seconds) as client:
-            response = client.get(url)
-        text = response.text
-        payload = {
-            "raw_csv": text,
-            "content_type": response.headers.get("content-type"),
-            "species": species,
-        }
+            response = client.get(url, headers=REQUEST_HEADERS)
+        content_type = response.headers.get("content-type")
+        response_headers = _safe_response_headers(response.headers)
         if response.is_success:
             return _tool_result(
                 endpoint_name="download_csv",
@@ -204,7 +234,36 @@ def download_csv(
                 request_params=request_params,
                 success=True,
                 status_code=response.status_code,
-                data=payload,
+                data={
+                    "raw_csv": response.text,
+                    "content_type": content_type,
+                    "response_headers": response_headers,
+                    "species": species,
+                },
+            )
+
+        preview = _raw_text_preview(response.text)
+        fail_data = {
+            "species": species,
+            "content_type": content_type,
+            "response_headers": response_headers,
+            "raw_text_preview": preview,
+        }
+        if response.status_code == 403:
+            return _tool_result(
+                endpoint_name="download_csv",
+                gene_symbol=gene_symbol or species,
+                request_url=url,
+                request_params=request_params,
+                success=False,
+                status_code=403,
+                data=fail_data,
+                error_type="access_forbidden",
+                error_message=(
+                    "BrainRNASeq public CSV endpoint returned HTTP 403 Forbidden; "
+                    "the published wp-content CSV appears inaccessible to automated "
+                    "clients (access forbidden / unavailable)."
+                ),
             )
         return _tool_result(
             endpoint_name="download_csv",
@@ -213,7 +272,7 @@ def download_csv(
             request_params=request_params,
             success=False,
             status_code=response.status_code,
-            data=payload,
+            data=fail_data,
             error_type="http_error",
             error_message=f"HTTP {response.status_code}",
         )
@@ -330,6 +389,7 @@ __all__ = [
     "SOURCE_NAME",
     "HUMAN_CSV_URL",
     "MOUSE_CSV_URL",
+    "REQUEST_HEADERS",
     "HUMAN_CELLTYPE_PREFIXES",
     "MOUSE_CELLTYPE_PREFIXES",
     "csv_url_for_species",

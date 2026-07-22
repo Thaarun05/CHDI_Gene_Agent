@@ -638,6 +638,10 @@ def extract_gene_ids_from_tool_result(
         gencode = data.get("gencode_id")
         if gencode:
             updated["gtex_gencode_id"] = str(gencode)
+            if "ensembl_id" not in updated and "." in str(gencode):
+                updated["ensembl_id"] = str(gencode).split(".", 1)[0]
+            elif "ensembl_id" not in updated and str(gencode).startswith("ENSG"):
+                updated["ensembl_id"] = str(gencode)
     elif source == "UCSC":
         region = data.get("region") or data.get("selected_region")
         if region:
@@ -989,6 +993,12 @@ def _coverage_updates_from_state(state: DossierState) -> list[SourceCoverageResu
         sections = list(src_def.report_sections) if src_def else []
         if result.error_type == "requires_key":
             status = SourceStatus.requires_key
+        elif result.error_type in {
+            "access_forbidden",
+            "source_unavailable",
+            "endpoint_unavailable",
+        }:
+            status = SourceStatus.deferred
         elif result.success and counts.get(result.source_name, 0) > 0:
             status = SourceStatus.success
         elif result.success:

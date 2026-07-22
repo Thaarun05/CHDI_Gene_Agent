@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from gene_dossier.config import Settings, get_settings
-from gene_dossier.models import ToolResult
+from gene_dossier.models import SourceStatus, ToolResult
 from gene_dossier.workflow import (
     _client_opentargets,
     _client_reactome,
+    _coverage_updates_from_state,
     extract_gene_ids_from_tool_result,
     node_index_evidence_in_chroma,
     node_resolve_gene_identity,
@@ -96,6 +97,21 @@ def test_extract_gene_ids_from_identity_tool_results():
     assert gene_ids["ensembl_id"] == "ENSG00000198911"
     assert gene_ids["uniprot_accession"] == "Q12772"
     assert gene_ids["official_symbol"] == "SREBF2"
+
+
+def test_extract_gene_ids_from_gtex_derives_ensembl_id():
+    """GTEx GENCODE versioned IDs should backfill bare ensembl_id when missing."""
+    tr = ToolResult(
+        source_name="GTEx",
+        endpoint_name="median_expression",
+        success=True,
+        gene_symbol="SREBF2",
+        request_url="https://example.test/gtex",
+        data={"gencode_id": "ENSG00000198911.11"},
+    )
+    gene_ids = extract_gene_ids_from_tool_result(tr, {})
+    assert gene_ids["gtex_gencode_id"] == "ENSG00000198911.11"
+    assert gene_ids["ensembl_id"] == "ENSG00000198911"
 
 
 def test_preloaded_identity_results_populate_gene_ids_offline():
@@ -207,3 +223,39 @@ def test_node_index_evidence_in_chroma_soft_fails_without_crash():
         or n.startswith("Chroma indexing failed:")
         for n in notes
     )
+
+
+def test_coverage_access_forbidden_classified_as_deferred():
+    """BrainRNASeq-style access_forbidden should be deferred, not failed."""
+    result = ToolResult(
+        source_name="BrainRNASeq",
+        endpoint_name="fetch_gene_expression",
+        success=False,
+        gene_symbol="SREBF2",
+        request_url=(
+            "https://brainrnaseq.org/wp-content/uploads/2022/09/fe-wp-dataset-124.csv"
+        ),
+        status_code=403,
+        data={
+            "species": "human",
+            "content_type": "text/html; charset=UTF-8",
+            "raw_text_preview": "Just a moment...",
+        },
+        error_type="access_forbidden",
+        error_message="HTTP 403 Forbidden",
+    )
+    updates = _coverage_updates_from_state(
+        {
+            "dossier_run_id": "cov-access-forbidden",
+            "gene_symbol": "SREBF2",
+            "tool_results": [result],
+            "evidence_records": [],
+            "raw_artifacts": [],
+        }
+    )
+    assert len(updates) == 1
+    row = updates[0]
+    assert row.source_name == "BrainRNASeq"
+    assert row.status == SourceStatus.deferred
+    assert row.evidence_record_count == 0
+    assert row.error_message == "HTTP 403 Forbidden"
