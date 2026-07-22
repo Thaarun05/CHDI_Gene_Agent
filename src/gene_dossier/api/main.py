@@ -274,6 +274,15 @@ def start_dossier_run(
     if not gene:
         raise HTTPException(status_code=422, detail="gene_symbol is required")
 
+    if not body.wait and not body.persist_db:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "persist_db=false is only supported with wait=true because "
+                "background runs cannot be polled without DB persistence."
+            ),
+        )
+
     dossier_run_id = (body.run_id or new_id()).strip()
     if body.persist_db:
         init_db()
