@@ -5,13 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 
 from gene_dossier.config import Settings, get_settings
-from gene_dossier.models import SourceStatus, ToolResult
+from gene_dossier.models import (
+    AssertionType,
+    EvidenceGrade,
+    EvidenceRecord,
+    ReportSection,
+    SourceStatus,
+    SourceType,
+    ToolResult,
+)
+from gene_dossier.source_ids import make_source_id
 from gene_dossier.workflow import (
     _client_opentargets,
     _client_reactome,
     _coverage_updates_from_state,
     extract_gene_ids_from_tool_result,
     node_index_evidence_in_chroma,
+    node_render_outputs,
     node_resolve_gene_identity,
     run_gene_dossier_full_api_pass,
 )
@@ -259,3 +269,98 @@ def test_coverage_access_forbidden_classified_as_deferred():
     assert row.status == SourceStatus.deferred
     assert row.evidence_record_count == 0
     assert row.error_message == "HTTP 403 Forbidden"
+
+
+def test_node_render_outputs_forwards_sections_to_rancho(tmp_path: Path, monkeypatch):
+    """Finalized state['sections'] must reach Rancho builder unchanged."""
+    settings = Settings()
+    source_id = make_source_id(
+        "NCBI Gene", "SREBF2", AssertionType.gene_identity, "6721"
+    )
+    evidence_records = [
+        EvidenceRecord(
+            source_id=source_id,
+            dossier_run_id="wf-rancho-wire",
+            gene_symbol="SREBF2",
+            section="General",
+            source_name="NCBI Gene",
+            source_type=SourceType.curated_database,
+            assertion_type=AssertionType.gene_identity,
+            fact_type="entrez_gene_id",
+            evidence_grade=EvidenceGrade.A,
+            display_text="SREBF2 Entrez Gene ID is 6721.",
+        )
+    ]
+    sections = [
+        ReportSection(
+            dossier_run_id="wf-rancho-wire",
+            section_name="General",
+            content_markdown="Finalized synthesis narrative.",
+            source_ids=[source_id],
+            status="complete",
+        )
+    ]
+    state = {
+        "gene_symbol": "SREBF2",
+        "dossier_run_id": "wf-rancho-wire",
+        "gene_ids": {"chromosome": "22"},
+        "evidence_records": evidence_records,
+        "sections": sections,
+        "coverage": [],
+        "claims": [],
+        "verification_results": [],
+        "errors": [],
+        "output_paths": {},
+    }
+
+    captured: dict = {}
+
+    def fake_build_and_write_coverage(*args, **kwargs):
+        return [], {"markdown": tmp_path / "coverage.md", "json": tmp_path / "coverage.json"}
+
+    def fake_write_dossier_report(**kwargs):
+        return {
+            "markdown": tmp_path / "debug.md",
+            "json": tmp_path / "debug.json",
+        }
+
+    def fake_rancho_builder(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return object(), {"html": tmp_path / "rancho.html", "json": tmp_path / "rancho.json"}
+
+    monkeypatch.setattr(
+        "gene_dossier.workflow.build_and_write_coverage",
+        fake_build_and_write_coverage,
+    )
+    monkeypatch.setattr(
+        "gene_dossier.workflow.write_dossier_report",
+        fake_write_dossier_report,
+    )
+    monkeypatch.setattr(
+        "gene_dossier.workflow.build_and_write_rancho_report",
+        fake_rancho_builder,
+    )
+
+    node_render_outputs(
+        state,  # type: ignore[arg-type]
+        settings=settings,
+        output_dir=tmp_path,
+        write_rancho=True,
+        write_pdf=False,
+        persist_db=False,
+    )
+    assert captured["report_sections"] is sections
+    assert captured["evidence_records"] is evidence_records
+    assert captured["write_pdf"] is False
+
+    state["sections"] = []
+    node_render_outputs(
+        state,  # type: ignore[arg-type]
+        settings=settings,
+        output_dir=tmp_path,
+        write_rancho=True,
+        write_pdf=False,
+        persist_db=False,
+    )
+    assert captured["report_sections"] is None

@@ -1081,6 +1081,7 @@ def node_render_outputs(
                 dossier_run_id=state["dossier_run_id"],
                 gene_symbol=state["gene_symbol"],
                 evidence_records=state.get("evidence_records") or [],
+                report_sections=state.get("sections") or None,
                 curator="Gene Dossier Platform",
                 report_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 chromosome=str(chromosome) if chromosome else None,

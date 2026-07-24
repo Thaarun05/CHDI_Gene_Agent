@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from gene_dossier.models import (
     AssertionType,
     EvidenceGrade,
     EvidenceRecord,
+    ReportSection,
     SourceType,
 )
 from gene_dossier.report_schema import (
@@ -19,6 +22,7 @@ from gene_dossier.report_schema import (
     infer_chromosome,
     iter_toc_entries,
     resolve_report_slot,
+    resolve_report_slot_for_section,
 )
 from gene_dossier.source_ids import make_source_id
 
@@ -52,6 +56,72 @@ def _ev(
         display_text=display_text,
         value=value or {},
     )
+
+
+def _report_section(
+    *,
+    section_name: str,
+    content_markdown: str = "**Section**\n\nNarrative.",
+    source_ids: list[str] | None = None,
+    status: str = "llm",
+    dossier_run_id: str = "run-schema",
+) -> ReportSection:
+    return ReportSection(
+        dossier_run_id=dossier_run_id,
+        section_name=section_name,
+        content_markdown=content_markdown,
+        source_ids=list(source_ids or []),
+        status=status,
+    )
+
+
+CANONICAL_SYNTHESIS_SECTION_NAMES: list[str] = [
+    "General gene information",
+    "Gene aliases and identifiers",
+    "Conservation / orthologs",
+    "Known structure / domains",
+    "AlphaFold / PDBe / CDD",
+    "Homologues",
+    "Tissue and cell expression",
+    "GEO perturbations",
+    "Transcription factors",
+    "Protein-protein interactions",
+    "CTD perturbations",
+    "Chemical tools",
+    "eQTLs",
+    "ClinVar / OMIM / Open Targets / SNPs",
+    "Pathways",
+    "Knockouts / model phenotypes",
+    "Major labs / literature",
+    "Antibodies",
+    "Patents",
+    "NIH/ERC grants",
+    "Missing / deferred / manual sources",
+    "Verification warnings",
+]
+
+CANONICAL_CONTENT_SLOT_CASES: list[tuple[str, str]] = [
+    ("General gene information", "1"),
+    ("Gene aliases and identifiers", "1a"),
+    ("Conservation / orthologs", "1b"),
+    ("Known structure / domains", "1c"),
+    ("AlphaFold / PDBe / CDD", "1d"),
+    ("Homologues", "1e"),
+    ("Tissue and cell expression", "2"),
+    ("GEO perturbations", "3a"),
+    ("Transcription factors", "4a"),
+    ("Protein-protein interactions", "5"),
+    ("CTD perturbations", "6a"),
+    ("Chemical tools", "7"),
+    ("eQTLs", "8a"),
+    ("ClinVar / OMIM / Open Targets / SNPs", "9"),
+    ("Pathways", "10a"),
+    ("Knockouts / model phenotypes", "11"),
+    ("Major labs / literature", "12"),
+    ("Antibodies", "13"),
+    ("Patents", "14"),
+    ("NIH/ERC grants", "15"),
+]
 
 
 # --------------------------------------------------------------------------------------
@@ -265,3 +335,349 @@ def test_cover_lines_order():
     assert "Prepared for the CHDI Foundation" in lines
     assert any("Ada" in line for line in lines)
     assert any("July 22, 2026" in line for line in lines)
+
+
+# --------------------------------------------------------------------------------------
+# Synthesized ReportSection → Rancho slots
+# --------------------------------------------------------------------------------------
+@pytest.mark.parametrize("section_name,expected_slot", CANONICAL_CONTENT_SLOT_CASES)
+def test_resolve_report_slot_for_section_canonical_names(
+    section_name: str, expected_slot: str
+):
+    slot = resolve_report_slot_for_section(section_name)
+    assert slot is not None
+    assert slot.slot_id == expected_slot
+
+
+def test_major_level_narrative_tissue_expression():
+    markdown = (
+        "**Tissue and cell expression** (SREBF2)\n\n"
+        "Expression narrative from synthesis.\n\n"
+        "**Key findings**\n\n- Cortex reported.\n"
+    )
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Tissue and cell expression",
+                content_markdown=markdown,
+                source_ids=["sid-synth-expr"],
+                status="llm",
+            )
+        ],
+    )
+    major2 = next(s for s in doc.sections if s.key == "2")
+    assert major2.narrative_markdown is not None
+    assert "Expression narrative from synthesis." in major2.narrative_markdown
+    assert major2.synthesis_status == "llm"
+    for sub in major2.subsections:
+        assert sub.narrative_markdown is None
+        assert sub.synthesis_status is None
+    assert doc.unmapped_report_sections == []
+
+
+def test_subsection_narrative_pathways():
+    markdown = "**Pathways**\n\nPathway narrative.\n"
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=markdown,
+                source_ids=["sid-synth-path"],
+                status="llm",
+            )
+        ],
+    )
+    major10 = next(s for s in doc.sections if s.key == "10")
+    sub_a = next(s for s in major10.subsections if s.key == "a")
+    assert sub_a.narrative_markdown is not None
+    assert "Pathway narrative." in sub_a.narrative_markdown
+    assert sub_a.synthesis_status == "llm"
+    assert major10.narrative_markdown is None
+    assert major10.synthesis_status is None
+
+
+def test_evidence_preserved_with_major_level_synthesis():
+    evidence = _ev(
+        source_name="GTEx",
+        assertion_type=AssertionType.expression,
+        key="median",
+        display_text="GTEx median expression in cortex.",
+        section="Tissue expression",
+    )
+    synth_ids = ["sid-synth-a", "sid-synth-b"]
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Tissue and cell expression",
+                content_markdown="**Tissue**\n\nSynthesized tissue narrative.\n",
+                source_ids=synth_ids,
+                status="llm",
+            )
+        ],
+    )
+    major2 = next(s for s in doc.sections if s.key == "2")
+    sub_2a = next(s for s in major2.subsections if s.key == "a")
+
+    assert major2.narrative_markdown is not None
+    assert "Synthesized tissue narrative." in major2.narrative_markdown
+    assert major2.synthesis_status == "llm"
+    for sid in synth_ids:
+        assert sid in major2.source_ids
+
+    assert sub_2a.status == "populated"
+    assert any((b.text or "").startswith("GTEx median") for b in sub_2a.blocks)
+    assert evidence.source_id in sub_2a.source_ids
+    assert evidence.id in sub_2a.evidence_record_ids
+    for sid in synth_ids:
+        assert sid not in sub_2a.source_ids
+        assert sid not in sub_2a.evidence_record_ids
+        assert sid not in major2.evidence_record_ids
+
+
+def test_source_id_order_preserving_dedupe():
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="Q12772:pathway",
+        display_text="Cholesterol biosynthesis pathway.",
+        section="Pathways",
+    )
+    # Distinct IDs with intentional overlap/repeat against the evidence source_id.
+    wiki_id = "wikipathways:SREBF2:pathway"
+    synth_ids = [
+        evidence.source_id,
+        wiki_id,
+        wiki_id,
+        "sid-synth-extra",
+    ]
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown="**Pathways**\n\nPathway prose.\n",
+                source_ids=synth_ids,
+                status="llm",
+            )
+        ],
+    )
+    major10 = next(s for s in doc.sections if s.key == "10")
+    sub_a = next(s for s in major10.subsections if s.key == "a")
+
+    expected = [evidence.source_id, wiki_id, "sid-synth-extra"]
+    assert sub_a.source_ids == expected
+    assert major10.source_ids == expected
+    assert sub_a.evidence_record_ids == [evidence.id]
+    assert wiki_id not in sub_a.evidence_record_ids
+    assert "sid-synth-extra" not in major10.evidence_record_ids
+
+
+def test_report_sections_omitted_equals_empty_list():
+    records = [
+        _ev(
+            source_name="NCBI Gene",
+            assertion_type=AssertionType.gene_identity,
+            key="6721",
+            display_text="SREBF2 Entrez Gene ID is 6721.",
+            grade=EvidenceGrade.A,
+        )
+    ]
+    doc_omitted = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=records,
+        chromosome="22",
+    )
+    doc_empty = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=records,
+        report_sections=[],
+        chromosome="22",
+    )
+    assert doc_omitted.model_dump(mode="json") == doc_empty.model_dump(mode="json")
+    sec1 = doc_omitted.sections[0]
+    aliases = next(s for s in sec1.subsections if s.key == "a")
+    assert aliases.status == "populated"
+    assert aliases.blocks
+    assert aliases.narrative_markdown is None
+    assert aliases.synthesis_status is None
+
+
+def test_meta_sections_retained():
+    sections = [
+        _report_section(
+            section_name="Missing / deferred / manual sources",
+            content_markdown="_Deferred meta note._",
+            status="deferred",
+            source_ids=["sid-meta-1"],
+        ),
+        _report_section(
+            section_name="Verification warnings",
+            content_markdown="_Verification meta note._",
+            status="deferred",
+            source_ids=["sid-meta-2"],
+        ),
+    ]
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=sections,
+    )
+    assert len(doc.unmapped_report_sections) == 2
+    by_name = {u.section_name: u for u in doc.unmapped_report_sections}
+    for name, md, sid in [
+        ("Missing / deferred / manual sources", "_Deferred meta note._", "sid-meta-1"),
+        ("Verification warnings", "_Verification meta note._", "sid-meta-2"),
+    ]:
+        entry = by_name[name]
+        assert entry.reason == "meta_section"
+        assert entry.attempted_slot is None
+        assert entry.content_markdown == md
+        assert entry.status == "deferred"
+        assert entry.source_ids == [sid]
+    for major in doc.sections:
+        assert major.narrative_markdown is None
+        assert major.synthesis_status is None
+        for sub in major.subsections:
+            assert sub.narrative_markdown is None
+            assert sub.synthesis_status is None
+
+
+def test_unknown_section_retained():
+    unknown = _report_section(
+        section_name="Completely Unknown Section",
+        content_markdown="Should not land on Rancho body.",
+        source_ids=["sid-unknown"],
+        status="llm",
+    )
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[unknown],
+    )
+    assert len(doc.unmapped_report_sections) == 1
+    entry = doc.unmapped_report_sections[0]
+    assert entry.reason == "unmapped_name"
+    assert entry.section_name == "Completely Unknown Section"
+    assert entry.content_markdown == "Should not land on Rancho body."
+    assert entry.source_ids == ["sid-unknown"]
+    assert entry.status == "llm"
+    for major in doc.sections:
+        assert major.narrative_markdown is None
+        for sub in major.subsections:
+            assert sub.narrative_markdown is None
+
+
+def test_slot_collision_first_writer_wins():
+    first = _report_section(
+        section_name="Tissue and cell expression",
+        content_markdown="First narrative wins.",
+        source_ids=["sid-first"],
+        status="llm",
+    )
+    second = _report_section(
+        section_name="Tissue and cell expression",
+        content_markdown="Second narrative must not overwrite.",
+        source_ids=["sid-second"],
+        status="deterministic",
+    )
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[first, second],
+    )
+    major2 = next(s for s in doc.sections if s.key == "2")
+    assert major2.narrative_markdown is not None
+    assert "First narrative wins." in major2.narrative_markdown
+    assert "Second narrative" not in major2.narrative_markdown
+    assert major2.synthesis_status == "llm"
+    assert "sid-first" in major2.source_ids
+    assert "sid-second" not in major2.source_ids
+
+    conflicts = [u for u in doc.unmapped_report_sections if u.reason == "slot_conflict"]
+    assert len(conflicts) == 1
+    conflict = conflicts[0]
+    assert conflict.attempted_slot == "2"
+    assert conflict.content_markdown == "Second narrative must not overwrite."
+    assert conflict.source_ids == ["sid-second"]
+    assert conflict.status == "deterministic"
+
+
+@pytest.mark.parametrize("status", ["empty", "deferred"])
+def test_blank_narrative_remains_truthful(status: str):
+    evidence = _ev(
+        source_name="GTEx",
+        assertion_type=AssertionType.expression,
+        key=f"median-blank-{status}",
+        display_text="GTEx still present.",
+        section="Tissue expression",
+    )
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Tissue and cell expression",
+                content_markdown="   ",
+                source_ids=["sid-empty"],
+                status=status,
+            )
+        ],
+    )
+    major2 = next(s for s in doc.sections if s.key == "2")
+    sub_2a = next(s for s in major2.subsections if s.key == "a")
+    assert major2.narrative_markdown is None
+    assert major2.synthesis_status == status
+    assert sub_2a.status == "populated"
+    assert any("GTEx still present." in (b.text or "") for b in sub_2a.blocks)
+
+
+def test_all_canonical_chdi_sections_together():
+    assert len(CANONICAL_SYNTHESIS_SECTION_NAMES) == 22
+    report_sections = [
+        _report_section(
+            section_name=name,
+            content_markdown=f"**{name}**\n\nProse for {name}.\n",
+            source_ids=[f"sid-{i}"],
+            status="llm",
+        )
+        for i, name in enumerate(CANONICAL_SYNTHESIS_SECTION_NAMES)
+    ]
+    doc = build_report_document(
+        dossier_run_id="run-schema",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=report_sections,
+    )
+
+    mapped = 0
+    for major in doc.sections:
+        if major.synthesis_status is not None:
+            mapped += 1
+        for sub in major.subsections:
+            if sub.synthesis_status is not None:
+                mapped += 1
+    assert mapped == 20
+
+    reasons = [u.reason for u in doc.unmapped_report_sections]
+    assert reasons.count("meta_section") == 2
+    assert reasons.count("slot_conflict") == 0
+    assert reasons.count("unmapped_name") == 0
+    assert len(doc.unmapped_report_sections) == 2
+

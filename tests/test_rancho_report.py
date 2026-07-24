@@ -11,6 +11,7 @@ from gene_dossier.models import (
     AssertionType,
     EvidenceGrade,
     EvidenceRecord,
+    ReportSection,
     SourceType,
 )
 from gene_dossier.rancho_report import (
@@ -29,6 +30,50 @@ from gene_dossier.report_schema import (
     build_report_document,
 )
 from gene_dossier.source_ids import make_source_id
+
+
+def _report_section(
+    *,
+    section_name: str,
+    content_markdown: str = "**Section**\n\nNarrative marker.",
+    source_ids: list[str] | None = None,
+    status: str = "llm",
+    dossier_run_id: str = "rancho-narr",
+) -> ReportSection:
+    return ReportSection(
+        dossier_run_id=dossier_run_id,
+        section_name=section_name,
+        content_markdown=content_markdown,
+        source_ids=list(source_ids or []),
+        status=status,
+    )
+
+
+def _ev(
+    *,
+    source_name: str,
+    assertion_type: AssertionType,
+    key: str,
+    display_text: str,
+    section: str = "General",
+    fact_type: str = "fact",
+    grade: EvidenceGrade = EvidenceGrade.C,
+    dossier_run_id: str = "rancho-narr",
+    gene_symbol: str = "SREBF2",
+) -> EvidenceRecord:
+    return EvidenceRecord(
+        source_id=make_source_id(source_name, gene_symbol, assertion_type, key),
+        dossier_run_id=dossier_run_id,
+        gene_symbol=gene_symbol,
+        section=section,
+        source_name=source_name,
+        source_type=SourceType.curated_database,
+        assertion_type=assertion_type,
+        fact_type=fact_type,
+        evidence_grade=grade,
+        display_text=display_text,
+        value={},
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -508,3 +553,484 @@ def test_optional_endnotes_and_cover_logos_can_be_enabled(tmp_path: Path):
     html = paths["html"].read_text(encoding="utf-8")
     assert "Provenance endnotes" in html
     assert 'class="cover-logos"' in html
+
+
+# --------------------------------------------------------------------------------------
+# Synthesized narrative HTML rendering
+# --------------------------------------------------------------------------------------
+def test_major_level_narrative_renders_once():
+    marker = "UNIQUE_TISSUE_NARRATIVE_MARKER_XYZ"
+    markdown = (
+        "**Tissue and cell expression** (SREBF2)\n\n"
+        f"{marker}\n\n"
+        "**Key findings**\n\n"
+        "- Cortex expression is reported.\n\n"
+        "**Limitations**\n\n"
+        "- Transcript evidence does not prove protein abundance.\n"
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Tissue and cell expression",
+                content_markdown=markdown,
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc)
+    assert "2. Expression pattern by cell and tissue" in html
+    assert marker in html
+    assert html.count(marker) == 1
+    assert 'data-synthesis-status="llm"' in html
+    assert 'class="narrative-subheading key-findings"' in html
+    assert 'class="narrative-subheading limitations"' in html
+    # Duplicate synthesis title should not appear as another bold heading body line
+    assert "**<strong>Tissue and cell expression</strong>**" not in html
+    assert html.index(marker) < html.index("a. Tissue-specific information")
+    # Not copied into lettered subsections: subsection blocks empty → empty-notes only
+    sec2_start = html.index('id="section-2"')
+    sec3_start = html.index('id="section-3"')
+    sec2 = html[sec2_start:sec3_start]
+    assert sec2.count(marker) == 1
+    assert sec2.count('class="synthesized-narrative"') == 1
+
+
+def test_subsection_narrative_renders_in_pathways_slot():
+    marker = "UNIQUE_PATHWAYS_NARRATIVE_MARKER_ABC"
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=f"**Pathways**\n\n{marker}\n",
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc)
+    assert "a. Pathways associated with the gene" in html
+    assert marker in html
+    sec10_start = html.index('id="section-10"')
+    sec11_start = html.index('id="section-11"')
+    sec10 = html[sec10_start:sec11_start]
+    assert marker in sec10
+    assert 'data-synthesis-status="llm"' in sec10
+    heading_idx = sec10.index("a. Pathways associated with the gene")
+    narr_idx = sec10.index(marker)
+    assert heading_idx < narr_idx
+    # Major-level synthesized-narrative should not hold the pathways marker alone
+    # before the subsection heading
+    before_sub = sec10[:heading_idx]
+    assert marker not in before_sub
+
+
+def test_narrative_plus_evidence_rendering_order():
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="order-path",
+        display_text="UNIQUE_REACTOME_EVIDENCE_TEXT_ORDER",
+        section="Pathways",
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=(
+                    "**Pathways**\n\nUNIQUE_PATHWAYS_PROSE_BEFORE_EVIDENCE\n"
+                ),
+                source_ids=[evidence.source_id],
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc)
+    sec10 = html[html.index('id="section-10"') : html.index('id="section-11"')]
+    h = sec10.index("a. Pathways associated with the gene")
+    n = sec10.index("UNIQUE_PATHWAYS_PROSE_BEFORE_EVIDENCE")
+    s = sec10.index("Supporting evidence")
+    e = sec10.index("UNIQUE_REACTOME_EVIDENCE_TEXT_ORDER")
+    assert h < n < s < e
+    assert sec10.count("Supporting evidence") == 1
+    assert sec10.count("UNIQUE_REACTOME_EVIDENCE_TEXT_ORDER") == 1
+
+
+def test_evidence_only_backward_compatibility_no_supporting_wrapper():
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="compat-only",
+        display_text="UNIQUE_EVIDENCE_ONLY_PATHWAYS_TEXT",
+        section="Pathways",
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+    )
+    html = render_rancho_html(doc)
+    sec10 = html[html.index('id="section-10"') : html.index('id="section-11"')]
+    assert "UNIQUE_EVIDENCE_ONLY_PATHWAYS_TEXT" in sec10
+    assert "synthesized-narrative" not in sec10
+    assert "Supporting evidence" not in sec10
+    assert "No evidence available for this subsection" not in sec10
+
+
+def test_narrative_only_behavior_on_major_without_subsections():
+    marker = "UNIQUE_ANTIBODIES_NARRATIVE_ONLY"
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Antibodies",
+                content_markdown=f"**Antibodies**\n\n{marker}\n",
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc)
+    sec13 = html[html.index('id="section-13"') : html.index('id="section-14"')]
+    assert marker in sec13
+    assert "Supporting evidence" not in sec13
+    assert "No evidence available for this section" not in sec13
+
+
+def test_empty_slot_retains_truthful_message():
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+    )
+    html = render_rancho_html(doc)
+    sec13 = html[html.index('id="section-13"') : html.index('id="section-14"')]
+    assert "No evidence available for this section in the current dossier run." in sec13
+
+
+def test_safe_markdown_html_escaping():
+    markdown = (
+        "**Antibodies**\n\n"
+        '<script>alert("x")</script>\n'
+        "<img src=x onerror=alert(1)>\n"
+        "Normal **bold** content.\n\n"
+        "- first item\n"
+        "- second item\n\n"
+        "1. ordered item\n\n"
+        "## Safe heading\n"
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Antibodies",
+                content_markdown=markdown,
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc)
+    sec13 = html[html.index('id="section-13"') : html.index('id="section-14"')]
+    assert "<script>" not in sec13
+    assert '<img src=x onerror=alert(1)>' not in sec13
+    assert "&lt;script&gt;" in sec13
+    assert "&lt;img src=x onerror=alert(1)&gt;" in sec13
+    assert "<strong>bold</strong>" in sec13
+    assert "<ul>" in sec13 and "<li>first item</li>" in sec13
+    assert "<ol>" in sec13 and "<li>ordered item</li>" in sec13
+    assert 'class="narrative-subheading"' in sec13
+    assert "Safe heading" in sec13
+
+
+def test_duplicate_title_stripping_is_allowlist_restricted():
+    # A: known title stripped
+    doc_a = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown="**Pathways**\n\nBody after title.\n",
+            )
+        ],
+    )
+    html_a = render_rancho_html(doc_a)
+    sec10 = html_a[html_a.index('id="section-10"') : html_a.index('id="section-11"')]
+    assert "Body after title." in sec10
+    # standalone title line should not remain as a strong paragraph of "Pathways" alone
+    # before body (Rancho already has its own heading)
+    assert sec10.count("<strong>Pathways</strong>") == 0
+
+    # B: arbitrary bold not stripped
+    doc_b = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=(
+                    "**Strong evidence from curated pathways**\n\nMore prose.\n"
+                ),
+            )
+        ],
+    )
+    html_b = render_rancho_html(doc_b)
+    assert (
+        "<p><strong>Strong evidence from curated pathways</strong></p>" in html_b
+    )
+
+    # C: Key findings / Limitations kept
+    doc_c = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=(
+                    "**Pathways**\n\nProse.\n\n"
+                    "**Key findings**\n\n- A\n\n"
+                    "**Limitations**\n\n- B\n"
+                ),
+            )
+        ],
+    )
+    html_c = render_rancho_html(doc_c)
+    assert 'class="narrative-subheading key-findings"' in html_c
+    assert 'class="narrative-subheading limitations"' in html_c
+
+
+def test_subsection_evidence_endnote_uses_precise_excerpt():
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="endnote-precise",
+        display_text="Cholesterol biosynthesis pathway evidence.",
+        section="Pathways",
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown="**Pathways**\n\nBroad pathway narrative prose.\n",
+                source_ids=[evidence.source_id],
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc, include_endnotes=True)
+    assert "Provenance endnotes" in html
+    assert evidence.source_id in html
+    assert "Cholesterol biosynthesis pathway evidence." in html
+    assert "Cited by synthesized section: Major pathways" not in html
+    # source id appears once in endnotes list region
+    endnotes = html[html.index("Provenance endnotes") :]
+    assert endnotes.count(evidence.source_id) == 1
+
+
+def test_major_narrative_only_endnote_excerpt():
+    synth_id = "sid-major-narrative-only-xyz"
+    prose = (
+        "UNIQUE_MAJOR_NARRATIVE_EXCERPT_TEXT for tissue expression "
+        "without an evidence block citation."
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Tissue and cell expression",
+                content_markdown=(
+                    f"**Tissue and cell expression** (SREBF2)\n\n{prose}\n"
+                ),
+                source_ids=[synth_id],
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc, include_endnotes=True)
+    endnotes = html[html.index("Provenance endnotes") :]
+    assert endnotes.count(synth_id) == 1
+    assert "UNIQUE_MAJOR_NARRATIVE_EXCERPT_TEXT" in endnotes
+    assert "**" not in endnotes.split(synth_id)[1][:200]
+    # find excerpt line length roughly under 120 for the note text after source id
+    # excerpt is truncated by renderer; ensure marker still present and truncated form ok
+    idx = endnotes.index(synth_id)
+    snippet = endnotes[idx : idx + 200]
+    assert len(snippet) >= 20
+
+
+def test_neutral_endnote_fallback_for_blank_deferred_narrative():
+    synth_id = "sid-deferred-blank-narrative"
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Antibodies",
+                content_markdown="   ",
+                source_ids=[synth_id],
+                status="deferred",
+            )
+        ],
+    )
+    html = render_rancho_html(doc, include_endnotes=True)
+    endnotes = html[html.index("Provenance endnotes") :]
+    assert synth_id in endnotes
+    assert "Cited by synthesized section:" in endnotes
+    assert "Commercial antibodies" in endnotes
+
+
+def test_global_endnote_deduplication_prefers_evidence_excerpt():
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="dedupe-endnote",
+        display_text="UNIQUE_PRECISE_EVIDENCE_EXCERPT_DEDUPE",
+        section="Pathways",
+    )
+    doc = build_report_document(
+        dossier_run_id="rancho-narr",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        report_sections=[
+            _report_section(
+                section_name="Pathways",
+                content_markdown=(
+                    "**Pathways**\n\nNarrative that also cites the same ID.\n"
+                ),
+                source_ids=[evidence.source_id],
+                status="llm",
+            )
+        ],
+    )
+    html = render_rancho_html(doc, include_endnotes=True)
+    endnotes = html[html.index("Provenance endnotes") :]
+    assert endnotes.count(evidence.source_id) == 1
+    assert "UNIQUE_PRECISE_EVIDENCE_EXCERPT_DEDUPE" in endnotes
+
+
+def test_builder_forwards_report_sections(tmp_path: Path):
+    marker = "UNIQUE_BUILDER_FORWARDED_NARRATIVE"
+    doc, paths = build_and_write_rancho_report(
+        dossier_run_id="rancho-builder",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Antibodies",
+                content_markdown=f"**Antibodies**\n\n{marker}\n",
+                status="llm",
+            )
+        ],
+        output_dir=tmp_path,
+        write_pdf=False,
+        include_endnotes=False,
+    )
+    major13 = next(s for s in doc.sections if s.key == "13")
+    assert major13.narrative_markdown is not None
+    assert marker in major13.narrative_markdown
+    assert major13.synthesis_status == "llm"
+    assert paths["html"].name == "rancho-builder_rancho_report.html"
+    assert paths["json"].name == "rancho-builder_rancho_report.json"
+    assert "pdf" not in paths
+    html = paths["html"].read_text(encoding="utf-8")
+    assert marker in html
+    payload = json.loads(paths["json"].read_text(encoding="utf-8"))
+    sec13 = next(s for s in payload["sections"] if s["key"] == "13")
+    assert marker in (sec13.get("narrative_markdown") or "")
+    assert sec13.get("synthesis_status") == "llm"
+
+    # omit still works
+    doc2, paths2 = build_and_write_rancho_report(
+        dossier_run_id="rancho-builder-omit",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        output_dir=tmp_path,
+        write_pdf=False,
+    )
+    assert next(s for s in doc2.sections if s.key == "13").narrative_markdown is None
+    assert paths2["html"].is_file()
+
+
+def test_unmapped_report_sections_stay_out_of_polished_body(tmp_path: Path):
+    unique = "UNIQUE_UNMAPPED_VERIFICATION_MARKER_ZZZ"
+    doc, paths = build_and_write_rancho_report(
+        dossier_run_id="rancho-unmap",
+        gene_symbol="SREBF2",
+        evidence_records=[],
+        report_sections=[
+            _report_section(
+                section_name="Verification warnings",
+                content_markdown=unique,
+                status="deferred",
+            )
+        ],
+        output_dir=tmp_path,
+        write_pdf=False,
+    )
+    assert any(
+        u.section_name == "Verification warnings" and unique in u.content_markdown
+        for u in doc.unmapped_report_sections
+    )
+    html = paths["html"].read_text(encoding="utf-8")
+    assert unique not in html
+    payload = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert any(
+        u.get("section_name") == "Verification warnings"
+        and unique in (u.get("content_markdown") or "")
+        for u in payload.get("unmapped_report_sections") or []
+    )
+
+
+def test_existing_defaults_endnotes_and_pdf_flag(tmp_path: Path):
+    evidence = _ev(
+        source_name="Reactome",
+        assertion_type=AssertionType.pathway_membership,
+        key="defaults-flag",
+        display_text="Defaults evidence text.",
+        section="Pathways",
+    )
+    doc_off, paths_off = build_and_write_rancho_report(
+        dossier_run_id="rancho-defaults-off",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        output_dir=tmp_path,
+        include_endnotes=False,
+        write_pdf=False,
+    )
+    html_off = paths_off["html"].read_text(encoding="utf-8")
+    assert "Provenance endnotes" not in html_off
+    assert "pdf" not in paths_off
+    assert paths_off["html"].name == "rancho-defaults-off_rancho_report.html"
+    assert paths_off["json"].name == "rancho-defaults-off_rancho_report.json"
+
+    _doc_on, paths_on = build_and_write_rancho_report(
+        dossier_run_id="rancho-defaults-on",
+        gene_symbol="SREBF2",
+        evidence_records=[evidence],
+        output_dir=tmp_path,
+        include_endnotes=True,
+        write_pdf=False,
+    )
+    html_on = paths_on["html"].read_text(encoding="utf-8")
+    assert "Provenance endnotes" in html_on
+    assert "pdf" not in paths_on
+    assert doc_off.sections  # smoke

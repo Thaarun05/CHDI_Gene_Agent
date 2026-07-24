@@ -7,7 +7,13 @@ This module is the **layout contract**:
 
 - defines the exact section tree and visual tokens from the reference PDF
 - maps :class:`~gene_dossier.models.EvidenceRecord` objects into those slots
+- optionally attaches synthesized :class:`~gene_dossier.models.ReportSection`
+  ``content_markdown`` as preferred narrative on those same slots
 - builds a :class:`ReportDocument` for a polished renderer (HTML/PDF)
+
+When ``report_sections`` are supplied, their prose is the preferred narrative
+body; EvidenceRecords remain supporting provenance (tables, citations,
+appendices). This builder never invents narrative.
 
 The markdown assembler in ``rendering.py`` remains a provenance/debug view only.
 It is **not** the final CHDI/Rancho report format.
@@ -22,7 +28,7 @@ from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, Field
 
-from gene_dossier.models import AssertionType, EvidenceRecord
+from gene_dossier.models import AssertionType, EvidenceRecord, ReportSection
 
 # --------------------------------------------------------------------------------------
 # Visual tokens sampled from SREBF2_report.pdf (Rancho / CHDI)
@@ -402,6 +408,62 @@ def _norm_source(name: str) -> str:
     return " ".join((name or "").strip().lower().split())
 
 
+def _norm_section_name(name: str) -> str:
+    """Normalize synthesis / CHDI section titles for slot lookup."""
+    return _norm_source(name)
+
+
+# Meta synthesis sections are not Rancho body slots; retained for audit.
+_META_SYNTHESIS_SECTIONS: frozenset[str] = frozenset(
+    {
+        "missing / deferred / manual sources",
+        "verification warnings",
+    }
+)
+
+# Map CHDI/synthesis section_name → existing Rancho ReportSlot addresses.
+# Temporary bridges are documented inline; later synthesis names should align
+# directly with Rancho subsections.
+_SECTION_NAME_TO_SLOT: dict[str, ReportSlot] = {
+    "general gene information": ReportSlot("1"),
+    "gene aliases and identifiers": ReportSlot("1", "a"),
+    "conservation / orthologs": ReportSlot("1", "b"),
+    "known structure / domains": ReportSlot("1", "c"),
+    # Temporary bridge: PDBe/CDD are conceptually 1c and AlphaFold is 1d.
+    # The combined synthesis section maps to 1d to avoid colliding with
+    # "Known structure / domains" → 1c. Later split synthesis to match Rancho.
+    "alphafold / pdbe / cdd": ReportSlot("1", "d"),
+    "homologues": ReportSlot("1", "e"),
+    # Spans tissue (2a), Barres/Allen (2b), and cell-type (2c) evidence.
+    "tissue and cell expression": ReportSlot("2"),
+    "geo perturbations": ReportSlot("3", "a"),
+    "transcription factors": ReportSlot("4", "a"),
+    "protein-protein interactions": ReportSlot("5"),
+    "ctd perturbations": ReportSlot("6", "a"),
+    "chemical tools": ReportSlot("7"),
+    "eqtls": ReportSlot("8", "a"),
+    "clinvar / omim / open targets / snps": ReportSlot("9"),
+    "pathways": ReportSlot("10", "a"),
+    "knockouts / model phenotypes": ReportSlot("11"),
+    "major labs / literature": ReportSlot("12"),
+    "antibodies": ReportSlot("13"),
+    "patents": ReportSlot("14"),
+    "nih/erc grants": ReportSlot("15"),
+}
+
+
+def resolve_report_slot_for_section(section_name: str) -> ReportSlot | None:
+    """Map a synthesized ReportSection name onto an existing Rancho slot.
+
+    Returns ``None`` for meta sections and unknown names (callers must retain
+    those explicitly — never silently drop). Does not create a second layout tree.
+    """
+    key = _norm_section_name(section_name)
+    if not key or key in _META_SYNTHESIS_SECTIONS:
+        return None
+    return _SECTION_NAME_TO_SLOT.get(key)
+
+
 def resolve_report_slot(record: EvidenceRecord) -> ReportSlot | None:
     """Map one evidence record into a Rancho major/subsection slot.
 
@@ -635,7 +697,12 @@ class ReportContentBlock(BaseModel):
 
 
 class ReportSubsection(BaseModel):
-    """Lettered subsection with ordered content blocks + provenance ids."""
+    """Lettered subsection with ordered content blocks + provenance ids.
+
+    ``blocks`` hold supporting EvidenceRecord-derived content. When synthesis is
+    supplied, ``narrative_markdown`` is the preferred prose body; evidence
+    ``status`` remains independent of ``synthesis_status``.
+    """
 
     key: str
     title: str
@@ -644,10 +711,16 @@ class ReportSubsection(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
     status: Literal["populated", "empty"] = "empty"
+    narrative_markdown: str | None = None
+    synthesis_status: str | None = None
 
 
 class ReportMajorSection(BaseModel):
-    """Numbered major section (1-15)."""
+    """Numbered major section (1-15).
+
+    Major-level ``narrative_markdown`` is used when a synthesis section spans
+    multiple lettered subsections (e.g. expression → section 2).
+    """
 
     number: int
     key: str
@@ -658,6 +731,25 @@ class ReportMajorSection(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
     status: Literal["populated", "empty", "partial"] = "empty"
+    narrative_markdown: str | None = None
+    synthesis_status: str | None = None
+
+
+class UnmappedReportSection(BaseModel):
+    """Synthesized section not placed on a Rancho body slot (audit trail).
+
+    ``reason`` values:
+    - ``meta_section`` — known coverage/verification meta sections
+    - ``unmapped_name`` — unknown / unrecognized section title
+    - ``slot_conflict`` — another ReportSection already occupies the slot
+    """
+
+    section_name: str
+    status: str | None = None
+    content_markdown: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    reason: str = "unmapped_name"
+    attempted_slot: str | None = None
 
 
 class ReportDocument(BaseModel):
@@ -670,6 +762,9 @@ class ReportDocument(BaseModel):
     references: list[str] = Field(default_factory=list)
     compiled_databases: list[dict[str, str]] = Field(default_factory=list)
     unmapped_source_ids: list[str] = Field(default_factory=list)
+    unmapped_report_sections: list[UnmappedReportSection] = Field(
+        default_factory=list
+    )
     style: dict[str, Any] = Field(
         default_factory=lambda: REPORT_STYLE.__dict__.copy()
     )
@@ -722,6 +817,127 @@ def _block_from_evidence(record: EvidenceRecord) -> ReportContentBlock:
     )
 
 
+def _extend_source_ids(dest: list[str], source_ids: Iterable[str]) -> None:
+    """Append source_ids with order-preserving dedupe."""
+    for sid in source_ids:
+        text = str(sid).strip() if sid is not None else ""
+        if text and text not in dest:
+            dest.append(text)
+
+
+def _synthesis_slot_occupied(
+    *,
+    narrative_markdown: str | None,
+    synthesis_status: str | None,
+) -> bool:
+    return narrative_markdown is not None or synthesis_status is not None
+
+
+def _unmapped_from_report_section(
+    section: ReportSection,
+    *,
+    reason: str,
+    attempted_slot: str | None = None,
+) -> UnmappedReportSection:
+    return UnmappedReportSection(
+        section_name=section.section_name or "",
+        status=section.status or None,
+        content_markdown=section.content_markdown or "",
+        source_ids=list(section.source_ids or []),
+        reason=reason,
+        attempted_slot=attempted_slot,
+    )
+
+
+def _attach_report_sections(
+    doc: ReportDocument,
+    report_sections: Iterable[ReportSection],
+) -> list[UnmappedReportSection]:
+    """Place synthesized prose onto Rancho slots; never overwrite or drop."""
+    majors_by_key = {major.key: major for major in doc.sections}
+    unmapped: list[UnmappedReportSection] = []
+
+    for section in report_sections:
+        name = section.section_name or ""
+        norm = _norm_section_name(name)
+        slot = resolve_report_slot_for_section(name)
+
+        if slot is None:
+            reason = (
+                "meta_section"
+                if norm in _META_SYNTHESIS_SECTIONS
+                else "unmapped_name"
+            )
+            unmapped.append(
+                _unmapped_from_report_section(section, reason=reason)
+            )
+            continue
+
+        major = majors_by_key.get(slot.major_key)
+        if major is None:
+            unmapped.append(
+                _unmapped_from_report_section(
+                    section,
+                    reason="unmapped_name",
+                    attempted_slot=slot.slot_id,
+                )
+            )
+            continue
+
+        if slot.subsection_key:
+            sub = next(
+                (s for s in major.subsections if s.key == slot.subsection_key),
+                None,
+            )
+            if sub is None:
+                unmapped.append(
+                    _unmapped_from_report_section(
+                        section,
+                        reason="unmapped_name",
+                        attempted_slot=slot.slot_id,
+                    )
+                )
+                continue
+            if _synthesis_slot_occupied(
+                narrative_markdown=sub.narrative_markdown,
+                synthesis_status=sub.synthesis_status,
+            ):
+                unmapped.append(
+                    _unmapped_from_report_section(
+                        section,
+                        reason="slot_conflict",
+                        attempted_slot=slot.slot_id,
+                    )
+                )
+                continue
+            markdown = section.content_markdown or ""
+            if markdown.strip():
+                sub.narrative_markdown = markdown
+            sub.synthesis_status = section.status or None
+            _extend_source_ids(sub.source_ids, section.source_ids or [])
+            _extend_source_ids(major.source_ids, section.source_ids or [])
+        else:
+            if _synthesis_slot_occupied(
+                narrative_markdown=major.narrative_markdown,
+                synthesis_status=major.synthesis_status,
+            ):
+                unmapped.append(
+                    _unmapped_from_report_section(
+                        section,
+                        reason="slot_conflict",
+                        attempted_slot=slot.slot_id,
+                    )
+                )
+                continue
+            markdown = section.content_markdown or ""
+            if markdown.strip():
+                major.narrative_markdown = markdown
+            major.synthesis_status = section.status or None
+            _extend_source_ids(major.source_ids, section.source_ids or [])
+
+    return unmapped
+
+
 def infer_chromosome(evidence_records: Iterable[EvidenceRecord]) -> str | None:
     """Best-effort chromosome from evidence values / display text (e.g. chr22)."""
     pattern = re.compile(r"\bchr(?:omosome)?[\s_:-]*([0-9XYM]+)\b", re.IGNORECASE)
@@ -742,16 +958,20 @@ def build_report_document(
     dossier_run_id: str,
     gene_symbol: str,
     evidence_records: Iterable[EvidenceRecord],
+    report_sections: Iterable[ReportSection] | None = None,
     curator: str | None = None,
     report_date: str | None = None,
     chromosome: str | None = None,
     references: Iterable[str] | None = None,
 ) -> ReportDocument:
-    """Bucket evidence into the Rancho 15-section layout.
+    """Bucket evidence (and optional synthesized sections) into the Rancho layout.
 
-    Does not invent narrative beyond ``display_text``. A later renderer turns this
-    document into the polished PDF/HTML; ``source_id``s stay on every block for the
-    JSON/provenance sidecar and optional endnotes.
+    EvidenceRecords always populate supporting content blocks from
+    ``display_text``. When ``report_sections`` is supplied, matching
+    ``ReportSection.content_markdown`` becomes the preferred narrative on the
+    same slots; synthesis never invents prose and never replaces evidence
+    blocks. Omitting ``report_sections`` preserves the prior evidence-only
+    behavior.
     """
     records = list(evidence_records)
     cover = ReportCover(
@@ -819,6 +1039,10 @@ def build_report_document(
             major.status = "populated"
 
     doc.unmapped_source_ids = list(dict.fromkeys(unmapped))
+    if report_sections is not None:
+        doc.unmapped_report_sections = _attach_report_sections(
+            doc, report_sections
+        )
     if references is not None:
         doc.references = [str(r) for r in references]
     return doc
@@ -853,10 +1077,12 @@ __all__ = [
     "ReportContentBlock",
     "ReportSubsection",
     "ReportMajorSection",
+    "UnmappedReportSection",
     "ReportDocument",
     "get_major_section",
     "iter_toc_entries",
     "resolve_report_slot",
+    "resolve_report_slot_for_section",
     "infer_chromosome",
     "build_report_document",
     "cover_lines",

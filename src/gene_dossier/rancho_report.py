@@ -6,6 +6,8 @@ visual report that follows ``SREBF2_report.pdf``:
 - cover page (gene + CHR, Gene Report, prepared-for, curator/date)
 - table of contents
 - 15 major sections (green) with lettered subsections (orange)
+- optional synthesized ``narrative_markdown`` as preferred prose
+- supporting EvidenceRecord blocks (tables / display_text)
 - tables with light-green header rows
 - embedded figures when ``figure_path`` is set on a block
 - References + Compiled List of Relevant Databases
@@ -25,10 +27,12 @@ import html
 import json
 import logging
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
 from gene_dossier.config import Settings, get_settings
+from gene_dossier.models import ReportSection
 from gene_dossier.report_schema import (
     REPORT_STYLE,
     ReportContentBlock,
@@ -43,9 +47,202 @@ logger = logging.getLogger(__name__)
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
+# Known synthesis section titles (duplicate-heading suppression only — not a slot map).
+_SYNTHESIS_TITLE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "general gene information",
+        "gene aliases and identifiers",
+        "conservation / orthologs",
+        "known structure / domains",
+        "alphafold / pdbe / cdd",
+        "homologues",
+        "tissue and cell expression",
+        "geo perturbations",
+        "transcription factors",
+        "protein-protein interactions",
+        "ctd perturbations",
+        "chemical tools",
+        "eqtls",
+        "clinvar / omim / open targets / snps",
+        "pathways",
+        "knockouts / model phenotypes",
+        "major labs / literature",
+        "antibodies",
+        "patents",
+        "nih/erc grants",
+    }
+)
+
 
 def _escape(text: str | None) -> str:
     return html.escape(text or "", quote=True)
+
+
+def _norm_title(text: str) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def _truncate_excerpt(text: str, *, limit: int = 120) -> str:
+    text = (text or "").strip()
+    if len(text) > limit:
+        return text[: limit - 3] + "…"
+    return text
+
+
+def _strip_leading_synthesis_title(markdown: str) -> str:
+    """Drop a leading bold line only when it matches a known synthesis title."""
+    lines = markdown.splitlines()
+    idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if idx is None:
+        return markdown
+    stripped = lines[idx].strip()
+    match = re.match(r"^\*\*(.+?)\*\*(?:\s*\([^)]*\))?\s*$", stripped)
+    if not match:
+        return markdown
+    title_norm = _norm_title(match.group(1))
+    if title_norm in {"key findings", "limitations"}:
+        return markdown
+    if title_norm not in _SYNTHESIS_TITLE_ALLOWLIST:
+        return markdown
+    rest = lines[:idx] + lines[idx + 1 :]
+    while idx < len(rest) and not rest[idx].strip():
+        rest = rest[:idx] + rest[idx + 1 :]
+    return "\n".join(rest)
+
+
+def _plain_excerpt_from_markdown(markdown: str | None) -> str:
+    """Plain-text excerpt for endnotes; empty when no usable narrative."""
+    if not (markdown or "").strip():
+        return ""
+    text = _strip_leading_synthesis_title(markdown or "")
+    text = re.sub(r"\*\*", "", text)
+    text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[-*]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
+    return _truncate_excerpt(" ".join(text.split()))
+
+
+def _inline_format(text: str) -> str:
+    """Escape text and convert simple ``**bold**`` spans."""
+    parts: list[str] = []
+    remaining = text
+    while True:
+        start = remaining.find("**")
+        if start < 0:
+            parts.append(_escape(remaining))
+            break
+        parts.append(_escape(remaining[:start]))
+        end = remaining.find("**", start + 2)
+        if end < 0:
+            parts.append(_escape(remaining[start:]))
+            break
+        parts.append(f"<strong>{_escape(remaining[start + 2 : end])}</strong>")
+        remaining = remaining[end + 2 :]
+    return "".join(parts)
+
+
+def _render_narrative_markdown(
+    markdown_text: str | None,
+    *,
+    synthesis_status: str | None = None,
+) -> str:
+    """Convert limited synthesis markdown into escaped HTML (no Markdown library)."""
+    if not (markdown_text or "").strip():
+        return ""
+    text = _strip_leading_synthesis_title(markdown_text or "")
+    if not text.strip():
+        return ""
+
+    body: list[str] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("### "):
+            body.append(
+                f'<h4 class="narrative-subheading">'
+                f"{_inline_format(stripped[4:].strip())}</h4>"
+            )
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            body.append(
+                f'<h4 class="narrative-subheading">'
+                f"{_inline_format(stripped[3:].strip())}</h4>"
+            )
+            i += 1
+            continue
+
+        bold_only = re.match(r"^\*\*(.+?)\*\*\s*$", stripped)
+        if bold_only:
+            inner = bold_only.group(1).strip()
+            inner_norm = _norm_title(inner)
+            if inner_norm == "key findings":
+                body.append(
+                    f'<h4 class="narrative-subheading key-findings">'
+                    f"{_escape(inner)}</h4>"
+                )
+                i += 1
+                continue
+            if inner_norm == "limitations":
+                body.append(
+                    f'<h4 class="narrative-subheading limitations">'
+                    f"{_escape(inner)}</h4>"
+                )
+                i += 1
+                continue
+            # Other standalone bold lines stay as emphasis, not headings.
+            body.append(f"<p><strong>{_escape(inner)}</strong></p>")
+            i += 1
+            continue
+
+        if stripped.startswith("- "):
+            items: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("- "):
+                items.append(f"<li>{_inline_format(lines[i].strip()[2:])}</li>")
+                i += 1
+            body.append("<ul>" + "".join(items) + "</ul>")
+            continue
+
+        if re.match(r"^\d+\.\s", stripped):
+            items = []
+            while i < len(lines) and re.match(r"^\d+\.\s", lines[i].strip()):
+                item_text = re.sub(r"^\d+\.\s+", "", lines[i].strip())
+                items.append(f"<li>{_inline_format(item_text)}</li>")
+                i += 1
+            body.append("<ol>" + "".join(items) + "</ol>")
+            continue
+
+        para_lines: list[str] = []
+        while i < len(lines):
+            candidate = lines[i].strip()
+            if not candidate:
+                break
+            if candidate.startswith("##") or candidate.startswith("- "):
+                break
+            if re.match(r"^\d+\.\s", candidate):
+                break
+            if re.match(r"^\*\*(.+?)\*\*\s*$", candidate):
+                break
+            para_lines.append(candidate)
+            i += 1
+        if para_lines:
+            body.append(f"<p>{_inline_format(' '.join(para_lines))}</p>")
+        else:
+            body.append(f"<p>{_escape(stripped)}</p>")
+            i += 1
+
+    if not body:
+        return ""
+
+    attrs = ' class="synthesized-narrative"'
+    if synthesis_status:
+        attrs += f' data-synthesis-status="{_escape(synthesis_status)}"'
+    return f"<div{attrs}>\n" + "\n".join(body) + "\n</div>"
 
 
 def _asset_data_uri(name: str) -> str | None:
@@ -196,6 +393,38 @@ tr.toc-entry.back a {{ color: {s.brown_body}; }}
   font-style: italic;
   color: #7a5a45;
 }}
+.synthesized-narrative {{
+  color: {s.brown_body};
+  margin: 0 0 12pt 0;
+}}
+.synthesized-narrative p {{
+  margin: 0 0 8pt 0;
+}}
+.synthesized-narrative ul,
+.synthesized-narrative ol {{
+  margin: 0 0 10pt 0;
+  padding-left: 18pt;
+}}
+.narrative-subheading {{
+  color: {s.orange_sub};
+  font-size: {s.subsection_header_pt}pt;
+  font-weight: 600;
+  margin: 12pt 0 6pt 0;
+}}
+.key-findings, .limitations {{
+  color: {s.orange_sub};
+}}
+.supporting-evidence {{
+  margin: 12pt 0 8pt 0;
+  padding-top: 8pt;
+  border-top: 1pt solid {s.rule_green};
+}}
+.supporting-evidence-heading {{
+  color: {s.orange_sub};
+  font-size: 12pt;
+  font-weight: 600;
+  margin: 0 0 8pt 0;
+}}
 table.rancho {{
   border-collapse: collapse;
   width: 100%;
@@ -311,6 +540,20 @@ def _render_block(block: ReportContentBlock) -> str:
     return "\n".join(parts)
 
 
+def _render_supporting_evidence(blocks: list[ReportContentBlock]) -> str:
+    parts = [
+        '<div class="supporting-evidence">',
+        (
+            f'<h4 class="supporting-evidence-heading" '
+            f'style="color:{REPORT_STYLE.orange_sub};">Supporting evidence</h4>'
+        ),
+    ]
+    for block in blocks:
+        parts.append(_render_block(block))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
 def _render_subsection(sub: ReportSubsection) -> str:
     heading = f"{sub.key}. {sub.title}"
     parts = [
@@ -319,14 +562,23 @@ def _render_subsection(sub: ReportSubsection) -> str:
             f"{_escape(heading)}</h3>"
         ),
     ]
-    if not sub.blocks:
+    narrative_html = _render_narrative_markdown(
+        sub.narrative_markdown,
+        synthesis_status=sub.synthesis_status,
+    )
+    if narrative_html:
+        parts.append(narrative_html)
+    if sub.blocks:
+        if narrative_html:
+            parts.append(_render_supporting_evidence(list(sub.blocks)))
+        else:
+            for block in sub.blocks:
+                parts.append(_render_block(block))
+    elif not narrative_html:
         parts.append(
             '<p class="empty-note">No evidence available for this subsection in the '
             "current dossier run.</p>"
         )
-    else:
-        for block in sub.blocks:
-            parts.append(_render_block(block))
     return "\n".join(parts)
 
 
@@ -339,13 +591,22 @@ def _render_major(section: ReportMajorSection) -> str:
             f"{_escape(heading)}</h2>"
         ),
     ]
+    narrative_html = _render_narrative_markdown(
+        section.narrative_markdown,
+        synthesis_status=section.synthesis_status,
+    )
+    if narrative_html:
+        parts.append(narrative_html)
+    if section.blocks:
+        if narrative_html:
+            parts.append(_render_supporting_evidence(list(section.blocks)))
+        else:
+            for block in section.blocks:
+                parts.append(_render_block(block))
     if section.subsections:
         for sub in section.subsections:
             parts.append(_render_subsection(sub))
-    elif section.blocks:
-        for block in section.blocks:
-            parts.append(_render_block(block))
-    else:
+    elif not narrative_html and not section.blocks:
         parts.append(
             '<p class="empty-note">No evidence available for this section in the '
             "current dossier run.</p>"
@@ -354,25 +615,111 @@ def _render_major(section: ReportMajorSection) -> str:
     return "\n".join(parts)
 
 
+def _block_excerpt(block: ReportContentBlock) -> str:
+    return _truncate_excerpt((block.text or block.title or "").strip())
+
+
+def _neutral_audit_excerpt(*, kind: str, title: str) -> str:
+    if kind == "major":
+        label = f"Cited by synthesized section: {title}"
+    else:
+        label = f"Cited by synthesized subsection: {title}"
+    return _truncate_excerpt(label)
+
+
+def _append_slot_endnotes(
+    notes: list[dict[str, str]],
+    seen: set[str],
+    *,
+    source_ids: list[str],
+    blocks: list[ReportContentBlock],
+    narrative_markdown: str | None,
+    audit_kind: str,
+    audit_title: str,
+) -> None:
+    evidence_excerpts: dict[str, str] = {}
+    for block in blocks:
+        excerpt = _block_excerpt(block)
+        for sid in block.source_ids:
+            if sid and sid not in evidence_excerpts and excerpt:
+                evidence_excerpts[sid] = excerpt
+
+    narrative_excerpt = _plain_excerpt_from_markdown(narrative_markdown)
+    neutral = _neutral_audit_excerpt(kind=audit_kind, title=audit_title)
+
+    for sid in source_ids:
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        if sid in evidence_excerpts:
+            excerpt = evidence_excerpts[sid]
+        elif narrative_excerpt:
+            excerpt = narrative_excerpt
+        else:
+            excerpt = neutral
+        notes.append({"source_id": sid, "excerpt": excerpt})
+
+    for block in blocks:
+        excerpt = _block_excerpt(block) or neutral
+        for sid in block.source_ids:
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            notes.append({"source_id": sid, "excerpt": excerpt})
+
+
+def _major_owned_source_ids(section: ReportMajorSection) -> list[str]:
+    """Return major-level source_ids not exclusively inherited from subsections.
+
+    ``ReportMajorSection.source_ids`` aggregates subsection IDs. Endnotes must
+    process subsection-owned IDs under their subsection so precise evidence
+    excerpts are preferred over major narrative / neutral audit text.
+    """
+    subsection_source_ids = {
+        sid
+        for sub in section.subsections
+        for sid in (sub.source_ids or [])
+        if sid
+    }
+    major_block_source_ids = {
+        sid
+        for block in section.blocks
+        for sid in (block.source_ids or [])
+        if sid
+    }
+    return [
+        sid
+        for sid in (section.source_ids or [])
+        if sid
+        and (sid not in subsection_source_ids or sid in major_block_source_ids)
+    ]
+
+
 def _collect_endnotes(doc: ReportDocument) -> list[dict[str, str]]:
-    """Build provenance endnotes from block source_ids (order preserved)."""
+    """Build provenance endnotes from evidence blocks and synthesis source_ids."""
     notes: list[dict[str, str]] = []
     seen: set[str] = set()
     for section in doc.sections:
-        blocks: list[ReportContentBlock] = list(section.blocks)
+        _append_slot_endnotes(
+            notes,
+            seen,
+            source_ids=_major_owned_source_ids(section),
+            blocks=list(section.blocks or []),
+            narrative_markdown=section.narrative_markdown,
+            audit_kind="major",
+            audit_title=section.title,
+        )
         for sub in section.subsections:
-            blocks.extend(sub.blocks)
-        for block in blocks:
-            for sid in block.source_ids:
-                if not sid or sid in seen:
-                    continue
-                seen.add(sid)
-                text = (block.text or block.title or "").strip()
-                if len(text) > 120:
-                    text = text[:117] + "…"
-                notes.append({"source_id": sid, "excerpt": text})
+            _append_slot_endnotes(
+                notes,
+                seen,
+                source_ids=list(sub.source_ids or []),
+                blocks=list(sub.blocks or []),
+                narrative_markdown=sub.narrative_markdown,
+                audit_kind="subsection",
+                audit_title=sub.title,
+            )
     return notes
-
 
 def _render_cover(
     doc: ReportDocument,
@@ -802,6 +1149,7 @@ def build_and_write_rancho_report(
     dossier_run_id: str,
     gene_symbol: str,
     evidence_records: Iterable[Any],
+    report_sections: Iterable[ReportSection] | None = None,
     curator: str | None = None,
     report_date: str | None = None,
     chromosome: str | None = None,
@@ -814,13 +1162,18 @@ def build_and_write_rancho_report(
     stamp_cover: bool = False,
     show_cover_logos: bool = False,
 ) -> tuple[ReportDocument, dict[str, Path]]:
-    """Build a ReportDocument from evidence and write the Rancho report."""
+    """Build a ReportDocument from evidence (and optional synthesis) and write it.
+
+    When ``report_sections`` is omitted, behavior matches the evidence-only path.
+    Synthesized prose is preferred narrative; evidence blocks remain supporting.
+    """
     from gene_dossier.report_schema import build_report_document
 
     doc = build_report_document(
         dossier_run_id=dossier_run_id,
         gene_symbol=gene_symbol,
         evidence_records=evidence_records,
+        report_sections=report_sections,
         curator=curator,
         report_date=report_date,
         chromosome=chromosome,

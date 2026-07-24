@@ -1,9 +1,10 @@
 """Report-section synthesis from evidence records (MVP).
 
-Uses LangChain for optional LLM section writing when an OpenAI or Anthropic
-API key is configured. Without keys (or on LLM failure), falls back to
+Uses LangChain for optional LLM section writing when an OpenAI, NVIDIA NIM, or
+Anthropic API key is configured. Without keys (or on LLM failure), falls back to
 deterministic markdown built only from :class:`~gene_dossier.models.EvidenceRecord`
-fields — the LLM is never treated as a source of truth.
+fields — the LLM is never treated as a source of truth. Multiple providers are
+tried in order at invocation time so one failing vendor does not block synthesis.
 """
 
 from __future__ import annotations
@@ -59,20 +60,41 @@ _META_SECTIONS = frozenset(
 )
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-You are a cautious biomedical analyst writing one section of a Huntington's \
-disease gene dossier STRICTLY from the evidence provided.
+You are a Rancho BioSciences / CHDI-style gene-dossier writer preparing one \
+section of a Huntington's disease research gene report.
 
-Rules:
-1. Use ONLY the supplied evidence. Do not invent facts, identifiers, or source_ids.
-2. Every factual sentence must cite one or more provided source_id values using \
-the exact form [source_id].
-3. Do not upgrade associations, GWAS hits, expression, or computational scores \
-into causal disease claims.
-4. Prefer cautious wording (associated, reported, annotated) over causes / proves \
-/ therapeutic target unless the cited evidence grade is A and is disease-related.
-5. If evidence is thin or conflicting, say so briefly.
-6. Return structured output: markdown content plus discrete claims, each with \
-claim_text and the source_ids that support it.
+Tone and style:
+- Concise, professional biomedical prose suitable for a CHDI/Rancho dossier.
+- Prefer measured language (associated, reported, annotated, curated) over \
+causal claims.
+- Do not write marketing copy, speculation, or therapeutic recommendations.
+
+Evidence rules (non-negotiable):
+1. Use ONLY the supplied evidence records. Do not invent biology, identifiers, \
+assays, pathways, diseases, labs, patents, or source_ids.
+2. Do not claim facts outside the supplied evidence.
+3. Do not upgrade associations, GWAS hits, expression patterns, or computational \
+scores into causal or clinically validated disease statements.
+4. Prefer "associated / reported / annotated" over "causes / proves / drives / \
+therapeutic target / pathogenic / disease-modifying" unless the cited evidence \
+grade is A and explicitly disease-related.
+5. If evidence for this section is thin, conflicting, or absent, say that \
+evidence was unavailable or limited from this run. Do not invent filler.
+
+Output (structured):
+- section_id: short slug for the section (may echo the section name).
+- subsection_id: optional subsection slug, else null/omit.
+- summary_paragraphs: 1–3 short paragraphs of dossier prose; cite evidence with \
+exact [source_id] tokens when stating facts.
+- key_findings: short bullet-ready findings grounded in the evidence.
+- claims: discrete factual claims. Prefer supporting_evidence_ids (list of \
+exact source_id values from the evidence). You may also set source_ids; when \
+supporting_evidence_ids is present it takes precedence. Every claim MUST cite \
+at least one valid supplied source_id. Omit claims you cannot support.
+- limitations: brief caveats (coverage gaps, conflicting evidence, grade limits).
+- content_markdown: optional; leave empty unless you must supply preformatted \
+markdown. The system will render structured fields into markdown when this is \
+blank.
 """
 
 SynthesisMode = Literal["deterministic", "llm", "empty", "deferred"]
@@ -83,14 +105,20 @@ class SectionClaimDraft(BaseModel):
 
     claim_text: str
     source_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
     evidence_grade: EvidenceGrade | None = None
 
 
 class SectionDraft(BaseModel):
-    """Structured LLM output for a single report section."""
+    """Structured LLM output for a single Rancho/CHDI report section."""
 
-    content_markdown: str = ""
+    section_id: str = ""
+    subsection_id: str | None = None
+    summary_paragraphs: list[str] = Field(default_factory=list)
+    key_findings: list[str] = Field(default_factory=list)
     claims: list[SectionClaimDraft] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    content_markdown: str = ""
 
 
 class SynthesisResult(BaseModel):
@@ -156,6 +184,22 @@ def _filter_claim_source_ids(
     return out
 
 
+def _claim_draft_source_ids(draft_claim: SectionClaimDraft) -> list[str]:
+    """Prefer supporting_evidence_ids when present; else fall back to source_ids."""
+    supporting = [
+        str(sid).strip()
+        for sid in (draft_claim.supporting_evidence_ids or [])
+        if str(sid).strip()
+    ]
+    if supporting:
+        return supporting
+    return [
+        str(sid).strip()
+        for sid in (draft_claim.source_ids or [])
+        if str(sid).strip()
+    ]
+
+
 def _strongest_grade_for_ids(
     source_ids: list[str],
     by_id: dict[str, EvidenceRecord],
@@ -172,6 +216,43 @@ def _strongest_grade_for_ids(
             best_rank = r
             best = rec.evidence_grade
     return best
+
+
+def _render_section_draft_markdown(
+    draft: SectionDraft,
+    *,
+    gene_symbol: str,
+    section_name: str,
+) -> str:
+    """Render structured Rancho draft fields into ReportSection markdown."""
+    preformatted = (draft.content_markdown or "").strip()
+    if preformatted:
+        return preformatted
+
+    lines: list[str] = [f"**{section_name}** ({gene_symbol})", ""]
+    paragraphs = [p.strip() for p in (draft.summary_paragraphs or []) if p and str(p).strip()]
+    if paragraphs:
+        lines.extend(paragraphs)
+        lines.append("")
+
+    findings = [f.strip() for f in (draft.key_findings or []) if f and str(f).strip()]
+    if findings:
+        lines.append("**Key findings**")
+        lines.append("")
+        for item in findings:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    limitations = [lim.strip() for lim in (draft.limitations or []) if lim and str(lim).strip()]
+    if limitations:
+        lines.append("**Limitations**")
+        lines.append("")
+        for item in limitations:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    body = "\n".join(lines).strip()
+    return body
 
 
 # --------------------------------------------------------------------------------------
@@ -204,7 +285,8 @@ def synthesize_section_deterministic(
             section_name=section_name,
             content_markdown=(
                 f"**{section_name}**\n\n"
-                f"_No evidence records available for {gene_symbol} in this section._\n"
+                f"_Evidence for {gene_symbol} in this section was unavailable "
+                "from this run._\n"
             ),
             source_ids=[],
             status="empty",
@@ -260,45 +342,153 @@ def synthesize_section_deterministic(
 # --------------------------------------------------------------------------------------
 # LLM synthesis (LangChain)
 # --------------------------------------------------------------------------------------
-def build_chat_model(settings: Settings | None = None) -> Any | None:
-    """Return a LangChain chat model if an LLM API key is configured, else None.
+DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 
-    Provider import/construction failures are logged and return ``None`` so
-    callers fall back to deterministic synthesis instead of crashing.
-    """
-    cfg = settings or get_settings()
-    if not cfg.has_llm():
+PROVIDER_OPENAI = "openai"
+PROVIDER_NVIDIA_NIM = "nvidia_nim"
+PROVIDER_ANTHROPIC = "anthropic"
+
+
+class LlmModelCandidate(BaseModel):
+    """One constructed chat model plus its provider label (for fallback logging)."""
+
+    provider: str
+    model: Any
+
+
+def _normalized_provider(settings: Settings) -> str:
+    raw = (settings.default_llm_provider or "").strip().lower()
+    if raw in {PROVIDER_OPENAI, PROVIDER_NVIDIA_NIM, PROVIDER_ANTHROPIC}:
+        return raw
+    return ""
+
+
+def _provider_order(settings: Settings) -> list[str]:
+    """Ordered provider names for construction / invocation fallback."""
+    preferred = _normalized_provider(settings)
+    auto = [PROVIDER_OPENAI, PROVIDER_NVIDIA_NIM, PROVIDER_ANTHROPIC]
+    if not preferred:
+        return auto
+    rest = [p for p in auto if p != preferred]
+    return [preferred, *rest]
+
+
+def _sanitize_llm_error(exc: BaseException, *, limit: int = 200) -> str:
+    """Short error text without dumping secrets or full env."""
+    text = f"{type(exc).__name__}: {exc}"
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _build_openai_chat(settings: Settings) -> Any | None:
+    if not settings.has_key("openai_api_key"):
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
+
+        model_name = (settings.default_llm_model or DEFAULT_OPENAI_MODEL).strip()
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "api_key": settings.openai_api_key,
+            "temperature": 0,
+        }
+        base_url = (settings.openai_base_url or "").strip()
+        if base_url:
+            kwargs["base_url"] = base_url
+        return ChatOpenAI(**kwargs)
+    except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
+        logger.warning(
+            "Failed to build OpenAI chat model: %s", _sanitize_llm_error(exc)
+        )
         return None
 
-    if cfg.has_key("ANTHROPIC_API_KEY"):
-        try:
-            from langchain_anthropic import ChatAnthropic
 
-            model_name = (cfg.default_llm_model or "claude-sonnet-4-20250514").strip()
-            return ChatAnthropic(
-                model=model_name,
-                api_key=cfg.anthropic_api_key,
-                temperature=0,
-            )
-        except Exception as exc:  # noqa: BLE001 — soft-fail to deterministic
-            logger.warning("Failed to build Anthropic chat model: %s", exc)
-            return None
+def _build_nvidia_nim_chat(settings: Settings) -> Any | None:
+    if not settings.has_key("nvidia_nim_api_key"):
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
 
-    if cfg.has_key("OPENAI_API_KEY"):
-        try:
-            from langchain_openai import ChatOpenAI
+        base_url = (settings.nvidia_nim_base_url or "").strip() or DEFAULT_NIM_BASE_URL
+        model_name = (
+            (settings.nvidia_nim_model or "").strip()
+            or (settings.default_llm_model or "").strip()
+            or DEFAULT_NIM_MODEL
+        )
+        return ChatOpenAI(
+            model=model_name,
+            api_key=settings.nvidia_nim_api_key,
+            base_url=base_url,
+            temperature=0,
+        )
+    except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
+        logger.warning(
+            "Failed to build NVIDIA NIM chat model: %s", _sanitize_llm_error(exc)
+        )
+        return None
 
-            model_name = (cfg.default_llm_model or "gpt-4o-mini").strip()
-            return ChatOpenAI(
-                model=model_name,
-                api_key=cfg.openai_api_key,
-                temperature=0,
-            )
-        except Exception as exc:  # noqa: BLE001 — soft-fail to deterministic
-            logger.warning("Failed to build OpenAI chat model: %s", exc)
-            return None
 
-    return None
+def _build_anthropic_chat(settings: Settings) -> Any | None:
+    if not settings.has_key("anthropic_api_key"):
+        return None
+    try:
+        from langchain_anthropic import ChatAnthropic
+
+        model_name = (settings.default_llm_model or DEFAULT_ANTHROPIC_MODEL).strip()
+        return ChatAnthropic(
+            model=model_name,
+            api_key=settings.anthropic_api_key,
+            temperature=0,
+        )
+    except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
+        logger.warning(
+            "Failed to build Anthropic chat model: %s", _sanitize_llm_error(exc)
+        )
+        return None
+
+
+def build_chat_model_candidates(
+    settings: Settings | None = None,
+) -> list[LlmModelCandidate]:
+    """Build ordered LLM candidates for invocation-time fallback.
+
+    Skips providers with missing keys. Construction failures are logged (no
+    secrets) and the next provider is tried. Never raises.
+    """
+    cfg = settings or get_settings()
+    builders = {
+        PROVIDER_OPENAI: _build_openai_chat,
+        PROVIDER_NVIDIA_NIM: _build_nvidia_nim_chat,
+        PROVIDER_ANTHROPIC: _build_anthropic_chat,
+    }
+    out: list[LlmModelCandidate] = []
+    for provider in _provider_order(cfg):
+        builder = builders.get(provider)
+        if builder is None:
+            continue
+        model = builder(cfg)
+        if model is None:
+            continue
+        out.append(LlmModelCandidate(provider=provider, model=model))
+    return out
+
+
+def build_chat_model(settings: Settings | None = None) -> Any | None:
+    """Return the first available chat model, or None.
+
+    Prefer :func:`build_chat_model_candidates` when invocation-time fallback
+    across providers is needed. Supports OpenAI, NVIDIA NIM (OpenAI-compatible),
+    and Anthropic.
+    """
+    candidates = build_chat_model_candidates(settings)
+    if not candidates:
+        return None
+    return candidates[0].model
 
 
 def _invoke_section_llm(
@@ -319,8 +509,11 @@ def _invoke_section_llm(
                 "human",
                 "Gene: {gene_symbol}\n"
                 "Section: {section_name}\n\n"
-                "Evidence (use only these source_ids):\n{evidence_block}\n\n"
-                "Write the section markdown and extract discrete claims.",
+                "Evidence (use only these source_ids; do not invent others):\n"
+                "{evidence_block}\n\n"
+                "Return structured Rancho section fields: summary_paragraphs, "
+                "key_findings, claims (with supporting_evidence_ids), and "
+                "limitations. Leave content_markdown empty unless necessary.",
             ),
         ]
     )
@@ -365,7 +558,9 @@ def synthesize_section_llm(
     allowed = _allowed_source_ids(records)
     by_id = {r.source_id: r for r in records if r.source_id}
 
-    content = (draft.content_markdown or "").strip()
+    content = _render_section_draft_markdown(
+        draft, gene_symbol=gene_symbol, section_name=section_name
+    ).strip()
     if not content:
         raise ValueError("LLM returned empty section markdown")
 
@@ -374,11 +569,11 @@ def synthesize_section_llm(
     claims: list[Claim] = []
 
     for draft_claim in draft.claims:
-        sids = _filter_claim_source_ids(draft_claim.source_ids, allowed)
-        if not sids:
-            continue
         text = (draft_claim.claim_text or "").strip()
         if not text:
+            continue
+        sids = _filter_claim_source_ids(_claim_draft_source_ids(draft_claim), allowed)
+        if not sids:
             continue
         for sid in sids:
             if sid not in seen:
@@ -411,6 +606,7 @@ def synthesize_section_llm(
     section = ReportSection(
         dossier_run_id=dossier_run_id,
         section_name=section_name,
+        subsection_name=draft.subsection_id or None,
         content_markdown=content + "\n",
         source_ids=section_source_ids,
         status="llm",
@@ -432,30 +628,43 @@ def synthesize_section(
     settings: Settings | None = None,
     force_deterministic: bool = False,
     model: Any | None = None,
+    model_candidates: list[LlmModelCandidate] | None = None,
 ) -> tuple[ReportSection, list[Claim], SynthesisMode]:
-    """Synthesize one section; prefer LLM when available, else deterministic."""
+    """Synthesize one section; try LLM providers in order, else deterministic.
+
+    When ``model`` is provided (tests / injected client), it is tried alone.
+    Otherwise ``model_candidates`` or :func:`build_chat_model_candidates` are
+    tried at **invocation** time so one failing provider does not block others.
+    """
     cfg = settings or get_settings()
     if (
         not force_deterministic
         and section_name not in _META_SECTIONS
         and records
     ):
-        chat = model if model is not None else build_chat_model(cfg)
-        if chat is not None:
+        if model is not None:
+            candidates = [LlmModelCandidate(provider="injected", model=model)]
+        elif model_candidates is not None:
+            candidates = list(model_candidates)
+        else:
+            candidates = build_chat_model_candidates(cfg)
+
+        for candidate in candidates:
             try:
                 section, claims = synthesize_section_llm(
                     dossier_run_id=dossier_run_id,
                     gene_symbol=gene_symbol,
                     section_name=section_name,
                     records=records,
-                    model=chat,
+                    model=candidate.model,
                 )
                 return section, claims, "llm"
-            except Exception as exc:  # noqa: BLE001 — soft-fail to deterministic
+            except Exception as exc:  # noqa: BLE001 — try next provider
                 logger.warning(
-                    "LLM synthesis failed for section %r; using deterministic fallback: %s",
+                    "LLM provider %s failed for section %r; trying next: %s",
+                    candidate.provider,
                     section_name,
-                    exc,
+                    _sanitize_llm_error(exc),
                 )
 
     section, claims = synthesize_section_deterministic(
@@ -488,6 +697,9 @@ def synthesize_dossier(
     Without LLM keys, every content section is deterministic. Meta sections are
     deferred placeholders. Unknown evidence sections (not in the CHDI list) are
     appended after the canonical list so nothing is silently dropped.
+
+    Configured LLM providers are tried in order per section; invocation failures
+    fall through to the next provider before deterministic fallback.
     """
     cfg = settings or get_settings()
     records = list(evidence_records)
@@ -499,12 +711,19 @@ def synthesize_dossier(
     if "Unsectioned" in grouped and "Unsectioned" not in ordered:
         ordered.append("Unsectioned")
 
-    chat = None if force_deterministic else build_chat_model(cfg)
+    candidates: list[LlmModelCandidate] = (
+        [] if force_deterministic else build_chat_model_candidates(cfg)
+    )
     notes: list[str] = []
-    if chat is None and not force_deterministic and not cfg.has_llm():
+    if not candidates and not force_deterministic and not cfg.has_llm():
         notes.append("No LLM API key configured; using deterministic synthesis.")
     elif force_deterministic:
         notes.append("force_deterministic=True; skipped LLM synthesis.")
+    elif not candidates and cfg.has_llm():
+        notes.append(
+            "LLM keys present but no chat model could be constructed; "
+            "using deterministic synthesis."
+        )
 
     sections: list[ReportSection] = []
     claims: list[Claim] = []
@@ -520,7 +739,7 @@ def synthesize_dossier(
             records=section_records,
             settings=cfg,
             force_deterministic=force_deterministic,
-            model=chat,
+            model_candidates=candidates,
         )
         sections.append(section)
         claims.extend(section_claims)
@@ -549,12 +768,15 @@ def synthesize_dossier(
 __all__ = [
     "CHDI_REPORT_SECTIONS",
     "SYNTHESIS_SYSTEM_PROMPT",
+    "DEFAULT_NIM_BASE_URL",
+    "LlmModelCandidate",
     "SectionClaimDraft",
     "SectionDraft",
     "SynthesisResult",
     "group_evidence_by_section",
     "format_evidence_block",
     "build_chat_model",
+    "build_chat_model_candidates",
     "synthesize_section_deterministic",
     "synthesize_section_llm",
     "synthesize_section",

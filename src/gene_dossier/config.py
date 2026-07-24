@@ -47,8 +47,14 @@ class Settings(BaseSettings):
 
     # --- LLM providers (optional) ---
     openai_api_key: str | None = None
+    openai_base_url: str | None = None
     anthropic_api_key: str | None = None
+    nvidia_nim_api_key: str | None = None
+    nvidia_nim_base_url: str | None = None
+    nvidia_nim_model: str | None = None
     default_llm_model: str | None = None
+    # openai | anthropic | nvidia_nim | unset (auto: openai → nim → anthropic)
+    default_llm_provider: str | None = None
 
     # --- Storage / database ---
     database_url: str = "sqlite:///data/gene_dossier.db"
@@ -91,7 +97,11 @@ class Settings(BaseSettings):
 
     def has_llm(self) -> bool:
         """Return True if any LLM provider key is configured."""
-        return self.has_key("openai_api_key") or self.has_key("anthropic_api_key")
+        return (
+            self.has_key("openai_api_key")
+            or self.has_key("anthropic_api_key")
+            or self.has_key("nvidia_nim_api_key")
+        )
 
     def ensure_dirs(self) -> None:
         """Create the raw, output, and index directories if they do not exist."""
