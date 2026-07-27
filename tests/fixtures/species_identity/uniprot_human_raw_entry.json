@@ -1,0 +1,42 @@
+{
+  "primaryAccession": "Q12772",
+  "uniProtkbId": "SRBP2_HUMAN",
+  "entryType": "UniProtKB reviewed (Swiss-Prot)",
+  "organism": {
+    "scientificName": "Homo sapiens",
+    "commonName": "Human",
+    "taxonId": 9606
+  },
+  "genes": [
+    {
+      "geneName": {"value": "SREBF2"},
+      "synonyms": [
+        {"value": "BHLHD2"},
+        {"value": "SREBP2"}
+      ]
+    }
+  ],
+  "proteinDescription": {
+    "recommendedName": {
+      "fullName": {"value": "Sterol regulatory element-binding protein 2"}
+    }
+  },
+  "uniProtKBCrossReferences": [
+    {
+      "database": "Ensembl",
+      "id": "ENST00000389809",
+      "properties": [
+        {"key": "ProteinId", "value": "ENSP00000374455"},
+        {"key": "GeneId", "value": "ENSG00000198911"}
+      ]
+    },
+    {
+      "database": "Ensembl",
+      "id": "ENST00000457199",
+      "properties": [
+        {"key": "ProteinId", "value": "ENSP00000412345"},
+        {"key": "GeneId", "value": "ENSG00000198911"}
+      ]
+    }
+  ]
+}

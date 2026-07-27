@@ -1,31 +1,28 @@
 """UCSC Genome Browser API client.
 
 Searches for a gene region, fetches knownGene track data, and builds browser
-URLs. Does **not** normalize into evidence records — that belongs in
-``normalize/gene_identity.py``.
+URLs. Conservation evidence normalization lives in
+``normalize/ucsc_conservation.py``.
 
 Key endpoints (validated)::
 
     GET https://api.genome.ucsc.edu/search?genome=hg38&search={symbol}
     GET https://api.genome.ucsc.edu/getData/track
-        ?genome=hg38&track=knownGene&chrom={chrom}&start={start}&end={end}
+        ?genome=hg38&track=knownGene&chrom={chrom}&start={api_start}&end={api_end}
 
 Browser view (not JSON)::
 
-    https://genome.ucsc.edu/cgi-bin/hgTracks
-        ?db=hg38&position={chrom}:{start}-{end}&knownGene=pack&cons100way=full
+    https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&position={display}
 
-NOTE: Track requests require both ``start`` and ``end``.
-
-For SREBF2 / hg38, validated region ``chr22:41833105-41907305``
-(canonical transcript ``ENST00000361204.9``).
+Track requests use 0-based half-open API coordinates derived from the
+1-based display position via ``ucsc_coords`` helpers. Never reuse the display
+start as the track API start.
 
 Never raises: all failures return :class:`~gene_dossier.models.ToolResult`.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any
 from urllib.parse import urlencode
 
@@ -33,22 +30,21 @@ import httpx
 
 from gene_dossier.config import Settings, get_settings
 from gene_dossier.models import ToolResult
+from gene_dossier.ucsc_coords import display_to_api_end, display_to_api_start
+from gene_dossier.ucsc_figure import (
+    build_safe_hgtracks_url,
+    redact_api_key,
+    sanitize_params,
+)
+from gene_dossier.ucsc_parse import parse_position, parse_search_response
 
 SOURCE_NAME = "UCSC"
 UCSC_API_BASE = "https://api.genome.ucsc.edu"
 UCSC_BROWSER_BASE = "https://genome.ucsc.edu/cgi-bin/hgTracks"
+UCSC_RENDER_URL = "https://genome.ucsc.edu/cgi-bin/hgRenderTracks"
 
 DEFAULT_GENOME = "hg38"
 DEFAULT_TRACK = "knownGene"
-
-# Validated SREBF2 / hg38 anchors.
-DEFAULT_REGION_SREBF2 = "chr22:41833105-41907305"
-DEFAULT_CANONICAL_TRANSCRIPT_SREBF2 = "ENST00000361204.9"
-
-_POSITION_RE = re.compile(
-    r"^(?P<chrom>chr[\w.]+):(?P<start>\d+)-(?P<end>\d+)$",
-    re.IGNORECASE,
-)
 
 
 def _tool_result(
@@ -69,65 +65,33 @@ def _tool_result(
         endpoint_name=endpoint_name,
         success=success,
         gene_symbol=gene_symbol,
-        request_url=request_url,
-        request_params=request_params,
+        request_url=redact_api_key(request_url),
+        request_params=sanitize_params(request_params),
         status_code=status_code,
         data=data,
         error_type=error_type,
-        error_message=error_message,
+        error_message=redact_api_key(error_message) if error_message else None,
     )
-
-
-def parse_position(position: str) -> dict[str, Any] | None:
-    """Parse ``chrom:start-end`` into ``{chrom, start, end}``."""
-    text = (position or "").strip().replace(",", "")
-    match = _POSITION_RE.match(text)
-    if not match:
-        return None
-    start = int(match.group("start"))
-    end = int(match.group("end"))
-    if end < start:
-        return None
-    return {
-        "chrom": match.group("chrom"),
-        "start": start,
-        "end": end,
-        "position": f"{match.group('chrom')}:{start}-{end}",
-    }
 
 
 def browser_url(
     chrom: str,
-    start: int,
-    end: int,
+    display_start: int,
+    display_end: int,
     *,
     genome: str = DEFAULT_GENOME,
-    known_gene: str = "pack",
-    cons100way: str = "full",
+    transcript_id: str | None = None,
 ) -> str:
-    """Build a UCSC hgTracks browser URL for the region (not a JSON API)."""
-    params = {
-        "db": genome,
-        "position": f"{chrom}:{start}-{end}",
-        "knownGene": known_gene,
-        "cons100way": cons100way,
-    }
-    return f"{UCSC_BROWSER_BASE}?{urlencode(params)}"
-
-
-def summarize_position_match(row: dict[str, Any]) -> dict[str, Any]:
-    """Extract key UCSC search hit fields (not evidence)."""
-    position = row.get("position")
-    parsed = parse_position(str(position)) if position else None
-    return {
-        "db": row.get("db"),
-        "name": row.get("name"),
-        "description": row.get("description"),
-        "position": position,
-        "chrom": parsed["chrom"] if parsed else None,
-        "start": parsed["start"] if parsed else None,
-        "end": parsed["end"] if parsed else None,
-    }
+    """Build a credential-free UCSC hgTracks URL for a display interval."""
+    url = build_safe_hgtracks_url(
+        genome=genome,
+        display_position=f"{chrom}:{display_start}-{display_end}",
+        transcript_id=transcript_id,
+    )
+    return url or (
+        f"{UCSC_BROWSER_BASE}?"
+        f"{urlencode({'db': genome, 'position': f'{chrom}:{display_start}-{display_end}'})}"
+    )
 
 
 def summarize_known_gene(row: dict[str, Any]) -> dict[str, Any]:
@@ -135,6 +99,8 @@ def summarize_known_gene(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": row.get("name"),
         "chrom": row.get("chrom"),
+        "chrom_start": row.get("chromStart", row.get("txStart")),
+        "chrom_end": row.get("chromEnd", row.get("txEnd")),
         "tx_start": row.get("txStart"),
         "tx_end": row.get("txEnd"),
         "strand": row.get("strand"),
@@ -142,49 +108,10 @@ def summarize_known_gene(row: dict[str, Any]) -> dict[str, Any]:
         "exon_ends": row.get("exonEnds"),
         "gene_name": row.get("geneName"),
         "gene_name2": row.get("geneName2"),
+        "tag": row.get("tag"),
+        "tier": row.get("tier"),
+        "rank": row.get("rank"),
     }
-
-
-def prefer_position_match(
-    matches: list[Any],
-    gene_symbol: str,
-    *,
-    genome: str = DEFAULT_GENOME,
-) -> dict[str, Any] | None:
-    """Prefer a search hit whose name matches ``gene_symbol`` on ``genome``.
-
-    Does not blindly trust the first hit. Returns ``None`` when no safe match.
-    """
-    target = gene_symbol.strip().upper()
-    if not target:
-        return None
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for row in matches:
-        if not isinstance(row, dict):
-            continue
-        position = row.get("position")
-        if not position or not parse_position(str(position)):
-            continue
-        name = str(row.get("name") or "").strip().upper()
-        db = str(row.get("db") or "").strip()
-        if name != target and target not in name.split():
-            # Also allow description mentioning the symbol as weaker signal only
-            # when name is empty — still require exact name preference first.
-            continue
-        rank = 0
-        if db and db != genome:
-            rank += 2
-        if name != target:
-            rank += 1
-        scored.append((rank, row))
-    if not scored:
-        return None
-    scored.sort(key=lambda item: item[0])
-    best_rank = scored[0][0]
-    best = [row for rank, row in scored if rank == best_rank]
-    if len(best) != 1:
-        return None
-    return best[0]
 
 
 def _request_json(
@@ -246,7 +173,7 @@ def _request_json(
             request_params=query,
             success=False,
             error_type="http_error",
-            error_message=str(exc),
+            error_message=redact_api_key(str(exc)),
         )
     except Exception as exc:  # noqa: BLE001 — clients must never raise
         return _tool_result(
@@ -256,7 +183,7 @@ def _request_json(
             request_params=query,
             success=False,
             error_type=type(exc).__name__,
-            error_message=str(exc),
+            error_message=redact_api_key(str(exc)),
         )
 
 
@@ -281,17 +208,17 @@ def search(
 
 def get_track_data(
     chrom: str,
-    start: int,
-    end: int,
+    api_start_0_based: int,
+    api_end_exclusive: int,
     *,
     gene_symbol: str = "",
     genome: str = DEFAULT_GENOME,
     track: str = DEFAULT_TRACK,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Fetch UCSC track data for a region (``start`` and ``end`` both required)."""
+    """Fetch UCSC track data for an API (0-based half-open) interval."""
     cfg = settings or get_settings()
-    if start is None or end is None:
+    if api_start_0_based is None or api_end_exclusive is None:
         return _tool_result(
             endpoint_name="get_track_data",
             gene_symbol=gene_symbol,
@@ -305,8 +232,8 @@ def get_track_data(
         "genome": genome,
         "track": track,
         "chrom": chrom,
-        "start": int(start),
-        "end": int(end),
+        "start": int(api_start_0_based),
+        "end": int(api_end_exclusive),
     }
     return _request_json(
         endpoint_name="get_track_data",
@@ -324,11 +251,11 @@ def fetch_gene_region(
     track: str = DEFAULT_TRACK,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Search → select coordinates → fetch knownGene track + browser URL.
+    """Search → resolve display locus → fetch knownGene with API coordinates.
 
-    On success, ``data`` includes selected chrom/start/end, track summaries, and
-    a browser URL. If no safe position match exists, returns success with
-    ``selection_method="ambiguous"`` and no track fetch (does not guess).
+    On success, ``data`` includes search payload, track payload, and display /
+    API coordinate fields. If no exact-gene positional match exists, returns
+    success with ``selection_method="ambiguous"`` and no track fetch.
 
     Never raises.
     """
@@ -348,14 +275,9 @@ def fetch_gene_region(
         )
 
     payload = searched.data if isinstance(searched.data, dict) else {}
-    matches = payload.get("positionMatches") or []
-    if not isinstance(matches, list):
-        matches = []
-    match_summaries = [
-        summarize_position_match(m) for m in matches if isinstance(m, dict)
-    ]
-    selected = prefer_position_match(matches, gene_symbol, genome=genome)
-    if selected is None:
+    inventory = parse_search_response(payload, gene_symbol=gene_symbol, genome=genome)
+    display = inventory.selected_display_interval
+    if display is None:
         return _tool_result(
             endpoint_name="fetch_gene_region",
             gene_symbol=gene_symbol,
@@ -368,44 +290,34 @@ def fetch_gene_region(
                 "genome": genome,
                 "selection_method": "ambiguous",
                 "search": searched.data,
-                "position_match_summaries": match_summaries,
                 "chrom": None,
                 "start": None,
                 "end": None,
+                "api_start_0_based": None,
+                "api_end_exclusive": None,
+                "display_start_1_based": None,
+                "display_end_1_based": None,
                 "track_data": None,
                 "browser_url": None,
             },
         )
 
-    parsed = parse_position(str(selected.get("position")))
-    if not parsed:
-        return _tool_result(
-            endpoint_name="fetch_gene_region",
-            gene_symbol=gene_symbol,
-            request_url=searched.request_url,
-            request_params=searched.request_params,
-            success=False,
-            status_code=searched.status_code,
-            data={
-                "gene_symbol": gene_symbol,
-                "search": searched.data,
-                "selected_match": selected,
-            },
-            error_type="parse_error",
-            error_message="Could not parse UCSC position from selected match",
-        )
-
-    chrom = parsed["chrom"]
-    start = parsed["start"]
-    end = parsed["end"]
+    api_start = display_to_api_start(display.display_start_1_based)
+    api_end = display_to_api_end(display.display_end_1_based)
     track_res = get_track_data(
-        chrom,
-        start,
-        end,
+        display.chrom,
+        api_start,
+        api_end,
         gene_symbol=gene_symbol,
         genome=genome,
         track=track,
         settings=cfg,
+    )
+    browser = browser_url(
+        display.chrom,
+        display.display_start_1_based,
+        display.display_end_1_based,
+        genome=genome,
     )
     if not track_res.success:
         return _tool_result(
@@ -420,12 +332,16 @@ def fetch_gene_region(
                 "genome": genome,
                 "selection_method": "matched",
                 "search": searched.data,
-                "selected_match": selected,
-                "chrom": chrom,
-                "start": start,
-                "end": end,
+                "chrom": display.chrom,
+                "start": api_start,
+                "end": api_end,
+                "api_start_0_based": api_start,
+                "api_end_exclusive": api_end,
+                "display_start_1_based": display.display_start_1_based,
+                "display_end_1_based": display.display_end_1_based,
+                "position": display.display_position,
                 "track_data": track_res.data,
-                "browser_url": browser_url(chrom, start, end, genome=genome),
+                "browser_url": browser,
             },
             error_type=track_res.error_type or "track_failed",
             error_message=track_res.error_message or "UCSC track data failed",
@@ -446,9 +362,9 @@ def fetch_gene_region(
         request_params={
             "genome": genome,
             "track": track,
-            "chrom": chrom,
-            "start": start,
-            "end": end,
+            "chrom": display.chrom,
+            "start": api_start,
+            "end": api_end,
             "selection_method": "matched",
         },
         success=True,
@@ -458,16 +374,18 @@ def fetch_gene_region(
             "genome": genome,
             "selection_method": "matched",
             "search": searched.data,
-            "selected_match": selected,
-            "position_match_summaries": match_summaries,
-            "chrom": chrom,
-            "start": start,
-            "end": end,
-            "position": parsed["position"],
+            "chrom": display.chrom,
+            "start": api_start,
+            "end": api_end,
+            "api_start_0_based": api_start,
+            "api_end_exclusive": api_end,
+            "display_start_1_based": display.display_start_1_based,
+            "display_end_1_based": display.display_end_1_based,
+            "position": display.display_position,
             "track_data": track_res.data,
             "transcript_summaries": transcript_summaries,
             "transcript_count": len(transcript_summaries),
-            "browser_url": browser_url(chrom, start, end, genome=genome),
+            "browser_url": browser,
         },
     )
 
@@ -476,15 +394,12 @@ __all__ = [
     "SOURCE_NAME",
     "UCSC_API_BASE",
     "UCSC_BROWSER_BASE",
+    "UCSC_RENDER_URL",
     "DEFAULT_GENOME",
     "DEFAULT_TRACK",
-    "DEFAULT_REGION_SREBF2",
-    "DEFAULT_CANONICAL_TRANSCRIPT_SREBF2",
     "parse_position",
     "browser_url",
-    "summarize_position_match",
     "summarize_known_gene",
-    "prefer_position_match",
     "search",
     "get_track_data",
     "fetch_gene_region",

@@ -414,6 +414,19 @@ def save_evidence_record(
     return evidence
 
 
+def delete_evidence_record(session: Session, evidence_id: str) -> bool:
+    """Delete one evidence record by primary key. Returns True if a row was removed.
+
+    Does not delete related RawArtifact or ApiRun rows.
+    """
+    row = session.get(EvidenceRecordRow, evidence_id)
+    if row is None:
+        return False
+    session.delete(row)
+    session.flush()
+    return True
+
+
 def list_evidence_for_run(
     session: Session, dossier_run_id: str
 ) -> list[domain.EvidenceRecord]:
@@ -489,6 +502,7 @@ __all__ = [
     "save_api_run",
     "save_raw_artifact",
     "save_evidence_record",
+    "delete_evidence_record",
     "list_evidence_for_run",
     "get_evidence_by_source_id",
     "save_source_coverage",

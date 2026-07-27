@@ -1,0 +1,18 @@
+{
+  "gene_symbol": "SREBF2",
+  "organism_id": 9606,
+  "selected_accession": "Q12772",
+  "entries": [
+    {
+      "accession": "Q12772",
+      "primaryAccession": "Q12772",
+      "reviewed": true,
+      "gene_names": ["SREBF2", "BHLHD2", "SREBP2"],
+      "gene_synonyms": ["BHLHD2", "SREBP2"],
+      "protein_name": "Sterol regulatory element-binding protein 2",
+      "organism_name": "Homo sapiens",
+      "organism_id": 9606,
+      "ensembl_xrefs": ["ENSG99999999999.1"]
+    }
+  ]
+}

@@ -12,7 +12,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, computed_field
+from pydantic import Field, SecretStr, computed_field, field_serializer
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repo root = two levels up from this file (src/gene_dossier/config.py -> repo root).
@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     biogrid_accesskey: str | None = None
     omim_api_key: str | None = None
     serpapi_api_key: str | None = None
+    # UCSC hgRenderTracks browser API key (never logged or persisted).
+    ucsc_browser_api_key: SecretStr | None = None
 
     # --- LLM providers (optional) ---
     openai_api_key: str | None = None
@@ -86,6 +88,11 @@ class Settings(BaseSettings):
         return _resolve(self.index_dir)
 
     # --- Helpers ---
+    @field_serializer("ucsc_browser_api_key", when_used="always")
+    def _serialize_ucsc_key(self, value: SecretStr | None) -> str | None:
+        """Never expose the UCSC browser API key in dumps/repr."""
+        return None if value is None else "***"
+
     def has_key(self, name: str) -> bool:
         """Return True if the named key setting is present and non-empty.
 
@@ -93,6 +100,8 @@ class Settings(BaseSettings):
         (``"NCBI_API_KEY"``).
         """
         value = getattr(self, name.lower(), None)
+        if isinstance(value, SecretStr):
+            return bool(value.get_secret_value().strip())
         return bool(value and str(value).strip())
 
     def has_llm(self) -> bool:

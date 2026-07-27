@@ -1,0 +1,26 @@
+{
+  "gene_symbol": "SREBF2",
+  "species": "homo_sapiens",
+  "summary": {
+    "ensembl_gene_id": "ENSG00000198911",
+    "display_name": "SREBF2",
+    "description": "sterol regulatory element binding transcription factor 2 [Source:HGNC Symbol;Acc:HGNC:11290]",
+    "species": "homo_sapiens",
+    "assembly_name": "GRCh38",
+    "canonical_transcript": "ENST00000389809.8",
+    "biotype": "protein_coding",
+    "seq_region_name": "22",
+    "start": 41833354,
+    "end": 41903307,
+    "strand": 1,
+    "version": 12,
+    "source": "ensembl"
+  },
+  "raw": {
+    "id": "ENSG00000198911",
+    "display_name": "SREBF2",
+    "species": "homo_sapiens",
+    "version": 12,
+    "source": "ensembl"
+  }
+}

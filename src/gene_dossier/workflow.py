@@ -592,30 +592,73 @@ def extract_gene_ids_from_tool_result(
 
     if source == "NCBI Gene":
         gid = data.get("selected_gene_id")
-        if gid:
-            updated["entrez_gene_id"] = str(gid)
+        tax = data.get("expected_taxid")
         summary = data.get("selected_summary") or {}
-        if isinstance(summary, dict):
-            official = summary.get("nomenclaturesymbol") or summary.get("name")
-            if official:
+        if not isinstance(summary, dict):
+            summary = {}
+        if tax is None:
+            organism = summary.get("organism") or {}
+            if isinstance(organism, dict):
+                tax = organism.get("taxid")
+        try:
+            tax_int = int(tax) if tax is not None else None
+        except (TypeError, ValueError):
+            tax_int = None
+        # Legacy human-only payloads omit taxid; treat as human.
+        if tax_int is None:
+            tax_int = 9606
+        if gid:
+            if tax_int == 9606:
+                updated["entrez_gene_id"] = str(gid)
+            elif tax_int == 10090:
+                updated["mouse_entrez_id"] = str(gid)
+            elif tax_int == 10116:
+                updated["rat_entrez_id"] = str(gid)
+        official = summary.get("nomenclaturesymbol") or summary.get("name")
+        if official:
+            if tax_int == 9606:
                 updated["official_symbol"] = str(official)
-            chrom = summary.get("chromosome")
-            if chrom:
-                updated["chromosome"] = str(chrom)
+            elif tax_int == 10090:
+                updated["mouse_symbol"] = str(official)
+            elif tax_int == 10116:
+                updated["rat_symbol"] = str(official)
+        chrom = summary.get("chromosome")
+        if chrom and tax_int == 9606:
+            updated["chromosome"] = str(chrom)
     elif source == "Ensembl":
         eid = data.get("ensembl_id") or data.get("id")
+        if not eid and isinstance(data.get("summary"), dict):
+            eid = data["summary"].get("ensembl_gene_id") or data["summary"].get("id")
         if not eid and isinstance(data.get("gene"), dict):
             eid = data["gene"].get("id")
+        species = data.get("species")
+        if not species and isinstance(data.get("summary"), dict):
+            species = data["summary"].get("species")
         if eid:
-            updated["ensembl_id"] = str(eid)
+            if species in (None, "", "homo_sapiens"):
+                updated["ensembl_id"] = str(eid)
+            elif species == "mus_musculus":
+                updated["mouse_ensembl_id"] = str(eid)
+            elif species == "rattus_norvegicus":
+                updated["rat_ensembl_id"] = str(eid)
     elif source == "UniProt":
         acc = data.get("selected_accession") or data.get("primaryAccession")
         if not acc:
-            results = data.get("results") or data.get("selected") or []
+            results = data.get("results") or data.get("selected") or data.get("entries") or []
             if isinstance(results, list) and results and isinstance(results[0], dict):
-                acc = results[0].get("primaryAccession")
+                acc = results[0].get("primaryAccession") or results[0].get("accession")
+        organism_id = data.get("organism_id")
+        try:
+            tax_int = int(organism_id) if organism_id is not None else 9606
+        except (TypeError, ValueError):
+            tax_int = 9606
         if acc:
-            updated["uniprot_accession"] = str(acc)
+            if tax_int == 9606:
+                updated["uniprot_accession"] = str(acc)
+            elif tax_int == 10090:
+                updated["mouse_uniprot_accession"] = str(acc)
+            elif tax_int == 10116:
+                updated["rat_uniprot_accession"] = str(acc)
     elif source == "NCBI Datasets":
         for row in data.get("ortholog_summaries") or []:
             if not isinstance(row, dict):
@@ -697,7 +740,17 @@ def node_create_dossier_run(
 def node_resolve_gene_identity(
     state: DossierState, *, settings: Settings, call_network: bool = True
 ) -> DossierState:
-    """Call identity sources first and collect chained identifiers."""
+    """Call identity sources first and collect chained identifiers.
+
+    Fetches NCBI Gene / Ensembl / UniProt for Human, Mouse, and Rat when
+    networking is enabled. Species-specific symbols are resolved via NCBI
+    before Ensembl/UniProt requests.
+    """
+    from gene_dossier.species_identity import (
+        covered_ncbi_taxons,
+        fetch_species_identity_results,
+    )
+
     gene_symbol = state["gene_symbol"]
     gene_ids = dict(state.get("gene_ids") or {})
     tool_results = list(state.get("tool_results") or [])
@@ -718,19 +771,44 @@ def node_resolve_gene_identity(
             "errors": errors,
         }
 
-    for name in IDENTITY_SOURCES:
-        if any(tr.source_name == name for tr in tool_results):
-            continue
-        fn = CLIENT_DISPATCH.get(name)
-        if fn is None:
-            continue
-        result = _safe_call_client(
-            name, fn, gene_symbol=gene_symbol, gene_ids=gene_ids, settings=settings
+    skip_taxons = covered_ncbi_taxons(tool_results)
+    # If only legacy human-only identity is present (no species_identity tag),
+    # still fetch mouse/rat; skip human to avoid duplicate human calls.
+    has_tagged_species = any(
+        isinstance(tr.request_params, dict) and tr.request_params.get("species_identity")
+        for tr in tool_results
+    )
+    if not has_tagged_species and any(
+        tr.source_name == "NCBI Gene" and tr.success for tr in tool_results
+    ):
+        skip_taxons = set(skip_taxons) | {9606}
+
+    try:
+        species_results = fetch_species_identity_results(
+            gene_symbol, settings=settings, skip_taxons=skip_taxons
         )
+    except Exception as exc:  # noqa: BLE001 — identity must never abort the graph
+        errors.append(f"species_identity: {type(exc).__name__}: {exc}")
+        species_results = []
+
+    for result in species_results:
         tool_results.append(result)
         gene_ids = extract_gene_ids_from_tool_result(result, gene_ids)
         if not result.success:
-            errors.append(f"{name}: {result.error_message or result.error_type}")
+            errors.append(
+                f"{result.source_name}/{result.endpoint_name}: "
+                f"{result.error_message or result.error_type}"
+            )
+        elif (
+            result.source_name == "NCBI Gene"
+            and isinstance(result.data, dict)
+            and result.data.get("selection_method") == "ambiguous"
+        ):
+            warnings = result.data.get("selection_warnings") or []
+            errors.append(
+                f"NCBI Gene/{result.endpoint_name}: ambiguous selection "
+                f"({', '.join(str(w) for w in warnings) or 'no unique safe match'})"
+            )
 
     official = gene_ids.get("official_symbol")
     return {
@@ -883,14 +961,27 @@ def node_normalize_evidence(
     dossier_run_id = state["dossier_run_id"]
     evidence: list[EvidenceRecord] = list(state.get("evidence_records") or [])
     seen = {e.source_id for e in evidence if e.source_id}
-    api_by_source = {
-        a.source_name: a for a in (state.get("api_runs") or []) if a.source_name
+    api_by_artifact = {
+        a.raw_artifact_id: a
+        for a in (state.get("api_runs") or [])
+        if a.raw_artifact_id
     }
+    # Fallback for payloads without artifacts: match by (source, endpoint).
+    api_by_source_endpoint: dict[tuple[str, str], Any] = {}
+    for a in state.get("api_runs") or []:
+        key = (a.source_name or "", a.endpoint_name or "")
+        api_by_source_endpoint[key] = a
 
     for result in state.get("tool_results") or []:
         if not result.success:
             continue
-        api_run = api_by_source.get(result.source_name)
+        api_run = None
+        if result.raw_artifact_id:
+            api_run = api_by_artifact.get(result.raw_artifact_id)
+        if api_run is None:
+            api_run = api_by_source_endpoint.get(
+                (result.source_name or "", result.endpoint_name or "")
+            )
         batch = normalize_tool_result(
             result,
             dossier_run_id=dossier_run_id,
@@ -908,9 +999,16 @@ def node_normalize_evidence(
                     with session_scope() as session:
                         save_evidence_record(session, rec)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Evidence persist failed: %s", exc)
+                    logger.warning(
+                        "DB evidence persist failed for %s: %s",
+                        rec.source_id,
+                        exc,
+                    )
 
-    return {**state, "evidence_records": evidence}
+    return {
+        **state,
+        "evidence_records": evidence,
+    }
 
 
 def node_index_evidence_in_chroma(

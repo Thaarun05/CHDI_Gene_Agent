@@ -1,0 +1,18 @@
+{
+  "gene_symbol": "Srebf2",
+  "organism_id": 10090,
+  "selected_accession": "Q3U1N2",
+  "entries": [
+    {
+      "accession": "Q3U1N2",
+      "primaryAccession": "Q3U1N2",
+      "reviewed": true,
+      "gene_names": ["Srebf2", "Srebp2"],
+      "gene_synonyms": ["Srebp2"],
+      "protein_name": "Sterol regulatory element-binding protein 2",
+      "organism_name": "Mus musculus",
+      "organism_id": 10090,
+      "ensembl_xrefs": ["ENSMUSG00000022463.16"]
+    }
+  ]
+}

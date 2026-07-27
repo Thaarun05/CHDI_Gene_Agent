@@ -1,0 +1,1103 @@
+{
+  "genome": "hg38",
+  "positionMatches": [
+    {
+      "description": "MANE Select Plus Clinical: Representative transcript from RefSeq & GENCODE",
+      "matches": [
+        {
+          "canonical": false,
+          "description": "sterol regulatory element-binding protein 2",
+          "hgFindMatches": "ENST00000361204.9",
+          "highlight": null,
+          "posName": "SREBF2 (NM_004599.4 &#x2F; ENST00000361204.9)",
+          "position": "chr22:41833105-41907305"
+        }
+      ],
+      "name": "mane",
+      "trackName": "mane",
+      "vis": "pack"
+    },
+    {
+      "description": "HUGO Gene Nomenclature",
+      "matches": [
+        {
+          "canonical": false,
+          "description": "sterol regulatory element binding transcription factor 2",
+          "hgFindMatches": "HGNC%3A11290",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833105-41907306"
+        },
+        {
+          "canonical": false,
+          "description": "SREBF2 antisense RNA 1",
+          "hgFindMatches": "HGNC%3A53953",
+          "highlight": null,
+          "posName": "SREBF2-AS1",
+          "position": "chr22:41831215-41834665"
+        }
+      ],
+      "name": "hgnc",
+      "trackName": "hgnc",
+      "vis": "pack"
+    },
+    {
+      "description": "Gencode Genes",
+      "matches": [
+        {
+          "canonical": true,
+          "description": "SREBF2 ENST00000361204.9 sterol regulatory element binding transcription factor 2 transcript ",
+          "hgFindMatches": "ENST00000361204.9",
+          "highlight": null,
+          "posName": "SREBF2 (ENST00000361204.9)",
+          "position": "chr22:41833105-41907305"
+        },
+        {
+          "canonical": true,
+          "description": "SREBF2-AS1 ENST00000333487.2 SREBF2 antisense RNA 1 from RefSeq NR_157279.2 ENST00000333487.1 ",
+          "hgFindMatches": "ENST00000333487.2",
+          "highlight": null,
+          "posName": "SREBF2-AS1 (ENST00000333487.2)",
+          "position": "chr22:41831215-41834665"
+        },
+        {
+          "canonical": true,
+          "description": " ... of the SCAP-SREBP complex composed of SCAP SREBF1 SREBP1 and SREBF2 SREBP2 by promoting loading of SCAP-SREBP into COPII vesicles ",
+          "hgFindMatches": "ENST00000642223.1",
+          "highlight": null,
+          "posName": "CIDEB (ENST00000642223.1)",
+          "position": "chr14_KZ208920v1_fix:606165-612400"
+        },
+        {
+          "canonical": true,
+          "description": " ... of the SCAP-SREBP complex composed of SCAP SREBF1 SREBP1 and SREBF2 SREBP2 by promoting loading of SCAP-SREBP into COPII vesicles ",
+          "hgFindMatches": "ENST00000554411.6",
+          "highlight": null,
+          "posName": "CIDEB (ENST00000554411.6)",
+          "position": "chr14:24305187-24307977"
+        },
+        {
+          "canonical": true,
+          "description": " ... ITPR1 polyubiquitination By similarity Interacts with SCAP INSIG1 SREBF1 and SREBF2 under cholesterol sufficiency conditions indicative for an association with ",
+          "hgFindMatches": "ENST00000519638.3",
+          "highlight": null,
+          "posName": "ERLIN2 (ENST00000519638.3)",
+          "position": "chr8:37736634-37758422"
+        }
+      ],
+      "name": "knownGene",
+      "trackName": "knownGene",
+      "vis": "pack"
+    },
+    {
+      "description": "Basic Gene Annotation Set from GENCODE Version 50 (Ensembl 116)",
+      "matches": [
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41867824"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833105-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41872892"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41885484"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41885484"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833504-41907308"
+        },
+        {
+          "posName": "SREBF2",
+          "position": "not-a-position",
+          "hgFindMatches": "ENSTX",
+          "description": "malformed"
+        }
+      ],
+      "name": "wgEncodeGencodeBasicV50",
+      "trackName": "wgEncodeGencodeBasicV50",
+      "vis": "pack"
+    },
+    {
+      "description": "Comprehensive Gene Annotation Set from GENCODE Version 50 (Ensembl 116)",
+      "matches": [
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41900083-41903003"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41906370"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833119-41907304"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833117-41907301"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833115-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833113-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833111-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833105-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833104-41907304"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833103-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41907302"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833128-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41898676-41904973"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41897068-41899188"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41885596-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41875431-41877366"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41873689-41877396"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833504-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833231-41866946"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833181-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833164-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833103-41907304"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41885484"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41885484"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41872892"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41867824"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833092-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV50_sel=1&wgEncodeGencodeV50ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833029-41907308"
+        }
+      ],
+      "name": "wgEncodeGencodeCompV50",
+      "trackName": "wgEncodeGencodeCompV50",
+      "vis": "pack"
+    },
+    {
+      "description": "Basic Gene Annotation Set from GENCODE Version 49 (Ensembl 115)",
+      "matches": [
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833241-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833132-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833131-41907300"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833127-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833126-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41907302"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833119-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833118-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833115-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833112-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833111-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833105-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833103-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833102-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833102-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeBasicV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833504-41907305"
+        }
+      ],
+      "name": "wgEncodeGencodeBasicV49",
+      "trackName": "wgEncodeGencodeBasicV49",
+      "vis": "pack"
+    },
+    {
+      "description": "Comprehensive Gene Annotation Set from GENCODE Version 49 (Ensembl 115)",
+      "matches": [
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833099-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833131-41907300"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833132-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833164-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833241-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833504-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41873689-41877396"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41875431-41877366"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41885596-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41897068-41899188"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41898676-41904973"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833127-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833126-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833102-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833102-41907308"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833103-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833105-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833111-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833112-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833115-41907306"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833118-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833119-41907305"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41833122-41907302"
+        },
+        {
+          "canonical": false,
+          "extraSel": "wgEncodeGencodeCompV49_sel=1&wgEncodeGencodeV49ViewGenes_sel=1&",
+          "hgFindMatches": "SREBF2",
+          "highlight": null,
+          "posName": "SREBF2",
+          "position": "chr22:41900083-41903003"
+        }
+      ],
+      "name": "wgEncodeGencodeCompV49",
+      "trackName": "wgEncodeGencodeCompV49",
+      "vis": "pack"
+    },
+    {
+      "description": "Track names or descriptions",
+      "matches": [
+        {
+          "canonical": false,
+          "description": "HeLa-S3 <b>SREBF2</b> Transcription Factor ChIP-seq Peaks of SREBF2 in HeLa-S3 from ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "encTfChipPkENCFF785YII:HeLa-S3 SREBF2:Transcription Factor ChIP-seq Peaks of SREBF2 in HeLa-S3 from ENCODE 3 (ENCFF785YII)",
+          "position": "encTfChipPkENCFF785YII:HeLa-S3 SREBF2:Transcription Factor ChIP-seq Peaks of SREBF2 in HeLa-S3 from ENCODE 3 (ENCFF785YII)"
+        },
+        {
+          "canonical": false,
+          "description": "A549 <b>SREBF2</b> Transcription Factor ChIP-seq Peaks of SREBF2 in A549 from ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "encTfChipPkENCFF483YCC:A549 SREBF2:Transcription Factor ChIP-seq Peaks of SREBF2 in A549 from ENCODE 3 (ENCFF483YCC)",
+          "position": "encTfChipPkENCFF483YCC:A549 SREBF2:Transcription Factor ChIP-seq Peaks of SREBF2 in A549 from ENCODE 3 (ENCFF483YCC)"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR611WZO Signal HeLa-S3 <b>SREBF2</b> ENCSR611WZO signal Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF903PBY:ENCSR611WZO Signal:HeLa-S3 SREBF2 ENCSR611WZO signal",
+          "position": "wgEncodeReg4TfChip_ENCFF903PBY:ENCSR611WZO Signal:HeLa-S3 SREBF2 ENCSR611WZO signal"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR611WZO Peak HeLa-S3 <b>SREBF2</b> peaks Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF787QBT:ENCSR611WZO Peak:HeLa-S3 SREBF2 peaks",
+          "position": "wgEncodeReg4TfChip_ENCFF787QBT:ENCSR611WZO Peak:HeLa-S3 SREBF2 peaks"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR000DYT Peak GM12878 <b>SREBF2</b> peaks Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF670DYX:ENCSR000DYT Peak:GM12878 SREBF2 peaks",
+          "position": "wgEncodeReg4TfChip_ENCFF670DYX:ENCSR000DYT Peak:GM12878 SREBF2 peaks"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR000DYT Signal GM12878 <b>SREBF2</b> ENCSR000DYT signal Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF619LTN:ENCSR000DYT Signal:GM12878 SREBF2 ENCSR000DYT signal",
+          "position": "wgEncodeReg4TfChip_ENCFF619LTN:ENCSR000DYT Signal:GM12878 SREBF2 ENCSR000DYT signal"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR638QYO Signal A549 <b>SREBF2</b> ENCSR638QYO signal Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF379DNG:ENCSR638QYO Signal:A549 SREBF2 ENCSR638QYO signal",
+          "position": "wgEncodeReg4TfChip_ENCFF379DNG:ENCSR638QYO Signal:A549 SREBF2 ENCSR638QYO signal"
+        },
+        {
+          "canonical": false,
+          "description": "ENCSR638QYO Peak A549 <b>SREBF2</b> peaks Regulation ",
+          "hgFindMatches": "",
+          "highlight": null,
+          "posName": "wgEncodeReg4TfChip_ENCFF252BOY:ENCSR638QYO Peak:A549 SREBF2 peaks",
+          "position": "wgEncodeReg4TfChip_ENCFF252BOY:ENCSR638QYO Peak:A549 SREBF2 peaks"
+        }
+      ],
+      "name": "trackDb",
+      "trackName": "trackDb"
+    },
+    {
+      "name": "publicHubs",
+      "trackName": "publicHubs",
+      "description": "Public hubs mentioning SREBF2",
+      "matches": [
+        {
+          "posName": "SomeHub",
+          "position": "",
+          "description": "mentions SREBF2 in text only",
+          "hgFindMatches": null
+        }
+      ]
+    }
+  ]
+}

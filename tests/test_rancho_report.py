@@ -181,7 +181,13 @@ def _srebf2_evidence() -> list[EvidenceRecord]:
             "6721",
             "SREBF2 Entrez Gene ID is 6721 (chr22).",
             grade=EvidenceGrade.A,
-            value={"chromosome": "22", "entrez_gene_id": "6721"},
+            fact_type="entrez_gene_id",
+            value={
+                "chromosome": "22",
+                "entrez_gene_id": "6721",
+                "nomenclaturesymbol": "SREBF2",
+                "description": "sterol regulatory element binding transcription factor 2",
+            },
         ),
         ev(
             "Ensembl",
@@ -189,6 +195,8 @@ def _srebf2_evidence() -> list[EvidenceRecord]:
             "ENSG00000198911",
             "Ensembl gene ID for SREBF2 is ENSG00000198911.",
             grade=EvidenceGrade.A,
+            fact_type="ensembl_gene_id",
+            value={"ensembl_gene_id": "ENSG00000198911", "display_name": "SREBF2"},
         ),
         ev(
             "UCSC",
@@ -504,9 +512,11 @@ def test_build_and_write_srebf2_rancho_report_end_to_end(tmp_path: Path):
 
     html = paths["html"].read_text(encoding="utf-8")
     assert "SREBF2 (CHR22)" in html
-    assert "Entrez Gene ID is 6721" in html
+    # Polished Section 1a table (not raw evidence paragraphs)
+    assert "gene-aliases-table" in html
+    assert "6721" in html
     assert "ENSG00000198911" in html
-    assert "Q12772" in html
+    assert "Q12772" in html or "SCAP" in html
     assert "SCAP" in html
     assert "600481" in html
     assert "Horton JD" in html
@@ -515,6 +525,9 @@ def test_build_and_write_srebf2_rancho_report_end_to_end(tmp_path: Path):
     assert 'class="cover-logos"' not in html
     assert "toc-leader" in html
     assert REPORT_STYLE.green_major in html
+    assert "Supporting evidence" not in html.split("a. Gene Aliases")[1].split(
+        "b. Conservation"
+    )[0]
 
     sidecar = json.loads(paths["json"].read_text(encoding="utf-8"))
     assert sidecar["dossier_run_id"] == "srebf2-e2e"
@@ -524,6 +537,9 @@ def test_build_and_write_srebf2_rancho_report_end_to_end(tmp_path: Path):
     sec1a = sidecar["sections"][0]["subsections"][0]
     assert sec1a["source_ids"]
     assert sec1a["blocks"][0]["source_ids"]
+    assert "Entrez Gene ID is 6721" in (sec1a["blocks"][0].get("text") or "")
+    assert sec1a["presentation_blocks"]
+    assert sec1a["presentation_blocks"][0]["presentation_role"] == "gene_aliases_table"
 
     if "pdf" in paths:
         pdf = paths["pdf"]

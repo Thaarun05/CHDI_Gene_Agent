@@ -1,0 +1,18 @@
+{
+  "gene_symbol": "Srebf2",
+  "organism_id": 10116,
+  "selected_accession": "Q3T1I5",
+  "entries": [
+    {
+      "accession": "Q3T1I5",
+      "primaryAccession": "Q3T1I5",
+      "reviewed": true,
+      "gene_names": ["Srebf2", "Srebp2"],
+      "gene_synonyms": ["Srebp2"],
+      "protein_name": "Sterol regulatory element-binding protein 2",
+      "organism_name": "Rattus norvegicus",
+      "organism_id": 10116,
+      "ensembl_xrefs": ["ENSRNOG00000007400.8"]
+    }
+  ]
+}

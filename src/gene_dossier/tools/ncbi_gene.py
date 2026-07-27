@@ -288,7 +288,25 @@ def prefer_safe_gene_match(
     """Return the best safe Entrez ID for ``gene_symbol``, or ``None`` if ambiguous.
 
     Does **not** fall back to the first candidate. See :func:`_is_safe_gene_entry`.
-    When multiple safe matches exist, prefer Official nomenclature, then first safe hit.
+    When multiple equally ranked safe matches exist, returns ``None`` (ambiguous)
+    instead of silently taking the first hit.
+    """
+    selected, _warnings = select_safe_gene_match(
+        summaries, gene_symbol, expected_taxid=expected_taxid
+    )
+    return selected
+
+
+def select_safe_gene_match(
+    summaries: dict[str, dict[str, Any]],
+    gene_symbol: str,
+    *,
+    expected_taxid: int | None = None,
+) -> tuple[str | None, list[str]]:
+    """Select a safe Entrez ID and return structured selection warnings.
+
+    Returns ``(selected_uid_or_none, warnings)``. Warnings are emitted when no
+    safe match exists or when multiple equally ranked safe matches remain.
     """
     safe: list[tuple[int, str]] = []
     for uid, entry in summaries.items():
@@ -297,11 +315,15 @@ def prefer_safe_gene_match(
         nomen_status = str(entry.get("nomenclaturestatus") or "").strip().lower()
         # Lower rank = better; Official first.
         rank = 0 if nomen_status == "official" else 1
-        safe.append((rank, uid))
+        safe.append((rank, str(uid)))
     if not safe:
-        return None
-    safe.sort(key=lambda item: item[0])
-    return safe[0][1]
+        return None, ["no_safe_ncbi_gene_match"]
+    safe.sort(key=lambda item: (item[0], item[1]))
+    best_rank = safe[0][0]
+    top = [uid for rank, uid in safe if rank == best_rank]
+    if len(top) > 1:
+        return None, [f"ambiguous_safe_matches:{','.join(top)}"]
+    return top[0], []
 
 
 def prefer_exact_symbol_match(
@@ -410,7 +432,7 @@ def lookup_gene(
 
     uid_map = _summary_uid_map(summary)
     expected_taxid = expected_taxid_for_organism(organism)
-    selected_id = prefer_safe_gene_match(
+    selected_id, selection_warnings = select_safe_gene_match(
         uid_map, gene_symbol, expected_taxid=expected_taxid
     )
     if selected_id is not None:
@@ -441,6 +463,7 @@ def lookup_gene(
             "expected_taxid": expected_taxid,
             "selected_gene_id": selected_id,
             "selection_method": method,
+            "selection_warnings": selection_warnings,
             "candidate_ids": candidate_ids,
             "esearch": search.data,
             "esummary": summary.data,
@@ -461,6 +484,7 @@ __all__ = [
     "extract_id_list",
     "expected_taxid_for_organism",
     "prefer_safe_gene_match",
+    "select_safe_gene_match",
     "prefer_exact_symbol_match",
     "lookup_gene",
 ]

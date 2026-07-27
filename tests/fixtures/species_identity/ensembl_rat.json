@@ -1,0 +1,22 @@
+{
+  "gene_symbol": "Srebf2",
+  "species": "rattus_norvegicus",
+  "summary": {
+    "ensembl_gene_id": "ENSRNOG00000007400",
+    "display_name": "Srebf2",
+    "description": "sterol regulatory element binding transcription factor 2 [Source:RGD Symbol;Acc:1309830]",
+    "species": "rattus_norvegicus",
+    "assembly_name": "mRatBN7.2",
+    "canonical_transcript": "ENSRNOT00000009912.6",
+    "biotype": "protein_coding",
+    "version": 8,
+    "source": "ensembl"
+  },
+  "raw": {
+    "id": "ENSRNOG00000007400",
+    "display_name": "Srebf2",
+    "species": "rattus_norvegicus",
+    "version": 8,
+    "source": "ensembl"
+  }
+}

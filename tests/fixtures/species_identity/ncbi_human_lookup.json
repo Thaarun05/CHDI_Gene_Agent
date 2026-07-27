@@ -1,0 +1,27 @@
+{
+  "gene_symbol": "SREBF2",
+  "organism": "Homo sapiens",
+  "expected_taxid": 9606,
+  "selected_gene_id": "6721",
+  "selection_method": "exact_symbol",
+  "selection_warnings": [],
+  "candidate_ids": ["6721"],
+  "selected_summary": {
+    "uid": "6721",
+    "name": "SREBF2",
+    "nomenclaturesymbol": "SREBF2",
+    "nomenclaturename": "sterol regulatory element binding transcription factor 2",
+    "nomenclaturestatus": "Official",
+    "description": "sterol regulatory element binding transcription factor 2",
+    "otheraliases": "BHLHD2, SREBP2",
+    "otherdesignations": "sterol regulatory element-binding protein 2",
+    "status": "",
+    "currentid": "",
+    "chromosome": "22",
+    "organism": {
+      "scientificname": "Homo sapiens",
+      "commonname": "human",
+      "taxid": 9606
+    }
+  }
+}

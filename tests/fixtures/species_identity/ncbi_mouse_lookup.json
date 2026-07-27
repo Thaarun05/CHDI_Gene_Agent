@@ -1,0 +1,25 @@
+{
+  "gene_symbol": "Srebf2",
+  "organism": "Mus musculus",
+  "expected_taxid": 10090,
+  "selected_gene_id": "20788",
+  "selection_method": "exact_symbol",
+  "selection_warnings": [],
+  "candidate_ids": ["20788"],
+  "selected_summary": {
+    "uid": "20788",
+    "name": "Srebf2",
+    "nomenclaturesymbol": "Srebf2",
+    "nomenclaturename": "sterol regulatory element binding factor 2",
+    "nomenclaturestatus": "Official",
+    "description": "sterol regulatory element binding factor 2",
+    "otheraliases": "SREBP-2, SREBP2, SREBP2gc, bHLHd2, lop13, nuc",
+    "status": "",
+    "currentid": "",
+    "organism": {
+      "scientificname": "Mus musculus",
+      "commonname": "house mouse",
+      "taxid": 10090
+    }
+  }
+}

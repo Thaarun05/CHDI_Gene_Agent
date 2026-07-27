@@ -1,0 +1,22 @@
+{
+  "300095": {
+    "uid": "300095",
+    "name": "Srebf2",
+    "nomenclaturesymbol": "Srebf2",
+    "nomenclaturename": "sterol regulatory element binding transcription factor 2",
+    "nomenclaturestatus": "Official",
+    "status": "",
+    "currentid": "",
+    "organism": {"scientificname": "Rattus norvegicus", "taxid": 10116}
+  },
+  "404651": {
+    "uid": "404651",
+    "name": "Srebf2",
+    "nomenclaturesymbol": "Srebf2",
+    "nomenclaturename": "sterol regulatory element binding transcription factor 2",
+    "nomenclaturestatus": "Official",
+    "status": "secondary",
+    "currentid": "300095",
+    "organism": {"scientificname": "Rattus norvegicus", "taxid": 10116}
+  }
+}

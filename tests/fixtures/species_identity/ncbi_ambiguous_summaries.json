@@ -1,0 +1,20 @@
+{
+  "111": {
+    "uid": "111",
+    "name": "FAKEG",
+    "nomenclaturesymbol": "FAKEG",
+    "nomenclaturestatus": "Official",
+    "status": "",
+    "currentid": "",
+    "organism": {"scientificname": "Homo sapiens", "taxid": 9606}
+  },
+  "222": {
+    "uid": "222",
+    "name": "FAKEG",
+    "nomenclaturesymbol": "FAKEG",
+    "nomenclaturestatus": "Official",
+    "status": "",
+    "currentid": "",
+    "organism": {"scientificname": "Homo sapiens", "taxid": 9606}
+  }
+}

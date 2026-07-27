@@ -1,0 +1,25 @@
+{
+  "gene_symbol": "Srebf2",
+  "organism": "Rattus norvegicus",
+  "expected_taxid": 10116,
+  "selected_gene_id": "300095",
+  "selection_method": "exact_symbol",
+  "selection_warnings": [],
+  "candidate_ids": ["300095", "404651"],
+  "selected_summary": {
+    "uid": "300095",
+    "name": "Srebf2",
+    "nomenclaturesymbol": "Srebf2",
+    "nomenclaturename": "sterol regulatory element binding transcription factor 2",
+    "nomenclaturestatus": "Official",
+    "description": "sterol regulatory element binding transcription factor 2",
+    "otheraliases": "SREBP-2, SREBP2, Srebf2_retired",
+    "status": "",
+    "currentid": "",
+    "organism": {
+      "scientificname": "Rattus norvegicus",
+      "commonname": "Norway rat",
+      "taxid": 10116
+    }
+  }
+}

@@ -155,7 +155,12 @@ def extract_results(search_payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """Extract key fields from one UniProtKB search hit."""
+    """Extract key fields from one UniProtKB search hit.
+
+    Ensembl cross-references commonly store a transcript ID in ``xref.id`` and
+    the Ensembl gene ID in ``properties[key=GeneId]``. Gene IDs and transcript
+    IDs are stored separately; transcript IDs are never treated as gene IDs.
+    """
     genes = entry.get("genes") or []
     gene_names: list[str] = []
     for g in genes:
@@ -171,20 +176,70 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
     protein = entry.get("proteinDescription") or {}
     recommended = ((protein.get("recommendedName") or {}).get("fullName") or {}).get("value")
 
-    ensembl_ids: list[str] = []
+    ensembl_gene_ids: list[str] = []
+    ensembl_transcript_ids: list[str] = []
+    ensembl_protein_ids: list[str] = []
+    seen_genes: set[str] = set()
+    seen_transcripts: set[str] = set()
+
     for xref in entry.get("uniProtKBCrossReferences") or []:
-        if isinstance(xref, dict) and xref.get("database") == "Ensembl" and xref.get("id"):
-            ensembl_ids.append(str(xref["id"]))
+        if not isinstance(xref, dict) or xref.get("database") != "Ensembl":
+            continue
+        props: dict[str, str] = {}
+        for prop in xref.get("properties") or []:
+            if not isinstance(prop, dict):
+                continue
+            key = prop.get("key")
+            value = prop.get("value")
+            if key is not None and value is not None:
+                props[str(key)] = str(value)
+
+        gene_prop = props.get("GeneId") or props.get("geneId")
+        protein_prop = props.get("ProteinId") or props.get("proteinId")
+        raw_id = str(xref.get("id") or "").strip()
+
+        if gene_prop:
+            gene_base = gene_prop.split(".", 1)[0]
+            if gene_base and gene_base not in seen_genes:
+                seen_genes.add(gene_base)
+                ensembl_gene_ids.append(gene_base)
+
+        if protein_prop:
+            ensembl_protein_ids.append(protein_prop)
+
+        if raw_id:
+            base = raw_id.split(".", 1)[0]
+            if base.startswith(("ENST", "ENSMUST", "ENSRNOT")):
+                if raw_id not in seen_transcripts:
+                    seen_transcripts.add(raw_id)
+                    ensembl_transcript_ids.append(raw_id)
+            elif base.startswith(("ENSG", "ENSMUSG", "ENSRNOG")):
+                # Legacy / alternate payloads may put the gene ID in xref.id.
+                if base not in seen_genes:
+                    seen_genes.add(base)
+                    ensembl_gene_ids.append(base)
 
     organism = entry.get("organism") or {}
+    # Primary gene name vs synonyms (gene_names keeps primary first for callers).
+    gene_synonyms = gene_names[1:] if len(gene_names) > 1 else []
+    entry_type = str(entry.get("entryType") or entry.get("entry_type") or "")
+    reviewed = "reviewed" in entry_type.lower() if entry_type else True
+
     return {
         "accession": entry.get("primaryAccession") or entry.get("accession"),
+        "primaryAccession": entry.get("primaryAccession") or entry.get("accession"),
         "uni_protkb_id": entry.get("uniProtkbId") or entry.get("id"),
         "gene_names": gene_names,
+        "gene_synonyms": gene_synonyms,
+        "reviewed": reviewed,
         "protein_name": recommended,
         "organism_name": organism.get("scientificName") or organism.get("commonName"),
         "organism_id": (organism.get("taxonId") or organism.get("taxonID")),
-        "ensembl_xrefs": ensembl_ids,
+        # Gene IDs only — never transcript IDs.
+        "ensembl_gene_ids": ensembl_gene_ids,
+        "ensembl_xrefs": ensembl_gene_ids,
+        "ensembl_transcript_ids": ensembl_transcript_ids,
+        "ensembl_protein_ids": ensembl_protein_ids,
         # Preserve structured annotation blocks for normalize/protein.py
         # (function, disease, domains, repeats, subcellular location).
         "comments": entry.get("comments") if isinstance(entry.get("comments"), list) else [],

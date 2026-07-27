@@ -37,16 +37,16 @@ from gene_dossier.models import AssertionType, EvidenceRecord, ReportSection
 class ReportStyle:
     """Brand colors and type sizes matching the reference PDF."""
 
-    # Cover / major headers: rgb(122, 193, 67)
-    green_major: str = "#7AC143"
-    # Subsection headers / date: rgb(245, 130, 32)
-    orange_sub: str = "#F58220"
+    # Cover / major headers: screenshot-sampled green
+    green_major: str = "#88C05B"
+    # Subsection headers / date: screenshot-sampled orange
+    orange_sub: str = "#F67115"
     # Body / prepared-for text: rgb(89, 31, 0)
     brown_body: str = "#591F00"
-    # Hyperlinks / IDs: rgb(246, 100, 0)
+    # Hyperlinks / Entrez+Ensembl IDs
     orange_link: str = "#F66400"
-    # Table header fill approx rgb(201, 230, 179)
-    table_header_bg: str = "#C9E6B3"
+    # Table header fill (screenshot ~ #C8E6B3)
+    table_header_bg: str = "#C8E6B3"
     # Thin header rule under Rancho logo
     rule_green: str = "#B7DFA0"
 
@@ -71,6 +71,8 @@ BlockKind = Literal[
     "link",
     "empty",
 ]
+
+PresentationRole = Literal["gene_aliases_table", "ucsc_conservation_figure"]
 
 
 # --------------------------------------------------------------------------------------
@@ -694,6 +696,7 @@ class ReportContentBlock(BaseModel):
     links: list[dict[str, str]] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
+    presentation_role: PresentationRole | None = None
 
 
 class ReportSubsection(BaseModel):
@@ -708,6 +711,7 @@ class ReportSubsection(BaseModel):
     title: str
     toc_title: str
     blocks: list[ReportContentBlock] = Field(default_factory=list)
+    presentation_blocks: list[ReportContentBlock] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
     status: Literal["populated", "empty"] = "empty"
@@ -1045,7 +1049,39 @@ def build_report_document(
         )
     if references is not None:
         doc.references = [str(r) for r in references]
+    _apply_section_presentation(doc, records)
     return doc
+
+
+def _apply_section_presentation(
+    doc: ReportDocument,
+    evidence_records: list[EvidenceRecord],
+) -> None:
+    """Attach polished presentation_blocks for every mapped Rancho subsection.
+
+    Derives canonical keys (``1a``, ``1b``, …) from the established outline only.
+    Assigns blocks only when the builder returns a nonempty block list.
+    Does not clear existing presentation_blocks for unknown/empty keys.
+    Diagnostics alone never mark a subsection populated.
+    Evidence ``blocks`` are left intact for audit/JSON.
+    """
+    from gene_dossier.report_presentation import build_section_presentation
+
+    for major in doc.sections:
+        for sub in major.subsections:
+            section_key = f"{major.key}{sub.key}"
+            result = build_section_presentation(
+                section_key=section_key,
+                gene_symbol=doc.gene_symbol,
+                evidence_records=evidence_records,
+            )
+            if not result.blocks:
+                continue
+            sub.presentation_blocks = list(result.blocks)
+            if sub.status == "empty":
+                sub.status = "populated"
+            if major.status == "empty":
+                major.status = "partial"
 
 
 def cover_lines(cover: ReportCover) -> list[str]:
@@ -1075,6 +1111,7 @@ __all__ = [
     "ReportSlot",
     "ReportCover",
     "ReportContentBlock",
+    "PresentationRole",
     "ReportSubsection",
     "ReportMajorSection",
     "UnmappedReportSection",

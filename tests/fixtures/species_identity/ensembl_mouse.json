@@ -1,0 +1,22 @@
+{
+  "gene_symbol": "Srebf2",
+  "species": "mus_musculus",
+  "summary": {
+    "ensembl_gene_id": "ENSMUSG00000022463",
+    "display_name": "Srebf2",
+    "description": "sterol regulatory element binding factor 2 [Source:MGI Symbol;Acc:MGI:107585]",
+    "species": "mus_musculus",
+    "assembly_name": "GRCm39",
+    "canonical_transcript": "ENSMUST00000023104.8",
+    "biotype": "protein_coding",
+    "version": 16,
+    "source": "ensembl"
+  },
+  "raw": {
+    "id": "ENSMUSG00000022463",
+    "display_name": "Srebf2",
+    "species": "mus_musculus",
+    "version": 16,
+    "source": "ensembl"
+  }
+}

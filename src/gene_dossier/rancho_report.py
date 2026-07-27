@@ -437,12 +437,48 @@ table.rancho th {{
   font-weight: 700;
   text-align: left;
   padding: 6pt 8pt;
-  border: 1px solid #b0b0b0;
+  border: 1px solid #6e5a4a;
 }}
 table.rancho td {{
   padding: 5pt 8pt;
-  border: 1px solid #c8c8c8;
+  border: 1px solid #6e5a4a;
   vertical-align: top;
+  text-align: left;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}}
+table.gene-aliases-table {{
+  width: 100%;
+  table-layout: fixed;
+}}
+table.gene-aliases-table col.col-label {{ width: 12%; }}
+table.gene-aliases-table th:first-child,
+table.gene-aliases-table td:first-child {{
+  width: 12%;
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: manual;
+}}
+table.gene-aliases-table col.col-human {{ width: 29%; }}
+table.gene-aliases-table col.col-mouse {{ width: 32%; }}
+table.gene-aliases-table col.col-rat {{ width: 27%; }}
+a.id-link {{
+  color: {s.orange_link};
+  text-decoration: underline;
+}}
+a.id-link-uniprot {{
+  color: {s.brown_body};
+  text-decoration: none;
+}}
+a.id-link-uniprot:hover,
+a.id-link-uniprot:focus {{
+  text-decoration: underline;
+}}
+a.id-link:focus {{
+  outline: 2px solid {s.orange_link};
+  outline-offset: 1px;
 }}
 figure.rancho-figure {{
   margin: 10pt 0 14pt 0;
@@ -452,12 +488,37 @@ figure.rancho-figure img {{
   max-width: 100%;
   height: auto;
 }}
+figure.rancho-figure.ucsc-conservation-figure {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 6pt 0 12pt 0;
+}}
+figure.rancho-figure.ucsc-conservation-figure img {{
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  display: block;
+}}
+a.ucsc-transcript-link {{
+  color: {s.orange_link};
+  text-decoration: underline;
+}}
+.ucsc-transcript-line {{
+  margin: 8pt 0 6pt 0;
+  break-after: avoid;
+  page-break-after: avoid;
+}}
 .back-matter h2, .endnotes h2 {{
   color: {s.green_major};
   font-size: 18pt;
 }}
 .db-list, .ref-list, .endnote-list {{ padding-left: 18pt; }}
 .provenance-muted {{ color: #8a7a6a; font-size: 8.5pt; }}
+.section-preview-body {{
+  max-width: 8.5in;
+  margin: 24pt auto;
+  padding: 0 24pt 24pt 24pt;
+}}
 """.strip()
 
 
@@ -468,6 +529,8 @@ def _img_tag(data_uri: str | None, *, cls: str, alt: str) -> str:
 
 
 def _render_block(block: ReportContentBlock) -> str:
+    from gene_dossier.report_presentation import format_safe_table_cell_html
+
     parts: list[str] = ['<div class="block">']
     if block.title:
         parts.append(
@@ -476,7 +539,21 @@ def _render_block(block: ReportContentBlock) -> str:
         )
 
     if block.kind == "table" and block.table_headers:
-        parts.append('<table class="rancho"><thead><tr>')
+        classes = ["rancho"]
+        if block.presentation_role == "gene_aliases_table":
+            classes.append("gene-aliases-table")
+        class_attr = " ".join(classes)
+        parts.append(f'<table class="{class_attr}">')
+        if block.presentation_role == "gene_aliases_table":
+            parts.append(
+                "<colgroup>"
+                '<col class="col-label" />'
+                '<col class="col-human" />'
+                '<col class="col-mouse" />'
+                '<col class="col-rat" />'
+                "</colgroup>"
+            )
+        parts.append("<thead><tr>")
         for h in block.table_headers:
             parts.append(
                 f'<th bgcolor="{REPORT_STYLE.table_header_bg}" '
@@ -487,12 +564,19 @@ def _render_block(block: ReportContentBlock) -> str:
         for row in block.table_rows:
             parts.append("<tr>")
             for cell in row:
-                parts.append(f"<td>{_escape(cell)}</td>")
+                parts.append(f"<td>{format_safe_table_cell_html(cell)}</td>")
             parts.append("</tr>")
         parts.append("</tbody></table>")
     elif block.kind == "figure" and block.figure_path:
         fig_uri = None
         fig_path = Path(block.figure_path)
+        if not fig_path.is_file():
+            try:
+                from gene_dossier.ucsc_figure import resolve_artifact_path
+
+                fig_path = resolve_artifact_path(block.figure_path)
+            except Exception:  # noqa: BLE001
+                fig_path = Path(block.figure_path)
         if fig_path.is_file():
             mime, _ = mimetypes.guess_type(fig_path.name)
             mime = mime or "image/png"
@@ -501,10 +585,14 @@ def _render_block(block: ReportContentBlock) -> str:
                 + base64.b64encode(fig_path.read_bytes()).decode("ascii")
             )
         caption = _escape(block.figure_caption or "")
+        alt = caption or "figure"
         if fig_uri:
-            parts.append('<figure class="rancho-figure">')
-            parts.append(f'<img src="{fig_uri}" alt="{caption or "figure"}" />')
-            if caption:
+            fig_classes = ["rancho-figure"]
+            if block.presentation_role == "ucsc_conservation_figure":
+                fig_classes.append("ucsc-conservation-figure")
+            parts.append(f'<figure class="{" ".join(fig_classes)}">')
+            parts.append(f'<img src="{fig_uri}" alt="{alt}" />')
+            if caption and block.presentation_role != "ucsc_conservation_figure":
                 parts.append(f"<figcaption>{caption}</figcaption>")
             parts.append("</figure>")
         elif block.text:
@@ -515,12 +603,22 @@ def _render_block(block: ReportContentBlock) -> str:
             parts.append(f"<li>{_escape(' — '.join(row))}</li>")
         parts.append("</ul>")
     elif block.kind == "link" and block.links:
-        parts.append("<ul>")
-        for link in block.links:
-            label = _escape(link.get("label") or link.get("url") or "link")
+        # Single UCSC transcript line: render as one underlined orange link.
+        if len(block.links) == 1:
+            link = block.links[0]
+            label = _escape(link.get("label") or block.text or link.get("url") or "link")
             url = _escape(link.get("url") or "#")
-            parts.append(f'<li><a href="{url}">{label}</a></li>')
-        parts.append("</ul>")
+            parts.append(
+                f'<p class="ucsc-transcript-line">'
+                f'<a class="ucsc-transcript-link" href="{url}">{label}</a></p>'
+            )
+        else:
+            parts.append("<ul>")
+            for link in block.links:
+                label = _escape(link.get("label") or link.get("url") or "link")
+                url = _escape(link.get("url") or "#")
+                parts.append(f'<li><a href="{url}">{label}</a></li>')
+            parts.append("</ul>")
     else:
         text = (block.text or "").strip()
         if text:
@@ -562,6 +660,12 @@ def _render_subsection(sub: ReportSubsection) -> str:
             f"{_escape(heading)}</h3>"
         ),
     ]
+    # Polished presentation_blocks are the complete human-facing subsection body.
+    if sub.presentation_blocks:
+        for block in sub.presentation_blocks:
+            parts.append(_render_block(block))
+        return "\n".join(parts)
+
     narrative_html = _render_narrative_markdown(
         sub.narrative_markdown,
         synthesis_status=sub.synthesis_status,
@@ -880,6 +984,88 @@ def _render_endnotes(doc: ReportDocument) -> str:
     return "\n".join(parts)
 
 
+def render_rancho_section_fragment(
+    *,
+    document: ReportDocument,
+    section_number: int,
+    subsection_key: str,
+    show_cover_logos: bool = False,
+) -> str:
+    """Render one major section heading + one subsection with production helpers.
+
+    Uses the same CSS/page chrome and block/subsection renderers as the full
+    report. Does not render unrelated sections or hide them with CSS.
+    """
+    major = next(
+        (sec for sec in document.sections if sec.number == section_number),
+        None,
+    )
+    if major is None:
+        raise ValueError(f"Unknown section number: {section_number}")
+    sub = next((s for s in major.subsections if s.key == subsection_key), None)
+    if sub is None:
+        raise ValueError(
+            f"Unknown subsection {subsection_key!r} under section {section_number}"
+        )
+
+    heading = f"{major.number}. {major.title}"
+    body_parts = [
+        f'<section id="section-{major.number}" class="section-preview-body">',
+        (
+            f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
+            f"{_escape(heading)}</h2>"
+        ),
+        _render_subsection(sub),
+        "</section>",
+    ]
+    body = "\n".join(body_parts)
+
+    rancho = _asset_data_uri("rancho_wordmark.png")
+    chdi = _asset_data_uri("chdi_wordmark.png")
+    rancho_header = _asset_data_uri("rancho_header_bar.png") or rancho
+    rancho_footer = _asset_data_uri("rancho_footer.png")
+    header = (
+        '<div class="page-header">'
+        f'{_img_tag(rancho_header, cls="rancho", alt="Rancho BioSciences")}'
+        f'{_img_tag(chdi, cls="chdi", alt="CHDI Foundation")}'
+        "</div>"
+    )
+    footer = (
+        '<div class="page-footer">'
+        f'{_img_tag(rancho_footer, cls="rancho", alt="Rancho BioSciences")}'
+        f"<span>{_escape(REPORT_STYLE.footer_url)}</span>"
+        "</div>"
+    )
+    # Keep logos optional for light previews.
+    if not show_cover_logos:
+        header = '<div class="page-header"></div>'
+        footer = (
+            f'<div class="page-footer"><span>{_escape(REPORT_STYLE.footer_url)}</span></div>'
+        )
+
+    title = _escape(
+        f"{document.cover.gene_line} — "
+        f"Section {section_number}{subsection_key} preview"
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+{_rancho_css()}
+  </style>
+</head>
+<body>
+{header}
+{body}
+{footer}
+</body>
+</html>
+"""
+
+
 def render_rancho_html(
     doc: ReportDocument,
     *,
@@ -1096,6 +1282,43 @@ def render_rancho_pdf(
     return dest
 
 
+def rasterize_pdf_page_to_png(
+    pdf_path: str | Path,
+    png_path: str | Path,
+    *,
+    page_index: int = 0,
+    dpi: int = 150,
+) -> Path | None:
+    """Rasterize one PDF page to PNG at a fixed DPI. Returns path or ``None``."""
+    try:
+        import fitz
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PNG rasterization unavailable (pymupdf not importable): %s", exc)
+        return None
+
+    src = Path(pdf_path)
+    dest = Path(png_path)
+    if not src.is_file():
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with fitz.open(str(src)) as doc:
+            if page_index < 0 or page_index >= doc.page_count:
+                return None
+            page = doc[page_index]
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            pix.save(str(dest))
+        return dest
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PNG rasterization failed: %s", exc)
+        if dest.exists():
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+        return None
+
+
 def write_rancho_report(
     doc: ReportDocument,
     *,
@@ -1195,6 +1418,8 @@ def build_and_write_rancho_report(
 __all__ = [
     "render_rancho_html",
     "render_rancho_pdf",
+    "rasterize_pdf_page_to_png",
+    "render_rancho_section_fragment",
     "write_rancho_report",
     "build_and_write_rancho_report",
 ]
