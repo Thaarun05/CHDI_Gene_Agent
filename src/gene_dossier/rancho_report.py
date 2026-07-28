@@ -78,6 +78,30 @@ def _escape(text: str | None) -> str:
     return html.escape(text or "", quote=True)
 
 
+_SOURCE_ID_TOKEN_RE = re.compile(
+    r"\[source_id\s*=\s*[^\]]+\]",
+    flags=re.IGNORECASE,
+)
+
+
+def sanitize_polished_citation_tokens(text: str | None) -> str:
+    """Remove internal ``[source_id=...]`` tokens from polished visible prose."""
+    if not text:
+        return ""
+    cleaned = _SOURCE_ID_TOKEN_RE.sub("", text)
+    return re.sub(r"[ \t]{2,}", " ", cleaned)
+
+
+def _evidence_attr(block: ReportContentBlock) -> str:
+    """Nonvisual opaque evidence attributes for polished HTML."""
+    if not block.evidence_ref:
+        return ""
+    return (
+        f' data-evidence-ref="{_escape(block.evidence_ref)}"'
+        f' data-evidence-supported="true"'
+    )
+
+
 def _norm_title(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
@@ -125,7 +149,7 @@ def _plain_excerpt_from_markdown(markdown: str | None) -> str:
 def _inline_format(text: str) -> str:
     """Escape text and convert simple ``**bold**`` spans."""
     parts: list[str] = []
-    remaining = text
+    remaining = sanitize_polished_citation_tokens(text)
     while True:
         start = remaining.find("**")
         if start < 0:
@@ -149,7 +173,9 @@ def _render_narrative_markdown(
     """Convert limited synthesis markdown into escaped HTML (no Markdown library)."""
     if not (markdown_text or "").strip():
         return ""
-    text = _strip_leading_synthesis_title(markdown_text or "")
+    text = sanitize_polished_citation_tokens(
+        _strip_leading_synthesis_title(markdown_text or "")
+    )
     if not text.strip():
         return ""
 
@@ -514,10 +540,49 @@ a.ucsc-transcript-link {{
 }}
 .db-list, .ref-list, .endnote-list {{ padding-left: 18pt; }}
 .provenance-muted {{ color: #8a7a6a; font-size: 8.5pt; }}
-.section-preview-body {{
+.section-preview-body, .report-page {{
   max-width: 8.5in;
   margin: 24pt auto;
   padding: 0 24pt 24pt 24pt;
+  background: #ffffff;
+}}
+.report-page.report-chrome {{
+  padding-bottom: 0;
+  padding-top: 0;
+}}
+.section-bundle-body .block {{
+  margin: 6pt 0 8pt 0;
+}}
+.section-bundle-body h3.sub-heading {{
+  margin: 10pt 0 6pt 0;
+}}
+.section-bundle-body h2.major-heading {{
+  margin: 0 0 8pt 0;
+}}
+@media (max-width: 900px) {{
+  .section-preview-body, .report-page {{
+    max-width: 100%;
+    margin: 12pt auto;
+    padding: 0 12pt 16pt 12pt;
+  }}
+}}
+@page {{
+  size: Letter;
+  margin: 0.5in;
+}}
+@media print {{
+  .report-page {{
+    max-width: none;
+    margin: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }}
+  .page-header {{
+    margin-bottom: 12pt;
+  }}
+  .page-footer {{
+    margin-top: 12pt;
+  }}
 }}
 """.strip()
 
@@ -531,7 +596,7 @@ def _img_tag(data_uri: str | None, *, cls: str, alt: str) -> str:
 def _render_block(block: ReportContentBlock) -> str:
     from gene_dossier.report_presentation import format_safe_table_cell_html
 
-    parts: list[str] = ['<div class="block">']
+    parts: list[str] = [f'<div class="block"{_evidence_attr(block)}>']
     if block.title:
         parts.append(
             f'<p><strong style="color:{REPORT_STYLE.orange_link};">'
@@ -620,7 +685,7 @@ def _render_block(block: ReportContentBlock) -> str:
                 parts.append(f'<li><a href="{url}">{label}</a></li>')
             parts.append("</ul>")
     else:
-        text = (block.text or "").strip()
+        text = sanitize_polished_citation_tokens((block.text or "").strip())
         if text:
             paras = text.split("\n\n")
             parts.append('<div class="narrative">')
@@ -1319,6 +1384,62 @@ def rasterize_pdf_page_to_png(
         return None
 
 
+def clear_stale_bundle_pngs(output_dir: str | Path) -> None:
+    """Remove prior section-bundle PNG stems from ``output_dir`` only."""
+    out = Path(output_dir)
+    if not out.is_dir():
+        return
+    for path in out.glob("section_1.png"):
+        path.unlink(missing_ok=True)
+    for path in out.glob("section_1_page_*.png"):
+        path.unlink(missing_ok=True)
+    for path in out.glob("section_1_contact_sheet.png"):
+        path.unlink(missing_ok=True)
+
+
+def rasterize_pdf_pages_to_pngs(
+    pdf_path: str | Path,
+    output_dir: str | Path,
+    *,
+    stem: str = "section_1",
+    dpi: int = 150,
+) -> list[Path]:
+    """Rasterize every PDF page.
+
+    One page → ``{stem}.png``. Multiple pages → ``{stem}_page_1.png`` …
+    ``{stem}_page_<n>.png``. Clears prior matching PNGs in ``output_dir`` first.
+    """
+    clear_stale_bundle_pngs(output_dir)
+    try:
+        import fitz
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PNG rasterization unavailable (pymupdf not importable): %s", exc)
+        return []
+
+    src = Path(pdf_path)
+    out = Path(output_dir)
+    if not src.is_file():
+        return []
+    out.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    try:
+        with fitz.open(str(src)) as doc:
+            count = doc.page_count
+            for index in range(count):
+                if count == 1:
+                    dest = out / f"{stem}.png"
+                else:
+                    dest = out / f"{stem}_page_{index + 1}.png"
+                page = doc[index]
+                pix = page.get_pixmap(dpi=dpi, alpha=False)
+                pix.save(str(dest))
+                written.append(dest)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Multi-page PNG rasterization failed: %s", exc)
+        return written
+    return written
+
+
 def write_rancho_report(
     doc: ReportDocument,
     *,
@@ -1419,6 +1540,9 @@ __all__ = [
     "render_rancho_html",
     "render_rancho_pdf",
     "rasterize_pdf_page_to_png",
+    "rasterize_pdf_pages_to_pngs",
+    "clear_stale_bundle_pngs",
+    "sanitize_polished_citation_tokens",
     "render_rancho_section_fragment",
     "write_rancho_report",
     "build_and_write_rancho_report",

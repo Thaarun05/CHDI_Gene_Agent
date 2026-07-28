@@ -330,6 +330,16 @@ def normalize_ucsc_conservation(
     search_payload = data.get("search") if isinstance(data.get("search"), dict) else None
     track_payload = data.get("track_data") if isinstance(data.get("track_data"), dict) else None
     figure_value = data.get("figure") if isinstance(data.get("figure"), dict) else None
+    figure_api_run_id = (
+        str(figure_value.get("figure_api_run_id"))
+        if figure_value and figure_value.get("figure_api_run_id")
+        else api_run_id
+    )
+    figure_raw_artifact_id = (
+        str(figure_value.get("figure_raw_artifact_id"))
+        if figure_value and figure_value.get("figure_raw_artifact_id")
+        else raw_artifact_id
+    )
     records, _diags = build_conservation_evidence(
         dossier_run_id=dossier_run_id,
         gene_symbol=gene_symbol,
@@ -341,8 +351,8 @@ def normalize_ucsc_conservation(
         search_raw_artifact_id=raw_artifact_id,
         track_api_run_id=api_run_id,
         track_raw_artifact_id=raw_artifact_id,
-        figure_api_run_id=api_run_id,
-        figure_raw_artifact_id=raw_artifact_id,
+        figure_api_run_id=figure_api_run_id,
+        figure_raw_artifact_id=figure_raw_artifact_id,
     )
     return records
 

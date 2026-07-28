@@ -33,10 +33,21 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from gene_dossier.config import get_settings  # noqa: E402
+from gene_dossier.report_presentation import build_section_presentation  # noqa: E402
 from gene_dossier.workflow import run_gene_dossier_full_api_pass  # noqa: E402
 
 DEFAULT_GENE = "SREBF2"
 LOGGER = logging.getLogger("run_srebf2_full_api_pass")
+
+
+def _llm_summary(settings) -> tuple[str | None, str | None]:
+    provider = settings.default_llm_provider or None
+    model = (
+        settings.default_llm_model
+        or settings.nvidia_nim_model
+        or None
+    )
+    return provider, model
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -160,6 +171,52 @@ def main(argv: list[str] | None = None) -> int:
     print(f"verification:    {len(result.verification_results)}")
     print(f"coverage rows:   {len(result.coverage)}")
     print(f"synthesis mode:  {result.synthesis_mode or 'n/a'}")
+    provider, model = _llm_summary(settings)
+    if result.synthesis_mode == "llm":
+        print(f"llm provider:    {provider or 'configured'}")
+        print(f"llm model:       {model or 'default'}")
+
+    sec1a = build_section_presentation(
+        section_key="1a",
+        gene_symbol=result.gene_symbol,
+        evidence_records=result.evidence_records,
+    )
+    sec1b = build_section_presentation(
+        section_key="1b",
+        gene_symbol=result.gene_symbol,
+        evidence_records=result.evidence_records,
+    )
+    ucsc_facts = {
+        rec.fact_type
+        for rec in result.evidence_records
+        if rec.source_name == "UCSC" and rec.fact_type.startswith("ucsc_")
+    }
+    figure_recs = [
+        rec
+        for rec in result.evidence_records
+        if rec.fact_type == "ucsc_conservation_figure"
+    ]
+    figure_status = "missing"
+    if figure_recs:
+        value = figure_recs[-1].value or {}
+        figure_status = str(value.get("retrieval_method") or "present")
+
+    print(f"section 1a:      {len(sec1a.blocks)} presentation blocks")
+    print(f"section 1b:      {len(sec1b.blocks)} presentation blocks")
+    print(
+        "ucsc facts:      "
+        + ", ".join(
+            t
+            for t in (
+                "ucsc_gene_locus",
+                "ucsc_transcript_inventory",
+                "ucsc_canonical_transcript",
+                "ucsc_conservation_figure",
+            )
+            if t in ucsc_facts
+        )
+    )
+    print(f"ucsc figure:     {figure_status}")
 
     if result.gene_ids:
         print()

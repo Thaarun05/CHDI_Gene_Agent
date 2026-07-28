@@ -16,10 +16,13 @@ from gene_dossier.models import (
 )
 from gene_dossier.source_ids import make_source_id
 from gene_dossier.workflow import (
+    WorkflowTransientContext,
     _client_opentargets,
     _client_reactome,
     _coverage_updates_from_state,
     extract_gene_ids_from_tool_result,
+    node_call_source_clients,
+    node_save_raw_artifacts,
     node_index_evidence_in_chroma,
     node_render_outputs,
     node_resolve_gene_identity,
@@ -173,6 +176,324 @@ def test_offline_srebf2_smoke_persist_db_false(tmp_path: Path):
     assert result.output_paths.get("debug_markdown")
     assert result.evidence_records  # NCBI identity normalized
     assert any("Chroma indexing" in note for note in result.synthesis_notes)
+
+
+def test_ucsc_live_figure_stays_out_of_serializable_state(tmp_path: Path, monkeypatch):
+    from gene_dossier.tools.ucsc import UCSCLiveFigurePayload, UCSCWorkflowExecution
+    from gene_dossier.ucsc_figure import resolve_artifact_path, sha256_hex
+    from gene_dossier.normalize.ucsc_conservation import normalize_ucsc_conservation
+
+    transient = WorkflowTransientContext()
+    png = (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_comprehensive_conservation.png").read_bytes()
+    expected_sha = "3d165b72c20d11a0c921d16bf2cd17418a5169c2d0cec0537e297de5be0e3d6a"
+    execution = UCSCWorkflowExecution(
+        tool_result=ToolResult(
+            source_name="UCSC",
+            endpoint_name="fetch_gene_region",
+            success=True,
+            gene_symbol="SREBF2",
+            request_url="https://api.genome.ucsc.edu/getData/track",
+            request_params={"genome": "hg38", "track": "knownGene"},
+            data={
+                "gene_symbol": "SREBF2",
+                "genome": "hg38",
+                "search": {},
+                "track_data": {},
+                "figure": {
+                    "status": "ok",
+                    "display_position": "chr22:41833105-41907305",
+                    "selected_transcript": "ENST00000361204.9",
+                },
+            },
+        ),
+        live_figure=UCSCLiveFigurePayload(
+            content=png,
+            media_type="image/png",
+            width=1436,
+            height=1192,
+            sha256=expected_sha,
+            byte_size=len(png),
+            request_chain=(
+                {
+                    "endpoint_name": "hgRenderTracks",
+                    "request_url": "https://genome.ucsc.edu/cgi-bin/hgRenderTracks",
+                    "request_params": {"db": "hg38", "position": "chr22:41833105-41907305"},
+                    "status_code": 200,
+                    "success": True,
+                    "error_type": None,
+                    "error_message": None,
+                    "parent_request_index": None,
+                },
+            ),
+            image_request_index=0,
+            track_preset_id="ucsc_section_1b_comprehensive_v1",
+            track_preset_version=1,
+            track_params={"db": "hg38", "position": "chr22:41833105-41907305", "pix": "1400"},
+            genome="hg38",
+            display_position="chr22:41833105-41907305",
+            selected_transcript="ENST00000361204.9",
+        ),
+    )
+
+    def _fake_fetch(*args, **kwargs):
+        return execution
+
+    import gene_dossier.tools.ucsc as ucsc
+
+    monkeypatch.setattr(ucsc, "fetch_gene_region_execution", _fake_fetch)
+    settings = Settings(raw_data_dir=tmp_path / "raw", output_dir=tmp_path / "out")
+    state = node_call_source_clients(
+        {
+            "gene_symbol": "SREBF2",
+            "dossier_run_id": "wf-ucsc-live",
+            "gene_ids": {},
+            "tool_results": [],
+            "errors": [],
+        },
+        settings=settings,
+        call_network=True,
+        sources=["UCSC"],
+        transient=transient,
+    )
+    tool_result = state["tool_results"][0]
+    token = tool_result.data["_transient_ucsc_figure_token"]
+    assert token.startswith("wf-ucsc-live:")
+    assert len(token.split(":")[1]) == 32
+    assert transient.live_figures[token].content == png
+    assert "content" not in str(tool_result.data)
+
+    saved = node_save_raw_artifacts(
+        state,
+        settings=settings,
+        persist_db=False,
+        transient=transient,
+    )
+    persisted = saved["tool_results"][0]
+    assert "_transient_ucsc_figure_token" not in persisted.data
+    assert transient.live_figures == {}
+    rel = persisted.data["figure"]["local_artifact_path"]
+    assert rel.endswith(".png")
+    final_path = resolve_artifact_path(rel, root=settings.raw_data_path)
+    assert final_path.is_file()
+    assert sha256_hex(final_path.read_bytes()) == expected_sha
+    assert any(a.get("artifact_type") == "image" for a in saved["raw_artifacts"])
+    assert persisted.data["figure"]["figure_api_run_id"]
+    assert persisted.data["figure"]["figure_raw_artifact_id"]
+
+    # Four UCSC fact types after normalization, with figure artifact ID wired.
+    import json
+    from gene_dossier.normalize.ucsc_conservation import build_conservation_evidence
+
+    search = json.loads(
+        (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_search_relevant.json").read_text()
+    )
+    track = json.loads(
+        (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_known_gene_region.json").read_text()
+    )
+    persisted.data["search"] = search
+    persisted.data["track_data"] = track
+    records = normalize_ucsc_conservation(
+        persisted,
+        dossier_run_id="wf-ucsc-live",
+        api_run_id="json-api",
+        raw_artifact_id="json-art",
+    )
+    types = {r.fact_type for r in records}
+    assert types == {
+        "ucsc_gene_locus",
+        "ucsc_transcript_inventory",
+        "ucsc_canonical_transcript",
+        "ucsc_conservation_figure",
+    }
+    fig = next(r for r in records if r.fact_type == "ucsc_conservation_figure")
+    assert fig.raw_artifact_id == persisted.data["figure"]["figure_raw_artifact_id"]
+    assert fig.api_run_id == persisted.data["figure"]["figure_api_run_id"]
+
+
+def test_empty_request_chain_is_rejected(tmp_path: Path):
+    from gene_dossier.tools.ucsc import UCSCLiveFigurePayload
+    from gene_dossier.raw_store import RawStore
+    from gene_dossier.workflow import _persist_ucsc_result_with_live_figure
+
+    png = (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_comprehensive_conservation.png").read_bytes()
+    settings = Settings(raw_data_dir=tmp_path / "raw", output_dir=tmp_path / "out")
+    transient = WorkflowTransientContext()
+    token = "run-empty:abc"
+    transient.put_figure(
+        token,
+        UCSCLiveFigurePayload(
+            content=png,
+            media_type="image/png",
+            width=100,
+            height=100,
+            sha256="x",
+            byte_size=len(png),
+            request_chain=(),
+            image_request_index=0,
+            track_preset_id="ucsc_section_1b_comprehensive_v1",
+            track_preset_version=1,
+            track_params={},
+            genome="hg38",
+            display_position="chr22:1-2",
+            selected_transcript=None,
+        ),
+    )
+    result = ToolResult(
+        source_name="UCSC",
+        endpoint_name="fetch_gene_region",
+        success=True,
+        gene_symbol="SREBF2",
+        request_url="https://example.test",
+        data={"_transient_ucsc_figure_token": token, "figure": {"status": "ok"}},
+    )
+    try:
+        _persist_ucsc_result_with_live_figure(
+            result=result,
+            dossier_run_id="run-empty",
+            gene_symbol="SREBF2",
+            settings=settings,
+            store=RawStore(base_dir=settings.raw_data_path),
+            transient=transient,
+            persist_db=False,
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "missing HTTP request provenance" in str(exc)
+    assert transient.live_figures == {}
+
+
+def test_failed_final_move_cleans_new_json_and_image(tmp_path: Path, monkeypatch):
+    from gene_dossier.tools.ucsc import UCSCLiveFigurePayload
+    from gene_dossier.raw_store import RawStore
+    from gene_dossier.workflow import _persist_ucsc_result_with_live_figure
+    import gene_dossier.ucsc_figure as uf
+
+    png = (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_comprehensive_conservation.png").read_bytes()
+    expected_sha = "3d165b72c20d11a0c921d16bf2cd17418a5169c2d0cec0537e297de5be0e3d6a"
+    settings = Settings(raw_data_dir=tmp_path / "raw", output_dir=tmp_path / "out")
+    store = RawStore(base_dir=settings.raw_data_path)
+    transient = WorkflowTransientContext()
+    token = "run-fail:abcdef0123456789abcdef0123456789"
+    transient.put_figure(
+        token,
+        UCSCLiveFigurePayload(
+            content=png,
+            media_type="image/png",
+            width=80,
+            height=40,
+            sha256=expected_sha,
+            byte_size=len(png),
+            request_chain=(
+                {
+                    "endpoint_name": "hgRenderTracks",
+                    "request_url": "https://genome.ucsc.edu/cgi-bin/hgRenderTracks",
+                    "request_params": {"db": "hg38"},
+                    "status_code": 200,
+                    "success": True,
+                    "error_type": None,
+                    "error_message": None,
+                    "parent_request_index": None,
+                },
+            ),
+            image_request_index=0,
+            track_preset_id="ucsc_section_1b_comprehensive_v1",
+            track_preset_version=1,
+            track_params={"pix": "1400"},
+            genome="hg38",
+            display_position="chr22:1-2",
+            selected_transcript=None,
+        ),
+    )
+
+    original_replace = Path.replace
+
+    def _boom(self, target):  # noqa: ANN001
+        raise OSError("simulated final move failure")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+    result = ToolResult(
+        source_name="UCSC",
+        endpoint_name="fetch_gene_region",
+        success=True,
+        gene_symbol="SREBF2",
+        request_url="https://example.test",
+        data={
+            "_transient_ucsc_figure_token": token,
+            "gene_symbol": "SREBF2",
+            "figure": {"status": "ok"},
+        },
+    )
+    try:
+        _persist_ucsc_result_with_live_figure(
+            result=result,
+            dossier_run_id="run-fail",
+            gene_symbol="SREBF2",
+            settings=settings,
+            store=store,
+            transient=transient,
+            persist_db=False,
+        )
+        assert False, "expected OSError"
+    except OSError:
+        pass
+    finally:
+        monkeypatch.setattr(Path, "replace", original_replace)
+
+    # Newly written JSON and any temp/final image from this attempt must be gone.
+    ucsc_dir = settings.raw_data_path / "run-fail" / "ucsc"
+    remaining = list(ucsc_dir.rglob("*")) if ucsc_dir.exists() else []
+    remaining_files = [p for p in remaining if p.is_file()]
+    assert remaining_files == []
+    assert transient.live_figures == {}
+
+
+def test_concurrent_same_gene_transient_isolation():
+    from gene_dossier.tools.ucsc import UCSCLiveFigurePayload
+
+    ctx = WorkflowTransientContext()
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+    a = UCSCLiveFigurePayload(
+        content=png,
+        media_type="image/png",
+        width=10,
+        height=10,
+        sha256="aaa",
+        byte_size=len(png),
+        request_chain=({"endpoint_name": "hgRenderTracks", "success": True, "status_code": 200},),
+        image_request_index=0,
+        track_preset_id="p",
+        track_preset_version=1,
+        track_params={},
+        genome="hg38",
+        display_position="chr1:1-2",
+        selected_transcript=None,
+    )
+    b = UCSCLiveFigurePayload(
+        content=png + b"1",
+        media_type="image/png",
+        width=10,
+        height=10,
+        sha256="bbb",
+        byte_size=len(png) + 1,
+        request_chain=({"endpoint_name": "hgRenderTracks", "success": True, "status_code": 200},),
+        image_request_index=0,
+        track_preset_id="p",
+        track_preset_version=1,
+        track_params={},
+        genome="hg38",
+        display_position="chr1:1-2",
+        selected_transcript=None,
+    )
+    tok_a = "runA:11111111111111111111111111111111"
+    tok_b = "runB:22222222222222222222222222222222"
+    ctx.put_figure(tok_a, a)
+    ctx.put_figure(tok_b, b)
+    assert ctx.pop_figure(tok_a).sha256 == "aaa"
+    assert ctx.pop_figure(tok_a) is None
+    assert ctx.pop_figure(tok_b).sha256 == "bbb"
+    ctx.put_figure("runA:zzzz", a)
+    ctx.clear_run("runA")
+    assert all(not k.startswith("runA:") for k in ctx.live_figures)
 
 
 def test_node_index_evidence_in_chroma_soft_fails_without_crash():

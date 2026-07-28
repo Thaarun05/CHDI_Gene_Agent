@@ -1132,7 +1132,29 @@ def _resolve_figure_path(value: dict[str, Any]) -> tuple[str | None, list[Presen
             )
         )
         return None, diags
-    return str(path), diags
+    return str(portable), diags
+
+
+def _transcript_selection_sentence(tx_val: dict[str, Any]) -> str:
+    """Return flag-accurate transcript selection wording for Section 1b."""
+    is_mane = bool(tx_val.get("is_mane_select"))
+    is_ensembl = bool(tx_val.get("is_ensembl_canonical"))
+    is_gencode_primary = bool(tx_val.get("is_gencode_primary"))
+    is_canonical_tier = bool(tx_val.get("is_canonical_tier"))
+    if is_mane and is_ensembl:
+        return (
+            "The transcript selected for display is both MANE Select and "
+            "Ensembl canonical."
+        )
+    if is_mane:
+        return "The MANE Select transcript was selected for display."
+    if is_ensembl:
+        return "The Ensembl canonical transcript was selected for display."
+    if is_gencode_primary or is_canonical_tier:
+        return (
+            "The current canonical-tier transcript model was selected for display."
+        )
+    return "The highest-ranked current transcript model was selected for display."
 
 
 def build_conservation_blocks(
@@ -1186,30 +1208,27 @@ def build_conservation_blocks(
             PresentationDiagnostic("gencode_release", "missing current GENCODE release", "warning")
         )
 
-    dynamic = (
-        f"A query of the {assembly} assembly identified "
-        f"{exact_count if exact_count is not None else 'an unknown number of'} "
-        f"{gene} transcript models in the current "
-        f"{release or 'GENCODE'} GENCODE annotation within the selected locus. "
-        f"The MANE Select and Ensembl canonical transcript was selected for display."
+    count_phrase = (
+        str(exact_count)
+        if exact_count is not None
+        else "an unknown number of"
     )
-    # Avoid double "GENCODE GENCODE" when release already includes word
     if release and str(release).upper().startswith("GENCODE"):
-        dynamic = (
-            f"A query of the {assembly} assembly identified "
-            f"{exact_count if exact_count is not None else 'an unknown number of'} "
-            f"{gene} transcript models in the current {release} annotation "
-            f"within the selected locus. The MANE Select and Ensembl canonical "
-            f"transcript was selected for display."
-        )
+        release_phrase = f"current {release} annotation"
     elif release and str(release).upper().startswith("V"):
-        dynamic = (
-            f"A query of the {assembly} assembly identified "
-            f"{exact_count if exact_count is not None else 'an unknown number of'} "
-            f"{gene} transcript models in the current GENCODE {release} annotation "
-            f"within the selected locus. The MANE Select and Ensembl canonical "
-            f"transcript was selected for display."
-        )
+        release_phrase = f"current GENCODE {release} annotation"
+    elif release:
+        release_phrase = f"current GENCODE {release} annotation"
+    else:
+        release_phrase = "current GENCODE annotation"
+
+    selection = _transcript_selection_sentence(tx_val)
+    dynamic = (
+        f"A query of the {assembly} assembly identified {count_phrase} "
+        f"{gene} transcript models in the {release_phrase} within the selected "
+        f"locus. {selection}"
+    )
+    combined_narrative = f"{UCSC_STABLE_INTRO} {dynamic}"
 
     source_ids = list(
         dict.fromkeys(
@@ -1231,13 +1250,8 @@ def build_conservation_blocks(
     blocks: list[ReportContentBlock] = [
         ReportContentBlock(
             kind="narrative",
-            text=UCSC_STABLE_INTRO,
-            source_ids=source_ids,
-            evidence_record_ids=evidence_ids,
-        ),
-        ReportContentBlock(
-            kind="narrative",
-            text=dynamic,
+            text=combined_narrative,
+            presentation_role=None,
             source_ids=source_ids,
             evidence_record_ids=evidence_ids,
         ),
@@ -1316,14 +1330,15 @@ def build_conservation_blocks(
                     evidence_record_ids=evidence_ids,
                 )
             )
-            caption = fig_val.get("caption") or fig_val.get("source_note")
-            if caption:
-                blocks.append(
-                    ReportContentBlock(
-                        kind="narrative",
-                        text=str(caption),
-                        source_ids=source_ids,
-                        evidence_record_ids=evidence_ids,
+            # source_note / caption are provenance — keep in diagnostics, not
+            # as a second visible narrative block.
+            note = fig_val.get("caption") or fig_val.get("source_note")
+            if note:
+                diagnostics.append(
+                    PresentationDiagnostic(
+                        "figure_note",
+                        str(note),
+                        "info",
                     )
                 )
 
@@ -1344,4 +1359,10 @@ __all__ = [
     "build_gene_aliases_blocks",
     "build_section_presentation",
     "format_safe_table_cell_html",
+    "transcript_selection_sentence",
 ]
+
+
+def transcript_selection_sentence(tx_val: dict[str, Any]) -> str:
+    """Public alias for Section 1b transcript-selection wording."""
+    return _transcript_selection_sentence(tx_val)

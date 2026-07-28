@@ -697,6 +697,8 @@ class ReportContentBlock(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
     presentation_role: PresentationRole | None = None
+    # Opaque polished-output reference; never a database ID.
+    evidence_ref: str | None = None
 
 
 class ReportSubsection(BaseModel):

@@ -1,12 +1,14 @@
-"""UCSC conservation figure validation, portable storage, and safe browser URLs."""
+"""UCSC conservation figure validation, presets, storage, and safe browser URLs."""
 
 from __future__ import annotations
 
 import hashlib
+import html
 import io
+import logging
 import re
-import shutil
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,26 @@ _BLOCKED_HTML_MARKERS = (
 )
 
 _ALLOWED_UCSC_HOSTS = frozenset({"genome.ucsc.edu", "hgdownload.soe.ucsc.edu"})
+UCSC_SECTION_1B_TRACK_PRESET_ID = "ucsc_section_1b_comprehensive_v1"
+UCSC_SECTION_1B_TRACK_PRESET_VERSION = 1
+UCSC_SECTION_1B_TRACK_PRESET: dict[str, str] = {
+    # Reset browser state so rendering does not depend on cookies/session defaults.
+    "hideTracks": "1",
+    "pix": "1400",
+    "knownGene": "pack",
+    "ncbiRefSeqCurated": "pack",
+    "mane": "pack",
+    "omimGene2": "pack",
+    "snp155": "pack",
+    "gtexGeneV8": "pack",
+    "wgEncodeReg": "pack",
+    "wgEncodeRegMarkH3k27ac": "pack",
+    "cons100way": "full",
+    "multiz100way": "pack",
+    "rmsk": "pack",
+    "guidelines": "off",
+    "textSize": "10",
+}
 
 
 @dataclass
@@ -49,21 +71,42 @@ class FigureValidationError:
     message: str
 
 
+@dataclass
+class StagedFigure:
+    """Temporary or reusable managed figure path information."""
+
+    final_absolute_path: Path
+    relative_path: str
+    sha256: str
+    media_type: str
+    width: int
+    height: int
+    byte_size: int
+    extension: str
+    temp_path: Path | None
+    existed_already: bool
+
+
 def sha256_hex(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+_API_KEY_QUERY_RE = re.compile(
+    r"([?&]api[_-]?key=)[^&\s\"']+",
+    re.IGNORECASE,
+)
+_API_KEY_KV_RE = re.compile(
+    r"(api[_-]?key\s*[=:]\s*)([^\s,\"']+)",
+    re.IGNORECASE,
+)
 
 
 def redact_api_key(text: str | None) -> str:
     """Remove apiKey query values case-insensitively from text/URLs/errors."""
     if not text:
         return ""
-    # query param forms
-    out = re.sub(
-        r"([?&]api[_-]?key=)[^&\s\"']+",
-        r"\1REDACTED",
-        str(text),
-        flags=re.IGNORECASE,
-    )
+    out = _API_KEY_QUERY_RE.sub(r"\1REDACTED", str(text))
+    out = _API_KEY_KV_RE.sub(r"\1REDACTED", out)
     return out
 
 
@@ -77,6 +120,73 @@ def sanitize_params(params: dict[str, Any] | None) -> dict[str, Any]:
             continue
         out[key] = value
     return out
+
+
+class ApiKeyRedactionFilter(logging.Filter):
+    """Defense-in-depth filter; prefer the LogRecordFactory for hierarchy coverage."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        _sanitize_log_record(record)
+        return True
+
+
+def _sanitize_log_record(record: logging.LogRecord) -> logging.LogRecord:
+    """Redact apiKey material on a LogRecord in place."""
+    try:
+        try:
+            rendered = record.getMessage()
+        except Exception:  # noqa: BLE001 — malformed msg/args
+            rendered = f"{record.msg!s} {record.args!s}"
+        record.msg = redact_api_key(rendered)
+        record.args = ()
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            try:
+                exc.args = tuple(
+                    redact_api_key(a) if isinstance(a, str) else a for a in exc.args
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return record
+
+
+_REDACTION_LOCK = threading.Lock()
+_REDACTION_INSTALLED = False
+_previous_log_record_factory = logging.getLogRecordFactory()
+
+
+def _redacting_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+    """Sanitize every LogRecord at creation, including httpcore.* descendants."""
+    record = _previous_log_record_factory(*args, **kwargs)
+    return _sanitize_log_record(record)
+
+
+def install_ucsc_api_key_log_redaction() -> None:
+    """Install permanent apiKey redaction for all logging hierarchies.
+
+    A chained :func:`logging.setLogRecordFactory` sanitizes every new record
+    regardless of logger name (including ``httpcore.connection`` /
+    ``httpcore.http11``). Logger-level :class:`ApiKeyRedactionFilter` instances
+    remain as defense in depth.
+    """
+    global _REDACTION_INSTALLED, _previous_log_record_factory
+    with _REDACTION_LOCK:
+        if _REDACTION_INSTALLED:
+            return
+        _previous_log_record_factory = logging.getLogRecordFactory()
+        logging.setLogRecordFactory(_redacting_record_factory)
+        filt = ApiKeyRedactionFilter()
+        for name in (
+            "httpx",
+            "httpcore",
+            "gene_dossier.tools.ucsc",
+            "gene_dossier.workflow",
+        ):
+            logging.getLogger(name).addFilter(filt)
+        logging.getLogger().addFilter(filt)
+        _REDACTION_INSTALLED = True
 
 
 def _image_size_png(content: bytes) -> tuple[int, int] | None:
@@ -110,7 +220,12 @@ def _image_size_via_pillow(content: bytes) -> tuple[str, int, int] | None:
         return None
 
 
-def validate_image_bytes(content: bytes) -> tuple[ValidatedImage | None, FigureValidationError | None]:
+def validate_image_bytes(
+    content: bytes,
+    *,
+    min_width: int = 8,
+    min_height: int = 8,
+) -> tuple[ValidatedImage | None, FigureValidationError | None]:
     """Validate PNG/JPEG/GIF bytes; reject HTML/CAPTCHA/bootstrap pages."""
     if not content:
         return None, FigureValidationError("empty_figure", "Figure body is empty")
@@ -150,8 +265,11 @@ def validate_image_bytes(content: bytes) -> tuple[ValidatedImage | None, FigureV
     elif media is None:
         return None, FigureValidationError("invalid_figure", "Unsupported or undecodable image")
 
-    if width < 8 or height < 8:
-        return None, FigureValidationError("trivial_figure", "Image dimensions are trivial")
+    if width < min_width or height < min_height:
+        return None, FigureValidationError(
+            "trivial_figure",
+            f"Image dimensions {width}x{height} below minimum {min_width}x{min_height}",
+        )
 
     digest = sha256_hex(content)
     return (
@@ -164,6 +282,86 @@ def validate_image_bytes(content: bytes) -> tuple[ValidatedImage | None, FigureV
             byte_size=len(content),
         ),
         None,
+    )
+
+
+def validate_live_render_image_bytes(
+    content: bytes,
+    *,
+    requested_pix: int = 1400,
+) -> tuple[ValidatedImage | None, FigureValidationError | None]:
+    """Validate a live hgRenderTracks image against a stronger size threshold."""
+    # Require a meaningful fraction of the requested pixel width; reject logos.
+    min_width = max(200, int(requested_pix * 0.5))
+    min_height = 80
+    return validate_image_bytes(content, min_width=min_width, min_height=min_height)
+
+
+def stage_figure_tempfile(
+    *,
+    dossier_run_id: str,
+    content: bytes,
+    extension: str = "png",
+    settings: Settings | None = None,
+) -> StagedFigure:
+    """Stage figure bytes to a temp file in the final managed directory.
+
+    Does not move the file into place or commit any DB state. Callers are responsible
+    for moving `temp_path` to `final_absolute_path`, verifying the checksum, and
+    deleting temporary/new files on failure.
+    """
+    cfg = settings or get_settings()
+    validated, err = validate_image_bytes(content)
+    if err or validated is None:
+        raise ValueError(err.message if err else "invalid figure")
+
+    digest = validated.sha256
+    rel_dir = Path(dossier_run_id) / "ucsc" / "figures"
+    ext = extension.lstrip(".") or "png"
+    final_rel = rel_dir / f"{digest}.{ext}"
+    final_abs = (cfg.raw_data_path / final_rel).resolve()
+    final_abs.parent.mkdir(parents=True, exist_ok=True)
+
+    if final_abs.is_file():
+        if sha256_hex(final_abs.read_bytes()) != digest:
+            raise ValueError(f"existing figure at {final_abs} does not match checksum")
+        return StagedFigure(
+            final_absolute_path=final_abs,
+            relative_path=final_rel.as_posix(),
+            sha256=digest,
+            media_type=validated.media_type,
+            width=validated.width,
+            height=validated.height,
+            byte_size=validated.byte_size,
+            extension=ext,
+            temp_path=None,
+            existed_already=True,
+        )
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{digest}.",
+        suffix=f".{ext}.tmp",
+        dir=str(final_abs.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with open(fd, "wb") as handle:
+            handle.write(validated.content)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    return StagedFigure(
+        final_absolute_path=final_abs,
+        relative_path=final_rel.as_posix(),
+        sha256=digest,
+        media_type=validated.media_type,
+        width=validated.width,
+        height=validated.height,
+        byte_size=validated.byte_size,
+        extension=ext,
+        temp_path=tmp_path,
+        existed_already=False,
     )
 
 
@@ -213,36 +411,18 @@ def stage_and_commit_figure(
     Returns ``(final_absolute_path, relative_path, sha256)``.
     Reuses an existing matching checksum file when present.
     """
-    cfg = settings or get_settings()
-    validated, err = validate_image_bytes(content)
-    if err or validated is None:
-        raise ValueError(err.message if err else "invalid figure")
-
-    digest = validated.sha256
-    rel_dir = Path(dossier_run_id) / "ucsc" / "figures"
-    final_rel = rel_dir / f"{digest}.{extension.lstrip('.')}"
-    final_abs = (cfg.raw_data_path / final_rel).resolve()
-    final_abs.parent.mkdir(parents=True, exist_ok=True)
-
-    if final_abs.is_file() and sha256_hex(final_abs.read_bytes()) == digest:
-        return final_abs, final_rel.as_posix(), digest
-
-    # Stage to temporary file in the same directory for atomic replace.
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{digest}.",
-        suffix=f".{extension.lstrip('.')}.tmp",
-        dir=str(final_abs.parent),
+    staged = stage_figure_tempfile(
+        dossier_run_id=dossier_run_id,
+        content=content,
+        extension=extension,
+        settings=settings,
     )
-    tmp_path = Path(tmp_name)
-    try:
-        with open(fd, "wb") as handle:
-            handle.write(validated.content)
-        tmp_path.replace(final_abs)
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-        raise
-    return final_abs, final_rel.as_posix(), digest
+    if staged.temp_path is not None:
+        staged.temp_path.replace(staged.final_absolute_path)
+        if sha256_hex(staged.final_absolute_path.read_bytes()) != staged.sha256:
+            staged.final_absolute_path.unlink(missing_ok=True)
+            raise ValueError("figure checksum mismatch after final move")
+    return staged.final_absolute_path, staged.relative_path, staged.sha256
 
 
 def build_safe_hgtracks_url(
@@ -293,10 +473,15 @@ def is_safe_ucsc_browser_url(url: str) -> bool:
 
 
 def extract_ucsc_image_url_from_html(html_text: str) -> str | None:
-    """Locate an approved-host image reference inside an hgRenderTracks HTML wrapper."""
-    # src="..." or src='...'
+    """Locate an approved UCSC generated-track image inside an HTML wrapper.
+
+    Prefers ``/trash/`` image assets over logos or unrelated ``<img>`` tags.
+    HTML-decodes ``src`` values before parsing.
+    """
+    candidates: list[str] = []
+    preferred: list[str] = []
     for match in re.finditer(r"""src=["']([^"']+)["']""", html_text, re.IGNORECASE):
-        candidate = match.group(1)
+        candidate = html.unescape(match.group(1).strip())
         try:
             parsed = urlparse(candidate)
         except Exception:  # noqa: BLE001
@@ -304,26 +489,58 @@ def extract_ucsc_image_url_from_html(html_text: str) -> str | None:
         if parsed.scheme and parsed.scheme not in {"http", "https"}:
             continue
         host = parsed.hostname
+        path = (parsed.path or "").lower()
+        # Skip obvious UI chrome.
+        if any(token in path for token in ("logo", "favicon", "icon", "sprite")):
+            continue
+        resolved: str | None = None
         if host is None and candidate.startswith("/"):
-            return f"https://genome.ucsc.edu{candidate}"
-        if host in _ALLOWED_UCSC_HOSTS:
+            resolved = f"https://genome.ucsc.edu{candidate}"
+        elif host in _ALLOWED_UCSC_HOSTS:
             if parsed.scheme == "http":
-                return urlunparse(("https", parsed.netloc, parsed.path, "", parsed.query, ""))
-            return candidate
-    return None
+                resolved = urlunparse(
+                    ("https", parsed.netloc, parsed.path, "", parsed.query, "")
+                )
+            else:
+                resolved = candidate
+        if not resolved:
+            continue
+        candidates.append(resolved)
+        if "/trash/" in path or path.endswith((".png", ".jpg", ".jpeg", ".gif")):
+            preferred.append(resolved)
+    if preferred:
+        return preferred[0]
+    return candidates[0] if candidates else None
+
+
+def split_url_for_provenance(url: str) -> tuple[str, dict[str, str]]:
+    """Return credential-free base URL and sanitized query params for persistence."""
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.scheme and parsed.netloc else url
+    params = sanitize_params(dict(parse_qsl(parsed.query, keep_blank_values=True)))
+    return base, {str(k): str(v) for k, v in params.items()}
 
 
 __all__ = [
     "ValidatedImage",
     "FigureValidationError",
+    "StagedFigure",
+    "UCSC_SECTION_1B_TRACK_PRESET_ID",
+    "UCSC_SECTION_1B_TRACK_PRESET_VERSION",
+    "UCSC_SECTION_1B_TRACK_PRESET",
+    "ApiKeyRedactionFilter",
     "sha256_hex",
     "redact_api_key",
     "sanitize_params",
+    "install_ucsc_api_key_log_redaction",
     "validate_image_bytes",
+    "validate_live_render_image_bytes",
+    "stage_figure_tempfile",
     "relative_to_artifact_root",
     "resolve_artifact_path",
     "stage_and_commit_figure",
     "build_safe_hgtracks_url",
     "is_safe_ucsc_browser_url",
     "extract_ucsc_image_url_from_html",
+    "split_url_for_provenance",
 ]

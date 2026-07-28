@@ -23,10 +23,12 @@ Rules:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypedDict
+from uuid import uuid4
 
 from gene_dossier.config import Settings, get_settings
 from gene_dossier.coverage import build_and_write_coverage, persist_coverage
@@ -43,6 +45,7 @@ from gene_dossier.models import (
     Claim,
     DossierRun,
     EvidenceRecord,
+    RawArtifact,
     ReportSection,
     SourceCoverageResult,
     SourceStatus,
@@ -55,14 +58,45 @@ from gene_dossier.rancho_report import build_and_write_rancho_report
 from gene_dossier.rendering import write_dossier_report
 from gene_dossier.source_registry import get_all_sources, get_source
 from gene_dossier.synthesis import SynthesisResult, synthesize_dossier
+from gene_dossier.ucsc_figure import install_ucsc_api_key_log_redaction
 from gene_dossier.verification import verify_claims
 
 logger = logging.getLogger(__name__)
+install_ucsc_api_key_log_redaction()
 
 ClientFn = Callable[..., ToolResult]
 NormalizerFn = Callable[..., list[EvidenceRecord]]
 
 IDENTITY_SOURCES = ("NCBI Gene", "Ensembl", "UniProt")
+_UCSC_TRANSIENT_TOKEN_KEY = "_transient_ucsc_figure_token"
+
+
+@dataclass
+class WorkflowTransientContext:
+    """Per-compiled-graph transient payloads; never enters LangGraph state.
+
+    Access is guarded by ``lock`` so concurrent invokes of the same compiled
+    graph cannot overwrite or consume one another's live figure payloads.
+    """
+
+    live_figures: dict[str, Any] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def put_figure(self, token: str, payload: Any) -> None:
+        with self.lock:
+            self.live_figures[token] = payload
+
+    def pop_figure(self, token: str) -> Any | None:
+        with self.lock:
+            return self.live_figures.pop(token, None)
+
+    def clear_run(self, dossier_run_id: str) -> None:
+        """Drop any remaining payloads keyed for ``dossier_run_id``."""
+        prefix = f"{dossier_run_id}:"
+        with self.lock:
+            stale = [k for k in self.live_figures if k.startswith(prefix)]
+            for key in stale:
+                self.live_figures.pop(key, None)
 
 
 class DossierState(TypedDict, total=False):
@@ -826,6 +860,7 @@ def node_call_source_clients(
     settings: Settings,
     call_network: bool = True,
     sources: Iterable[str] | None = None,
+    transient: WorkflowTransientContext | None = None,
 ) -> DossierState:
     """Call remaining registered clients (skip identity sources already fetched)."""
     if not call_network:
@@ -867,9 +902,24 @@ def node_call_source_clients(
             )
             continue
 
-        result = _safe_call_client(
-            name, fn, gene_symbol=gene_symbol, gene_ids=gene_ids, settings=settings
-        )
+        if name == "UCSC":
+            from gene_dossier.tools import ucsc as ucsc_client
+
+            execution = ucsc_client.fetch_gene_region_execution(
+                gene_symbol,
+                settings=settings,
+            )
+            result = execution.tool_result
+            if transient is not None and execution.live_figure is not None:
+                data = dict(result.data) if isinstance(result.data, dict) else {}
+                token = f"{state['dossier_run_id']}:{uuid4().hex}"
+                data[_UCSC_TRANSIENT_TOKEN_KEY] = token
+                result.data = data
+                transient.put_figure(token, execution.live_figure)
+        else:
+            result = _safe_call_client(
+                name, fn, gene_symbol=gene_symbol, gene_ids=gene_ids, settings=settings
+            )
         tool_results.append(result)
         gene_ids = extract_gene_ids_from_tool_result(result, gene_ids)
         if not result.success:
@@ -883,8 +933,239 @@ def node_call_source_clients(
     }
 
 
+def _persist_ucsc_result_with_live_figure(
+    *,
+    result: ToolResult,
+    dossier_run_id: str,
+    gene_symbol: str,
+    settings: Settings,
+    store: RawStore,
+    transient: WorkflowTransientContext | None,
+    persist_db: bool,
+) -> tuple[ToolResult, list[ApiRun], list[dict[str, Any]]]:
+    """Persist combined UCSC JSON plus any live figure payload.
+
+    Persistence contract (two-phase):
+    - Phase 1 (this function): ApiRun + RawArtifact rows and the final image
+      file are written together. On failure, newly created files for this
+      attempt are cleaned up.
+    - Phase 2 (``node_normalize_evidence``): ``ucsc_conservation_figure``
+      EvidenceRecords are created later. A normalization failure may leave an
+      orphan live figure artifact without a matching EvidenceRecord; this is
+      accepted and consistent with the existing pipeline architecture.
+
+    Live figure bytes are consumed from workflow-local transient context before
+    control returns to ordinary serializable state.
+    """
+    data = result.data if isinstance(result.data, dict) else {}
+    token = str(data.get(_UCSC_TRANSIENT_TOKEN_KEY) or "").strip()
+    live_figure = transient.pop_figure(token) if transient and token else None
+    if token and isinstance(data, dict):
+        data.pop(_UCSC_TRANSIENT_TOKEN_KEY, None)
+        result.data = data
+
+    api_runs: list[ApiRun] = []
+    raw_meta: list[dict[str, Any]] = []
+
+    combined_api_run = ApiRun(
+        dossier_run_id=dossier_run_id,
+        gene_symbol=gene_symbol,
+        source_name=result.source_name,
+        endpoint_name=result.endpoint_name,
+        request_url=result.request_url,
+        request_params=dict(result.request_params or {}),
+        status_code=result.status_code,
+        success=result.success,
+        error_type=result.error_type,
+        error_message=result.error_message,
+    )
+    json_artifact = None
+
+    figure_api_runs: list[ApiRun] = []
+    figure_artifact: RawArtifact | None = None
+    staged = None
+    created_final = False
+    api_run_ids_by_index: dict[int, str] = {}
+    json_cleanup_path: Path | None = None
+    json_created_by_attempt = False
+
+    try:
+        if live_figure is not None:
+            from gene_dossier.ucsc_figure import stage_figure_tempfile, sha256_hex
+
+            if not live_figure.request_chain:
+                raise RuntimeError(
+                    "Validated live UCSC figure is missing HTTP request provenance"
+                )
+
+            ext = (
+                live_figure.media_type.split("/")[-1]
+                if "/" in live_figure.media_type
+                else "png"
+            )
+            staged = stage_figure_tempfile(
+                dossier_run_id=dossier_run_id,
+                content=live_figure.content,
+                extension=ext,
+                settings=settings,
+            )
+
+            for idx, attempt in enumerate(live_figure.request_chain):
+                parent_idx = attempt.get("parent_request_index")
+                parent_id = (
+                    api_run_ids_by_index.get(int(parent_idx))
+                    if parent_idx is not None
+                    else None
+                )
+                request_params = dict(attempt.get("request_params") or {})
+                if parent_id is not None:
+                    request_params["parent_api_run_id"] = parent_id
+                api = ApiRun(
+                    dossier_run_id=dossier_run_id,
+                    gene_symbol=gene_symbol,
+                    source_name="UCSC",
+                    endpoint_name=str(
+                        attempt.get("endpoint_name") or "hgRenderTracks"
+                    ),
+                    method="GET",
+                    request_url=str(attempt.get("request_url") or ""),
+                    request_params=request_params,
+                    status_code=attempt.get("status_code"),
+                    success=bool(attempt.get("success")),
+                    error_type=attempt.get("error_type"),
+                    error_message=attempt.get("error_message"),
+                )
+                figure_api_runs.append(api)
+                api_run_ids_by_index[idx] = api.id
+
+            image_api_run = figure_api_runs[live_figure.image_request_index]
+            figure_artifact = RawArtifact(
+                dossier_run_id=dossier_run_id,
+                api_run_id=image_api_run.id,
+                source_name="UCSC",
+                artifact_type="image",
+                file_path=staged.relative_path,
+                original_url=None,
+                content_hash=staged.sha256,
+                notes="programmatic_browser_render",
+            )
+
+            figure_value = dict(data.get("figure") or {})
+            figure_value.update(
+                {
+                    "relative_path": staged.relative_path,
+                    "local_artifact_path": staged.relative_path,
+                    "media_type": staged.media_type,
+                    "width": staged.width,
+                    "height": staged.height,
+                    "byte_size": staged.byte_size,
+                    "sha256": staged.sha256,
+                    "genome": live_figure.genome,
+                    "display_position": live_figure.display_position,
+                    "selected_transcript": live_figure.selected_transcript,
+                    "retrieval_method": "programmatic_browser_render",
+                    "origin_endpoint": "hgRenderTracks",
+                    "api_key_used": True,
+                    "api_key_persisted": False,
+                    "track_preset_id": live_figure.track_preset_id,
+                    "track_preset_version": live_figure.track_preset_version,
+                    "track_params": dict(live_figure.track_params),
+                    "pixel_width": live_figure.track_params.get("pix")
+                    or figure_value.get("pixel_width"),
+                    "figure_api_run_id": image_api_run.id,
+                    "figure_raw_artifact_id": figure_artifact.id,
+                    "wrapper_request_index": live_figure.wrapper_request_index,
+                    "image_request_index": live_figure.image_request_index,
+                }
+            )
+            data["figure"] = figure_value
+            result.data = data
+
+        if result.data is not None:
+            # Detect newly created JSON files so a later failure can clean them up
+            # without deleting a pre-existing reused content-addressed artifact.
+            from gene_dossier.raw_store import compute_hash
+            from gene_dossier.source_ids import slugify
+            import json as _json
+
+            payload_bytes = _json.dumps(
+                result.data, sort_keys=True, ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            digest = compute_hash(payload_bytes)
+            hint = slugify(result.endpoint_name) if result.endpoint_name else ""
+            stem = f"{hint}-" if hint else ""
+            expected_json = (
+                store._dir_for(dossier_run_id, result.source_name)
+                / f"{stem}{digest[:12]}.json"
+            )
+            json_created_by_attempt = not expected_json.exists()
+            json_artifact = store.save_json(
+                dossier_run_id,
+                result.source_name,
+                result.data,
+                api_run_id=combined_api_run.id,
+                original_url=result.request_url or None,
+                filename_hint=result.endpoint_name,
+            )
+            json_cleanup_path = Path(json_artifact.file_path)
+            combined_api_run.raw_artifact_id = json_artifact.id
+            result.raw_artifact_id = json_artifact.id
+            raw_meta.append(json_artifact.model_dump(mode="json"))
+
+        # Finalize the staged image even when persist_db=False so HTML can
+        # resolve and embed the figure path.
+        if live_figure is not None and staged is not None and figure_artifact is not None:
+            from gene_dossier.ucsc_figure import sha256_hex
+
+            if staged.temp_path is not None:
+                staged.temp_path.replace(staged.final_absolute_path)
+                created_final = True
+            if not staged.final_absolute_path.is_file():
+                raise RuntimeError("Live UCSC figure final file missing after move")
+            if sha256_hex(staged.final_absolute_path.read_bytes()) != staged.sha256:
+                raise RuntimeError("Live UCSC figure checksum mismatch after move")
+            raw_meta.append(figure_artifact.model_dump(mode="json"))
+
+        if persist_db:
+            with session_scope() as session:
+                save_api_run(session, combined_api_run)
+                if json_artifact is not None:
+                    save_raw_artifact(session, json_artifact)
+                if live_figure is not None and figure_artifact is not None:
+                    for api in figure_api_runs:
+                        save_api_run(session, api)
+                    save_raw_artifact(session, figure_artifact)
+
+        api_runs.append(combined_api_run)
+        api_runs.extend(figure_api_runs)
+        return result, api_runs, raw_meta
+    except Exception:
+        if transient is not None:
+            transient.clear_run(dossier_run_id)
+        if staged is not None and staged.temp_path is not None and staged.temp_path.exists():
+            staged.temp_path.unlink(missing_ok=True)
+        if (
+            staged is not None
+            and created_final
+            and not staged.existed_already
+            and staged.final_absolute_path.exists()
+        ):
+            staged.final_absolute_path.unlink(missing_ok=True)
+        if (
+            json_created_by_attempt
+            and json_cleanup_path is not None
+            and json_cleanup_path.exists()
+        ):
+            json_cleanup_path.unlink(missing_ok=True)
+        raise
+
+
 def node_save_raw_artifacts(
-    state: DossierState, *, settings: Settings, persist_db: bool = True
+    state: DossierState,
+    *,
+    settings: Settings,
+    persist_db: bool = True,
+    transient: WorkflowTransientContext | None = None,
 ) -> DossierState:
     """Persist ToolResult payloads to the raw store + ApiRun / RawArtifact rows."""
     store = RawStore(base_dir=settings.raw_data_path)
@@ -895,6 +1176,27 @@ def node_save_raw_artifacts(
     updated_results: list[ToolResult] = []
 
     for result in state.get("tool_results") or []:
+        if result.source_name == "UCSC":
+            try:
+                persisted_result, runs, meta = _persist_ucsc_result_with_live_figure(
+                    result=result,
+                    dossier_run_id=dossier_run_id,
+                    gene_symbol=gene_symbol,
+                    settings=settings,
+                    store=store,
+                    transient=transient,
+                    persist_db=persist_db,
+                )
+                api_runs.extend(runs)
+                raw_meta.extend(meta)
+                updated_results.append(persisted_result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("UCSC raw/figure persist failed: %s", exc)
+                if transient is not None:
+                    transient.clear_run(dossier_run_id)
+                updated_results.append(result)
+            continue
+
         api_run = ApiRun(
             dossier_run_id=dossier_run_id,
             gene_symbol=gene_symbol,
@@ -1236,6 +1538,7 @@ def build_dossier_graph(
     cfg = settings or get_settings()
     out = Path(output_dir) if output_dir is not None else None
     source_list = list(sources) if sources is not None else None
+    transient = WorkflowTransientContext()
 
     graph = StateGraph(DossierState)
     graph.add_node(
@@ -1251,12 +1554,21 @@ def build_dossier_graph(
     graph.add_node(
         "call_source_clients",
         lambda s: node_call_source_clients(
-            s, settings=cfg, call_network=call_network, sources=source_list
+            s,
+            settings=cfg,
+            call_network=call_network,
+            sources=source_list,
+            transient=transient,
         ),
     )
     graph.add_node(
         "save_raw_artifacts",
-        lambda s: node_save_raw_artifacts(s, settings=cfg, persist_db=persist_db),
+        lambda s: node_save_raw_artifacts(
+            s,
+            settings=cfg,
+            persist_db=persist_db,
+            transient=transient,
+        ),
     )
     graph.add_node(
         "normalize_evidence",
@@ -1364,4 +1676,11 @@ __all__ = [
     "node_build_report_sections",
     "node_verify_claims",
     "node_render_outputs",
+    "WorkflowTransientContext",
+    "coverage_updates_from_state",
 ]
+
+
+def coverage_updates_from_state(state: DossierState) -> list[SourceCoverageResult]:
+    """Public alias for read-only coverage derivation (section-bundle audit)."""
+    return _coverage_updates_from_state(state)
