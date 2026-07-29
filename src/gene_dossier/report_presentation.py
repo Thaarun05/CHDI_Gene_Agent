@@ -111,6 +111,17 @@ def build_section_presentation(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
         )
+    if key in {
+        "1c",
+        "1.c",
+        "known_structure",
+        "known-structure",
+        "known_structure_domains",
+    }:
+        return build_known_structure_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -1349,6 +1360,768 @@ def build_conservation_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def _fmt_percent(value: Any) -> str:
+    try:
+        if value is None:
+            return NOT_AVAILABLE
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return NOT_AVAILABLE
+
+
+def _fmt_span(start: Any, end: Any) -> str:
+    if start is None or end is None:
+        return NOT_AVAILABLE
+    return f"{start}-{end}"
+
+
+def _fmt_resolution(value: Any) -> str:
+    try:
+        if value is None:
+            return NOT_AVAILABLE
+        return f"{float(value):.2g} Angstrom"
+    except (TypeError, ValueError):
+        return NOT_AVAILABLE
+
+
+def _section_1c_records(records: Sequence[EvidenceRecord]) -> list[EvidenceRecord]:
+    return [
+        rec
+        for rec in records
+        if rec.source_name in {"CDD", "PDBe", "UniProt"}
+        and (
+            rec.fact_type
+            in {
+                "conserved_domain_hit",
+                "cdd_architecture_figure",
+                "cdd_official_architecture_figure",
+                "cdd_family_summary",
+                "cdd_family_thumbnail",
+                "cdd_conserved_feature",
+                "cdd_feature_thumbnail",
+                "pdb_structure",
+                "pdb_candidate_selection",
+                "pdb_coordinate_mapping",
+                "pdb_assembly_figure",
+                "pdb_domain_focus_figure",
+                "pdb_official_structure_image",
+                "sequence_feature",
+                "uniprot_accession",
+            }
+        )
+    ]
+
+
+def _protein_length_from_records(records: Sequence[EvidenceRecord]) -> int | None:
+    for rec in records:
+        if rec.source_name != "UniProt" or rec.fact_type != "uniprot_accession":
+            continue
+        value = rec.value if isinstance(rec.value, dict) else {}
+        for key in ("protein_length", "sequence_length", "length"):
+            try:
+                raw = value.get(key)
+                if raw is not None:
+                    return int(raw)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _fact_records(records: Sequence[EvidenceRecord], fact_type: str) -> list[EvidenceRecord]:
+    return [rec for rec in records if rec.fact_type == fact_type]
+
+
+def _first_section_1c_fact(
+    records: Sequence[EvidenceRecord],
+    fact_type: str,
+) -> EvidenceRecord | None:
+    matches = _fact_records(records, fact_type)
+    if not matches:
+        return None
+    return sorted(
+        matches,
+        key=lambda r: getattr(r, "created_at", None) or 0,
+        reverse=True,
+    )[0]
+
+
+def _candidate_selection_value(records: Sequence[EvidenceRecord]) -> dict[str, Any]:
+    rec = _first_section_1c_fact(records, "pdb_candidate_selection")
+    return rec.value if rec is not None and isinstance(rec.value, dict) else {}
+
+
+def _selected_candidate(selection: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = selection.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("selected"):
+            return candidate
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
+def _candidate_rows(selection: dict[str, Any]) -> list[list[str]]:
+    candidates = selection.get("candidates")
+    if not isinstance(candidates, list):
+        return []
+    rows: list[list[str]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        chains = ", ".join(str(x) for x in candidate.get("chain_ids") or [])
+        spans = ", ".join(
+            f"{span[0]}-{span[1]}"
+            for span in candidate.get("mapped_spans") or []
+            if isinstance(span, list) and len(span) == 2
+        )
+        status = "Selected" if candidate.get("selected") else "Rejected"
+        reasons = "; ".join(str(x) for x in candidate.get("rejection_reasons") or [])
+        if not reasons and not candidate.get("selected"):
+            reasons = "lower ranked than selected candidate"
+        rows.append(
+            [
+                str(candidate.get("pdb_id") or NOT_AVAILABLE).upper(),
+                chains or NOT_AVAILABLE,
+                str(candidate.get("experimental_method") or NOT_AVAILABLE),
+                _fmt_resolution(candidate.get("resolution")),
+                spans or NOT_AVAILABLE,
+                _fmt_percent(candidate.get("calculated_coverage")),
+                status if not reasons else f"{status}: {reasons}",
+            ]
+        )
+    return rows
+
+
+def _cdd_accession_url(accession: Any) -> str | None:
+    acc = str(accession or "").strip()
+    if not acc:
+        return None
+    return f"https://www.ncbi.nlm.nih.gov/Structure/cdd/cddsrv.cgi?uid={acc}"
+
+
+def _pdbe_entry_url(pdb_id: Any) -> str | None:
+    pdb = str(pdb_id or "").strip().lower()
+    if not pdb:
+        return None
+    return f"https://www.ebi.ac.uk/pdbe/entry/pdb/{pdb}"
+
+
+def _best_number(values: Sequence[Any], *, lowest: bool) -> str:
+    parsed: list[float] = []
+    for value in values:
+        try:
+            if value is not None and str(value).strip():
+                parsed.append(float(str(value)))
+        except (TypeError, ValueError):
+            continue
+    if not parsed:
+        return NOT_AVAILABLE
+    number = min(parsed) if lowest else max(parsed)
+    return f"{number:.4g}"
+
+
+def _domain_groups(domains: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in domains:
+        name = str(row.get("domain_short_name") or row.get("domain_accession") or "CDD domain")
+        accession = str(row.get("domain_accession") or "")
+        key = (name, accession)
+        group = grouped.setdefault(
+            key,
+            {
+                "domain_short_name": name,
+                "domain_accession": accession,
+                "domain_description": row.get("domain_description"),
+                "rows": [],
+            },
+        )
+        group["rows"].append(row)
+    return sorted(
+        grouped.values(),
+        key=lambda item: min(
+            (
+                row.get("from_residue")
+                for row in item["rows"]
+                if row.get("from_residue") is not None
+            ),
+            default=10**9,
+        ),
+    )
+
+
+def _domain_summary_text(
+    *,
+    gene_symbol: str,
+    group: dict[str, Any],
+) -> str:
+    rows = [row for row in group.get("rows") or [] if isinstance(row, dict)]
+    spans = ", ".join(
+        _fmt_span(row.get("from_residue"), row.get("to_residue")) for row in rows
+    )
+    coverages = [
+        _fmt_percent(row.get("coverage"))
+        for row in rows
+        if _fmt_percent(row.get("coverage")) != NOT_AVAILABLE
+    ]
+    coverage_text = ", ".join(coverages)
+    name = str(group.get("domain_short_name") or "CDD domain")
+    accession = str(group.get("domain_accession") or NOT_AVAILABLE)
+    occurrence = "match" if len(rows) == 1 else f"{len(rows)} matches"
+    text = (
+        f"{name} ({accession}) has {occurrence} in {gene_symbol}"
+        + (f" at residues {spans}" if spans else "")
+        + "."
+    )
+    if coverage_text:
+        text += f" Calculated coverage: {coverage_text}."
+    text += (
+        f" Best E-value: {_best_number([row.get('evalue') for row in rows], lowest=True)}; "
+        f"best bit score: {_best_number([row.get('bitscore') for row in rows], lowest=False)}."
+    )
+    description = group.get("domain_description")
+    if description:
+        text += f" {description}"
+    return text
+
+
+def _source_and_evidence_ids(records: Sequence[EvidenceRecord]) -> tuple[list[str], list[str]]:
+    return (
+        list(dict.fromkeys(rec.source_id for rec in records if rec.source_id)),
+        list(dict.fromkeys(rec.id for rec in records if rec.id)),
+    )
+
+
+def _safe_item_token(value: Any, *, fallback: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "-", str(value or fallback).lower()).strip("-")
+    return token or fallback
+
+
+def _value_item_key(value: dict[str, Any], *, prefix: str, fallback: str) -> str:
+    if value.get("presentation_item_key"):
+        return str(value["presentation_item_key"])
+    raw = (
+        value.get("canonical_accession")
+        or value.get("domain_accession")
+        or value.get("pdb_id")
+        or value.get("feature_label")
+        or fallback
+    )
+    return f"{prefix}-{_safe_item_token(raw, fallback=fallback)}"
+
+
+def _figure_block_from_record(
+    rec: EvidenceRecord,
+    *,
+    role: str,
+    caption: str,
+    diagnostics: list[PresentationDiagnostic],
+) -> ReportContentBlock | None:
+    value = rec.value if isinstance(rec.value, dict) else {}
+    resolved, fig_diags = _resolve_figure_path(value)
+    diagnostics.extend(fig_diags)
+    if not resolved:
+        return None
+    return ReportContentBlock(
+        kind="figure",
+        figure_path=resolved,
+        figure_caption=caption,
+        text=caption,
+        presentation_role=role,  # type: ignore[arg-type]
+        presentation_item_key=(
+            str(value.get("presentation_item_key"))
+            if isinstance(value, dict) and value.get("presentation_item_key")
+            else None
+        ),
+        source_ids=[rec.source_id] if rec.source_id else [],
+        evidence_record_ids=[rec.id] if rec.id else [],
+    )
+
+
+def _strip_visible_pssm(text: str) -> str:
+    cleaned = re.sub(r"\s*\(PSSM\s*ID:\s*\d+\)", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bPSSM[-\s]*ID:\s*\d+\b[:;,\s]*", "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _record_accession(rec: EvidenceRecord) -> str:
+    value = rec.value if isinstance(rec.value, dict) else {}
+    return str(value.get("canonical_accession") or value.get("domain_accession") or "").lower()
+
+
+def _family_record_for_accession(
+    family_summaries: Sequence[EvidenceRecord],
+    accession: str,
+) -> EvidenceRecord | None:
+    target = accession.lower()
+    candidates: list[EvidenceRecord] = []
+    for rec in family_summaries:
+        value = rec.value if isinstance(rec.value, dict) else {}
+        aliases = {
+            _record_accession(rec),
+            str(value.get("matched_query_domain_accession") or "").lower(),
+            str(value.get("domain_accession") or "").lower(),
+            str(value.get("canonical_accession") or "").lower(),
+        }
+        if target in aliases:
+            candidates.append(rec)
+    if not candidates:
+        return None
+    if target == "pfam01049":
+        for rec in candidates:
+            value = rec.value if isinstance(rec.value, dict) else {}
+            if str(value.get("pssm_id") or "") == "426014":
+                return rec
+            haystack = " ".join(
+                str(value.get(key) or "")
+                for key in ("domain_short_name", "canonical_accession", "synopsis")
+            ).lower()
+            if "cadherin_c" in haystack or "cadherin cytoplasmic" in haystack:
+                return rec
+    return candidates[0]
+    return None
+
+
+def _thumbnail_record_for_key(
+    thumbnails: Sequence[EvidenceRecord],
+    item_key: str,
+) -> EvidenceRecord | None:
+    for rec in thumbnails:
+        value = rec.value if isinstance(rec.value, dict) else {}
+        if str(value.get("presentation_item_key") or "") == item_key:
+            return rec
+    return None
+
+
+def _domain_visible_heading(
+    *,
+    accession: str,
+    name: str,
+    synopsis: str | None,
+) -> str:
+    acc = accession.lower()
+    if acc == "cd18922":
+        return (
+            "basic Helix-Loop-Helix-zipper (bHLHzip) domain found in "
+            "sterol regulatory element-binding protein 2 (SREBP2) and similar proteins:"
+        )
+    if acc == "cl00081":
+        prefix = "Conserved Protein Domain Family bHLH_SF:"
+        return f"{prefix}\n\n{synopsis}" if synopsis else prefix
+    if acc == "cd11304":
+        prefix = "CD11304: Cadherin_repeat:"
+        return f"{prefix} {synopsis}" if synopsis else prefix
+    if acc == "pfam01049":
+        prefix = "Cadherin_C / CADH_Y-type_LIR:"
+        return f"{prefix} {synopsis}" if synopsis else prefix
+    prefix = f"{name}:"
+    return f"{prefix} {synopsis}" if synopsis else prefix
+
+
+def _should_suppress_visible_domain(accession: str, name: str, visible_accessions: set[str]) -> bool:
+    acc = accession.lower()
+    lower_name = name.lower()
+    if "cd11304" in visible_accessions and (
+        acc in {"smart00112"}
+        or lower_name in {"ca", "cadh-y-type-lir", "cadh_y-type_lir"}
+    ):
+        return True
+    return False
+
+
+def _feature_visible_label(value: dict[str, Any]) -> str | None:
+    label = str(value.get("feature_label") or value.get("feature_name") or "").strip()
+    if not label:
+        return None
+    return label.rstrip(".:")
+
+
+def build_known_structure_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+) -> SectionPresentationResult:
+    """Build Section 1c polished official CDD/PDBe structure and domain blocks."""
+    diagnostics: list[PresentationDiagnostic] = []
+    records = _section_1c_records(list(evidence_records))
+    protein_length = _protein_length_from_records(records)
+
+    from gene_dossier.section_1c import cdd_domain_rows
+
+    domains = cdd_domain_rows(records, protein_length=protein_length)
+    selection = _candidate_selection_value(records)
+    selected = _selected_candidate(selection)
+    architecture = _first_section_1c_fact(records, "cdd_official_architecture_figure")
+    if architecture is None:
+        architecture = _first_section_1c_fact(records, "cdd_architecture_figure")
+    pdbe_figure = _first_section_1c_fact(records, "pdb_official_structure_image")
+    family_summaries = _fact_records(records, "cdd_family_summary")
+    family_thumbnails = _fact_records(records, "cdd_family_thumbnail")
+    cdd_features = _fact_records(records, "cdd_conserved_feature")
+    feature_thumbnails = _fact_records(records, "cdd_feature_thumbnail")
+
+    if not domains:
+        diagnostics.append(
+            PresentationDiagnostic("cdd", "no CDD conserved-domain evidence", "warning")
+        )
+    if not selection:
+        diagnostics.append(
+            PresentationDiagnostic("pdbe", "no PDBe candidate-selection evidence", "warning")
+        )
+
+    if not domains and not selection and architecture is None and pdbe_figure is None:
+        return SectionPresentationResult(blocks=(), diagnostics=tuple(diagnostics))
+
+    contributing = [
+        rec
+        for rec in records
+        if rec.fact_type
+        in {
+            "conserved_domain_hit",
+            "cdd_official_architecture_figure",
+            "cdd_family_summary",
+            "cdd_family_thumbnail",
+            "cdd_conserved_feature",
+            "cdd_feature_thumbnail",
+            "pdb_candidate_selection",
+            "pdb_official_structure_image",
+        }
+    ]
+    source_ids, evidence_ids = _source_and_evidence_ids(contributing)
+
+    intro = (
+        "The NCBI Structure Group and Conserved Domain Database (CDD) are "
+        "protein annotation resources utilizing multiple sequence alignment "
+        "models for identification of conserved domains in protein sequences. "
+        "The Protein Data Bank, accessed here through PDBe, provides "
+        "experimental 3D structure data for biological macromolecules. Below "
+        "is a subset of the most relevant domains and structures, with links "
+        "to additional information."
+    )
+    if protein_length is None and domains:
+        intro += (
+            " Canonical protein length was unavailable in this bundle, so "
+            "calculated coverage is not reported."
+        )
+
+    blocks: list[ReportContentBlock] = [
+        ReportContentBlock(
+            kind="narrative",
+            text=intro,
+            source_ids=source_ids,
+            evidence_record_ids=evidence_ids,
+        )
+    ]
+
+    if domains:
+        domain_records = _fact_records(records, "conserved_domain_hit")
+        domain_source_ids, domain_evidence_ids = _source_and_evidence_ids(domain_records)
+        first_domain_url = _cdd_accession_url(domains[0].get("domain_accession"))
+        blocks.append(
+            ReportContentBlock(
+                kind="link",
+                text="Conserved domains (NCBI CDD link):",
+                presentation_role="section_1c_cdd_link",
+                links=[
+                    {
+                        "label": "Conserved domains (NCBI CDD link):",
+                        "url": first_domain_url
+                        or "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdd.shtml",
+                    }
+                ],
+                source_ids=domain_source_ids,
+                evidence_record_ids=domain_evidence_ids,
+            )
+        )
+
+    if architecture is not None:
+        block = _figure_block_from_record(
+            architecture,
+            role="section_1c_domain_architecture_figure",
+            caption="Source: NCBI Conserved Domain Database",
+            diagnostics=diagnostics,
+        )
+        if block is not None:
+            blocks.append(block)
+
+    if domains:
+        for group in _domain_groups(domains):
+            rows = [row for row in group.get("rows") or [] if isinstance(row, dict)]
+            group_evidence_ids = list(
+                dict.fromkeys(
+                    str(row.get("evidence_record_id"))
+                    for row in rows
+                    if row.get("evidence_record_id")
+                )
+            )
+            accession = str(group.get("domain_accession") or "")
+            visible_accessions = {
+                str(item.get("domain_accession") or "").lower()
+                for item in _domain_groups(domains)
+                if item.get("domain_accession")
+            }
+            domain_label = str(group.get("domain_short_name") or accession or "CDD domain")
+            if _should_suppress_visible_domain(accession, domain_label, visible_accessions):
+                diagnostics.append(
+                    PresentationDiagnostic(
+                        "section_1c_visible_domain_suppressed",
+                        f"Suppressed broad or non-Rancho-match CDD block {domain_label} ({accession}) from polished Section 1c.",
+                        "info",
+                    )
+                )
+                continue
+            accession_url = _cdd_accession_url(accession)
+            links = (
+                [{"label": f"{domain_label} — NCBI CDD", "url": accession_url}]
+                if accession_url
+                else []
+            )
+            if accession.lower() == "cd18922":
+                links = []
+            family = _family_record_for_accession(family_summaries, accession)
+            summary_text = _domain_summary_text(gene_symbol=gene_symbol, group=group)
+            item_key = f"domain-{_safe_item_token(accession, fallback='unknown')}"
+            if family is not None and isinstance(family.value, dict) and family.value.get("synopsis"):
+                name = str(
+                    family.value.get("domain_short_name")
+                    or group.get("domain_short_name")
+                    or group.get("domain_accession")
+                    or "CDD domain"
+                )
+                synopsis = _strip_visible_pssm(str(family.value["synopsis"]).strip())
+                summary_text = _domain_visible_heading(
+                    accession=accession,
+                    name=name,
+                    synopsis=synopsis,
+                )
+                item_key = _value_item_key(family.value, prefix="domain", fallback=accession or "unknown")
+            elif accession.lower() == "cd18922":
+                summary_text = _domain_visible_heading(accession=accession, name=domain_label, synopsis=None)
+            matching_features = [
+                feature
+                for feature in cdd_features
+                if isinstance(feature.value, dict)
+                and str(feature.value.get("domain_accession") or "").lower() == accession.lower()
+            ]
+
+            def append_feature_blocks() -> None:
+                if accession.lower() == "cd18922":
+                    for feature in matching_features:
+                        diagnostics.append(
+                            PresentationDiagnostic(
+                                "section_1c_feature_moved_to_audit",
+                                f"Suppressed residue-level CDD feature {feature.id} from polished bHLHzip block.",
+                                "info",
+                            )
+                        )
+                    return
+                for feature in matching_features:
+                    value = feature.value if isinstance(feature.value, dict) else {}
+                    feature_label = _feature_visible_label(value)
+                    feature_type = str(value.get("feature_type") or "").strip()
+                    description = str(value.get("description") or "").strip()
+                    if not feature_label or not (feature_type or description):
+                        continue
+                    feature_item_key = _value_item_key(
+                        value,
+                        prefix="feature",
+                        fallback=f"{accession}-{feature_label}",
+                    )
+                    feature_url = accession_url or _cdd_accession_url(value.get("domain_accession"))
+                    feature_link_text = f"{feature_label} (NCBI CDD Link):"
+                    blocks.append(
+                        ReportContentBlock(
+                            kind="link",
+                            text=feature_link_text,
+                            presentation_role="section_1c_feature_summary",
+                            presentation_item_key=feature_item_key,
+                            links=(
+                                [{"label": feature_link_text, "url": feature_url}]
+                                if feature_url
+                                else []
+                            ),
+                            source_ids=[feature.source_id] if feature.source_id else [],
+                            evidence_record_ids=[feature.id] if feature.id else [],
+                        )
+                    )
+                    feature_thumb = next(
+                        (
+                            rec
+                            for rec in feature_thumbnails
+                            if isinstance(rec.value, dict)
+                            and str(rec.value.get("presentation_item_key") or "") == feature_item_key
+                        ),
+                        None,
+                    )
+                    if feature_thumb is not None:
+                        block = _figure_block_from_record(
+                            feature_thumb,
+                            role="section_1c_feature_thumbnail",
+                            caption="Source: NCBI Conserved Domain Database",
+                            diagnostics=diagnostics,
+                        )
+                        if block is not None:
+                            if not block.presentation_item_key:
+                                block = block.model_copy(update={"presentation_item_key": feature_item_key})
+                            blocks.append(block)
+
+            if accession.lower() == "cd11304":
+                append_feature_blocks()
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=summary_text,
+                    presentation_role="section_1c_domain_summary",
+                    presentation_item_key=item_key,
+                    links=links,
+                    source_ids=domain_source_ids,
+                    evidence_record_ids=(
+                        ([family.id] if family is not None else []) or group_evidence_ids or domain_evidence_ids
+                    ),
+                )
+            )
+            thumb = _thumbnail_record_for_key(family_thumbnails, item_key)
+            if thumb is not None and accession.lower() != "cd18922":
+                block = _figure_block_from_record(
+                    thumb,
+                    role="section_1c_domain_thumbnail",
+                    caption="Source: NCBI Conserved Domain Database",
+                    diagnostics=diagnostics,
+                )
+                if block is not None:
+                    if not block.presentation_item_key:
+                        block = block.model_copy(update={"presentation_item_key": item_key})
+                    blocks.append(block)
+            if accession.lower() != "cd11304":
+                append_feature_blocks()
+            if accession.lower() == "cd18922":
+                companion = _family_record_for_accession(family_summaries, "cl00081")
+                if companion is not None and isinstance(companion.value, dict):
+                    companion_value = companion.value
+                    companion_key = _value_item_key(
+                        companion_value,
+                        prefix="domain",
+                        fallback="cl00081",
+                    )
+                    synopsis = _strip_visible_pssm(str(companion_value.get("synopsis") or "").strip())
+                    blocks.append(
+                        ReportContentBlock(
+                            kind="narrative",
+                            text=_domain_visible_heading(
+                                accession="cl00081",
+                                name=str(companion_value.get("domain_short_name") or "bHLH_SF"),
+                                synopsis=synopsis or None,
+                            ),
+                            presentation_role="section_1c_domain_summary",
+                            presentation_item_key=companion_key,
+                            links=[
+                                {
+                                    "label": "Conserved Protein Domain Family bHLH_SF:",
+                                    "url": _cdd_accession_url("cl00081") or "#",
+                                }
+                            ],
+                            source_ids=[companion.source_id] if companion.source_id else [],
+                            evidence_record_ids=[companion.id] if companion.id else [],
+                        )
+                    )
+                    companion_thumb = _thumbnail_record_for_key(family_thumbnails, companion_key)
+                    if companion_thumb is not None:
+                        block = _figure_block_from_record(
+                            companion_thumb,
+                            role="section_1c_domain_thumbnail",
+                            caption="Source: NCBI Conserved Domain Database",
+                            diagnostics=diagnostics,
+                        )
+                        if block is not None:
+                            if not block.presentation_item_key:
+                                block = block.model_copy(update={"presentation_item_key": companion_key})
+                            blocks.append(block)
+                else:
+                    diagnostics.append(
+                        PresentationDiagnostic(
+                            "section_1c_missing_companion_superfamily",
+                            "Supported bHLHzip hit lacked parsed bHLH_SF companion-family evidence.",
+                            "warning",
+                        )
+                    )
+    else:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=f"No CDD conserved-domain evidence was available for {gene_symbol}.",
+                source_ids=source_ids,
+                evidence_record_ids=evidence_ids,
+            )
+        )
+
+    if selected:
+        candidate_rec = _first_section_1c_fact(records, "pdb_candidate_selection")
+        c_source, c_evidence = _source_and_evidence_ids(
+            [candidate_rec] if candidate_rec is not None else []
+        )
+        pdb_id = str(selected.get("pdb_id") or "")
+        common = str(selected.get("species_common_name") or "human").strip().lower()
+        species_label = common.capitalize() if common else "Human"
+        label = f"3D structures from PDB: {species_label} {gene_symbol} protein"
+        expression_host = selected.get("expression_host")
+        if expression_host and common and common != "human":
+            label += f" expressed in {expression_host}"
+        blocks.append(
+            ReportContentBlock(
+                kind="link",
+                text=f"{label} (PDB link)",
+                presentation_role="section_1c_pdb_link",
+                presentation_item_key=f"pdb-{_safe_item_token(pdb_id, fallback='unknown')}",
+                links=[
+                    {
+                        "label": f"{label} (PDB link)",
+                        "url": _pdbe_entry_url(pdb_id) or "#",
+                    }
+                ],
+                source_ids=c_source,
+                evidence_record_ids=c_evidence,
+            )
+        )
+    elif selection:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    f"No selected PDB experimental structure was available for "
+                    f"the selected human UniProt accession in this {gene_symbol} bundle."
+                ),
+                source_ids=source_ids,
+                evidence_record_ids=evidence_ids,
+            )
+        )
+
+    if pdbe_figure is not None:
+        value = pdbe_figure.value if isinstance(pdbe_figure.value, dict) else {}
+        block = _figure_block_from_record(
+            pdbe_figure,
+            role="section_1c_pdb_official_image",
+            caption=str(value.get("attribution") or f"Image source: PDBe, PDB {str(value.get('pdb_id') or '').upper()}"),
+            diagnostics=diagnostics,
+        )
+        if block is not None:
+            pdb_key = f"pdb-{_safe_item_token(value.get('pdb_id'), fallback='unknown')}"
+            if not block.presentation_item_key:
+                block = block.model_copy(update={"presentation_item_key": pdb_key})
+            blocks.append(block)
+    else:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "pdbe_official_image",
+                "official PDBe static image unavailable",
+                "info",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -1357,6 +2130,7 @@ __all__ = [
     "SectionPresentationResult",
     "build_conservation_blocks",
     "build_gene_aliases_blocks",
+    "build_known_structure_blocks",
     "build_section_presentation",
     "format_safe_table_cell_html",
     "transcript_selection_sentence",

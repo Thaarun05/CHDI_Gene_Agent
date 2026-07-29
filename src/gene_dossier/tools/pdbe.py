@@ -27,6 +27,7 @@ from gene_dossier.models import ToolResult
 
 SOURCE_NAME = "PDBe"
 PDBE_API_BASE = "https://www.ebi.ac.uk/pdbe/api"
+PDBE_STATIC_ENTRY_BASE = "https://www.ebi.ac.uk/pdbe/static/entry"
 
 DEFAULT_ACCESSION_SREBF2 = "Q12772"
 DEFAULT_PDB_SREBF2 = "1ukl"
@@ -292,6 +293,105 @@ def entry_summary(
     )
 
 
+def entry_molecules(
+    pdb_id: str,
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch PDBe molecule metadata for expression/source annotations."""
+    cfg = settings or get_settings()
+    pdb = pdb_id.strip().lower()
+    if not pdb:
+        return _tool_result(
+            endpoint_name="entry_molecules",
+            gene_symbol=gene_symbol,
+            request_url=f"{PDBE_API_BASE}/pdb/entry/molecules/",
+            request_params={},
+            success=False,
+            error_type="invalid_request",
+            error_message="PDB ID is required",
+        )
+    path = f"pdb/entry/molecules/{quote(pdb, safe='')}"
+    return _request_json(
+        endpoint_name="entry_molecules",
+        gene_symbol=gene_symbol or pdb,
+        path=path,
+        request_params={"pdb_id": pdb},
+        settings=cfg,
+    )
+
+
+def static_image_inventory(
+    pdb_id: str,
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch the PDBe static image inventory JSON for one PDB ID."""
+    cfg = settings or get_settings()
+    pdb = pdb_id.strip().lower()
+    url = f"{PDBE_STATIC_ENTRY_BASE}/{quote(pdb, safe='')}.json"
+    if not pdb:
+        return _tool_result(
+            endpoint_name="static_image_inventory",
+            gene_symbol=gene_symbol,
+            request_url=f"{PDBE_STATIC_ENTRY_BASE}/",
+            request_params={},
+            success=False,
+            error_type="invalid_request",
+            error_message="PDB ID is required",
+        )
+    try:
+        with httpx.Client(timeout=cfg.http_timeout_seconds) as client:
+            response = client.get(url)
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            payload = {"raw_text": response.text[:4000]}
+        if response.is_success:
+            return _tool_result(
+                endpoint_name="static_image_inventory",
+                gene_symbol=gene_symbol or pdb,
+                request_url=url,
+                request_params={"pdb_id": pdb},
+                success=True,
+                status_code=response.status_code,
+                data=payload,
+            )
+        return _tool_result(
+            endpoint_name="static_image_inventory",
+            gene_symbol=gene_symbol or pdb,
+            request_url=url,
+            request_params={"pdb_id": pdb},
+            success=False,
+            status_code=response.status_code,
+            data=payload,
+            error_type="http_error",
+            error_message=f"HTTP {response.status_code}",
+        )
+    except httpx.TimeoutException as exc:
+        return _tool_result(
+            endpoint_name="static_image_inventory",
+            gene_symbol=gene_symbol or pdb,
+            request_url=url,
+            request_params={"pdb_id": pdb},
+            success=False,
+            error_type="timeout",
+            error_message=str(exc),
+        )
+    except httpx.HTTPError as exc:
+        return _tool_result(
+            endpoint_name="static_image_inventory",
+            gene_symbol=gene_symbol or pdb,
+            request_url=url,
+            request_params={"pdb_id": pdb},
+            success=False,
+            error_type="http_error",
+            error_message=str(exc),
+        )
+
+
 def fetch_structures(
     uniprot_accession: str,
     *,
@@ -430,6 +530,7 @@ def fetch_structures(
 __all__ = [
     "SOURCE_NAME",
     "PDBE_API_BASE",
+    "PDBE_STATIC_ENTRY_BASE",
     "DEFAULT_ACCESSION_SREBF2",
     "DEFAULT_PDB_SREBF2",
     "summarize_best_structure",
@@ -439,5 +540,7 @@ __all__ = [
     "best_structures",
     "uniprot_mapping",
     "entry_summary",
+    "entry_molecules",
+    "static_image_inventory",
     "fetch_structures",
 ]

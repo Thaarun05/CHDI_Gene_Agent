@@ -7,14 +7,16 @@ Does **not** normalize into evidence records — that belongs in
 Key endpoints (validated)::
 
     GET https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi
-        ?queries={refseq}&db=cdd&smode=auto&useid1=true&maxhit=250
-        &filter=true&evalue=0.01&tdata=hits
+        ?queries={refseq}&db=cdd&smode=live&useid1=true&maxhit=250
+        &filter=false&compbasedadj=1&evalue=0.01&tdata=hits
     GET .../bwrpsb.cgi?cdsid={cdsid}&tdata=hits&dmode=full&qdefl=true&cddefl=true
+    GET .../bwrpsb.cgi?cdsid={cdsid}&tdata=feats&dmode=full&qdefl=true&cddefl=true
     GET .../bwrpsb.cgi?cdsid={cdsid}&tdata=aligns&alnfmt=json   (optional)
 
-NOTE: Batch CDD returns text/status for submit/poll when ``tdata=hits`` is set;
-without ``tdata`` NCBI often returns HTML UI. Poll until ``status=0`` (completed).
-``alnfmt=json`` only applies when ``tdata=aligns``.
+NOTE: Target-data requests such as ``tdata=hits`` can return extended request
+IDs. Preserve those separately from the master Search-ID and use the master ID
+for Browse Results. Poll until ``status=0`` (completed). ``alnfmt=json`` only
+applies when ``tdata=aligns``.
 
 SREBF2 RefSeq protein example: ``NP_004590.2`` (domains include ``cd18922`` /
 ``bHLHzip_SREBP2``).
@@ -50,6 +52,31 @@ DEFAULT_MAX_POLLS = 30
 
 # status=0 means search completed successfully (NCBI Batch CD-Search).
 STATUS_COMPLETED = 0
+STATUS_INVALID_SEARCH_ID = 1
+STATUS_NO_EFFECTIVE_INPUT = 2
+STATUS_RUNNING = 3
+STATUS_QUEUE_MANAGER_ERROR = 4
+STATUS_DATA_CORRUPTED = 5
+STATUS_ABUSE_INPUT = 6
+TERMINAL_FAILURE_STATUSES = frozenset(
+    {
+        STATUS_INVALID_SEARCH_ID,
+        STATUS_NO_EFFECTIVE_INPUT,
+        STATUS_QUEUE_MANAGER_ERROR,
+        STATUS_DATA_CORRUPTED,
+        STATUS_ABUSE_INPUT,
+    }
+)
+
+STATUS_MESSAGES = {
+    STATUS_COMPLETED: "search completed",
+    STATUS_INVALID_SEARCH_ID: "invalid search ID",
+    STATUS_NO_EFFECTIVE_INPUT: "no effective input",
+    STATUS_RUNNING: "job is still running",
+    STATUS_QUEUE_MANAGER_ERROR: "queue manager service error",
+    STATUS_DATA_CORRUPTED: "data corrupted or no longer available",
+    STATUS_ABUSE_INPUT: "abusive or invalid input",
+}
 
 # Programmatic Batch CD-Search returns QM3-qcdsearch-* Search-IDs.
 _CDSID_RE = re.compile(r"(QM3-qcdsearch-[A-Za-z0-9-]+)")
@@ -108,6 +135,16 @@ def _extract_cdsid_candidate(raw: str) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def master_cdsid(cdsid: str | None) -> str | None:
+    """Return the master Batch CD-Search ID from a master or extended request ID."""
+    if not cdsid:
+        return None
+    parts = str(cdsid).strip().split("-")
+    if len(parts) >= 3 and parts[0].startswith("QM") and parts[1] == "qcdsearch":
+        return "-".join(parts[:3])
+    return str(cdsid).strip() or None
 
 
 def _extract_cdsid_from_html(raw_text: str) -> str | None:
@@ -242,6 +279,40 @@ def parse_hits_text(raw_text: str) -> list[dict[str, str]]:
     return rows
 
 
+def parse_features_text(raw_text: str) -> list[dict[str, str]]:
+    """Parse completed CDD conserved-feature tabular text into row dicts.
+
+    Feature target data is not equivalent to hit target data. If NCBI returns a
+    hit-shaped table (``Hit type``, ``Bitscore``, ``E-Value``) instead of
+    feature-specific columns, preserve it in the raw artifact but do not emit
+    polished feature rows.
+    """
+    rows = parse_hits_text(raw_text)
+    feature_rows: list[dict[str, str]] = []
+    feature_markers = {
+        "feature",
+        "feature name",
+        "feature type",
+        "site",
+        "site name",
+        "site type",
+        "title",
+        "coordinates",
+        "source domain",
+        "query residues",
+        "residues",
+        "locations",
+    }
+    hit_markers = {"hit type", "bitscore", "e-value", "evalue", "short name"}
+    for row in rows:
+        keys = {str(k).strip().lower() for k in row}
+        if keys & feature_markers and not ({"hit type"} <= keys and not keys & feature_markers):
+            feature_rows.append(row)
+        elif keys & feature_markers and not keys <= hit_markers:
+            feature_rows.append(row)
+    return feature_rows
+
+
 def summarize_hit(row: dict[str, Any]) -> dict[str, Any]:
     """Extract key CDD hit fields across common column name variants."""
 
@@ -259,6 +330,7 @@ def summarize_hit(row: dict[str, Any]) -> dict[str, Any]:
         "domain_accession": _get(
             "accession", "domain accession", "hit accession", "pssm-id", "pssm_id"
         ),
+        "pssm_id": _get("pssm-id", "pssm_id", "pssm id", "uid"),
         "domain_short_name": _get("short name", "short_name", "domain short name"),
         "domain_description": _get(
             "description", "domain description", "definition", "cddefl"
@@ -272,6 +344,41 @@ def summarize_hit(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "raw": dict(row),
     }
+
+
+def summarize_feature(row: dict[str, Any]) -> dict[str, Any]:
+    """Extract key CDD feature fields across common column name variants."""
+
+    def _get(*names: str) -> Any:
+        lower_map = {str(k).strip().lower(): v for k, v in row.items()}
+        for name in names:
+            if name.lower() in lower_map:
+                return lower_map[name.lower()]
+        return None
+
+    return {
+        "query_accession": _get("query", "query accession", "query id", "queryacc"),
+        "domain_accession": _get("accession", "domain accession", "cd accession", "hit accession", "source domain"),
+        "pssm_id": _get("pssm-id", "pssm_id", "pssm id", "uid", "source domain"),
+        "feature_name": _get("feature", "feature name", "site", "site name", "title", "description"),
+        "feature_type": _get("feature type", "type", "site type"),
+        "query_residues": _get("query residues", "residues", "query residue", "locations", "coordinates"),
+        "from_residue": _get("from", "start", "query start", "from residue"),
+        "to_residue": _get("to", "end", "query stop", "to residue"),
+        "family_feature_index": _get("feature index", "site index", "index"),
+        "raw": dict(row),
+    }
+
+
+def _terminal_status_error(status: Any) -> str | None:
+    """Return a deterministic error string for terminal CDD failures."""
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return None
+    if code in TERMINAL_FAILURE_STATUSES:
+        return f"CDD terminal status {code}: {STATUS_MESSAGES.get(code, 'failed')}"
+    return None
 
 
 def _get_text(
@@ -367,12 +474,12 @@ def submit_search(
     params = {
         "queries": query_id,
         "db": db,
-        "smode": "auto",
+        "smode": "live",
         "useid1": "true",
         "maxhit": maxhit,
-        "filter": "true",
+        "filter": "false",
+        "compbasedadj": "1",
         "evalue": evalue,
-        # Without tdata, NCBI often returns the HTML UI instead of #cdsid text.
         "tdata": "hits",
     }
     result = _get_text(
@@ -404,6 +511,29 @@ def submit_search(
                 + (f" (preview: {preview})" if preview else "")
             ),
         )
+    parsed_cdsid = parsed.get("cdsid")
+    master = master_cdsid(parsed_cdsid)
+    terminal_error = _terminal_status_error(parsed.get("status"))
+    if terminal_error:
+        return _tool_result(
+            endpoint_name="submit_search",
+            gene_symbol=gene_symbol or query_id,
+            request_url=result.request_url,
+            request_params=result.request_params,
+            success=False,
+            status_code=result.status_code,
+            data={
+                "queries": query_id,
+                "cdsid": master or parsed_cdsid,
+                "master_cdsid": master or parsed_cdsid,
+                "submit_request_cdsid": parsed_cdsid,
+                "status": parsed.get("status"),
+                "parsed": parsed,
+                "raw_text": raw_text,
+            },
+            error_type="terminal_status",
+            error_message=terminal_error,
+        )
     return _tool_result(
         endpoint_name="submit_search",
         gene_symbol=gene_symbol or query_id,
@@ -413,7 +543,9 @@ def submit_search(
         status_code=result.status_code,
         data={
             "queries": query_id,
-            "cdsid": parsed["cdsid"],
+            "cdsid": master or parsed_cdsid,
+            "master_cdsid": master or parsed_cdsid,
+            "submit_request_cdsid": parsed_cdsid,
             "status": parsed["status"],
             "parsed": parsed,
             "raw_text": raw_text,
@@ -443,6 +575,8 @@ def poll_status(
     if isinstance(result.data, dict):
         raw_text = str(result.data.get("raw_text") or "")
     parsed = parse_status_text(raw_text)
+    parsed_cdsid = parsed.get("cdsid")
+    master = master_cdsid(sid)
     return _tool_result(
         endpoint_name="poll_status",
         gene_symbol=gene_symbol or sid,
@@ -451,7 +585,9 @@ def poll_status(
         success=True,
         status_code=result.status_code,
         data={
-            "cdsid": parsed.get("cdsid") or sid,
+            "cdsid": parsed_cdsid or sid,
+            "master_cdsid": master,
+            "request_cdsid": parsed_cdsid,
             "status": parsed.get("status"),
             "parsed": parsed,
             "raw_text": raw_text,
@@ -486,6 +622,7 @@ def retrieve_hits(
     raw_text = ""
     if isinstance(result.data, dict):
         raw_text = str(result.data.get("raw_text") or "")
+    parsed = parse_status_text(raw_text)
     rows = parse_hits_text(raw_text)
     return _tool_result(
         endpoint_name="retrieve_hits",
@@ -495,11 +632,63 @@ def retrieve_hits(
         success=True,
         status_code=result.status_code,
         data={
-            "cdsid": sid,
+            "cdsid": parsed.get("cdsid") or sid,
+            "master_cdsid": master_cdsid(sid),
+            "request_cdsid": parsed.get("cdsid"),
             "raw_text": raw_text,
             "hit_rows": rows,
             "hit_summaries": [summarize_hit(r) for r in rows],
             "hit_count": len(rows),
+        },
+    )
+
+
+def retrieve_features(
+    cdsid: str,
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Retrieve query-supported conserved features for a completed ``cdsid``."""
+    cfg = settings or get_settings()
+    sid = cdsid.strip()
+    params = {
+        "cdsid": sid,
+        "tdata": "feats",
+        "dmode": "full",
+        "qdefl": "true",
+        "cddefl": "true",
+    }
+    result = _get_text(
+        endpoint_name="retrieve_features",
+        gene_symbol=gene_symbol or sid,
+        params=params,
+        settings=cfg,
+    )
+    if not result.success:
+        return result
+    raw_text = ""
+    if isinstance(result.data, dict):
+        raw_text = str(result.data.get("raw_text") or "")
+    rows = parse_features_text(raw_text)
+    parsed = parse_status_text(raw_text)
+    return _tool_result(
+        endpoint_name="retrieve_features",
+        gene_symbol=gene_symbol or sid,
+        request_url=result.request_url,
+        request_params=result.request_params,
+        success=True,
+        status_code=result.status_code,
+        data={
+            "cdsid": parsed.get("cdsid") or sid,
+            "master_cdsid": master_cdsid(sid),
+            "request_cdsid": parsed.get("cdsid"),
+            "status": parsed.get("status"),
+            "parsed": parsed,
+            "raw_text": raw_text,
+            "feature_rows": rows,
+            "feature_summaries": [summarize_feature(r) for r in rows],
+            "feature_count": len(rows),
         },
     )
 
@@ -612,17 +801,24 @@ def fetch_domains(
         )
 
     cdsid = (submitted.data or {}).get("cdsid") if isinstance(submitted.data, dict) else None
+    master = (submitted.data or {}).get("master_cdsid") if isinstance(submitted.data, dict) else None
+    master = master_cdsid(master or cdsid)
     status = (submitted.data or {}).get("status") if isinstance(submitted.data, dict) else None
     poll_history: list[Any] = [submitted.data]
     last_url = submitted.request_url
     last_params = submitted.request_params
     last_status_code = submitted.status_code
+    poll_sid = (
+        (submitted.data or {}).get("submit_request_cdsid")
+        if isinstance(submitted.data, dict)
+        else None
+    ) or master or cdsid
 
     polls = 0
     while status != STATUS_COMPLETED and polls < max_polls:
         time.sleep(max(0.0, poll_interval_seconds))
         polls += 1
-        polled = poll_status(str(cdsid), gene_symbol=gene_symbol, settings=cfg)
+        polled = poll_status(str(poll_sid), gene_symbol=gene_symbol, settings=cfg)
         last_url = polled.request_url
         last_params = polled.request_params
         last_status_code = polled.status_code
@@ -637,7 +833,8 @@ def fetch_domains(
                 status_code=polled.status_code,
                 data={
                     "queries": queries,
-                    "cdsid": cdsid,
+                    "cdsid": master or cdsid,
+                    "master_cdsid": master or cdsid,
                     "submit": submitted.data,
                     "poll_history": poll_history,
                 },
@@ -645,7 +842,29 @@ def fetch_domains(
                 error_message=polled.error_message or "CDD status poll failed",
             )
         status = (polled.data or {}).get("status") if isinstance(polled.data, dict) else None
-        cdsid = (polled.data or {}).get("cdsid") or cdsid
+        request_cdsid = (polled.data or {}).get("request_cdsid") if isinstance(polled.data, dict) else None
+        if request_cdsid:
+            poll_sid = request_cdsid
+        terminal_error = _terminal_status_error(status)
+        if terminal_error:
+            return _tool_result(
+                endpoint_name="fetch_domains",
+                gene_symbol=gene_symbol or queries,
+                request_url=polled.request_url,
+                request_params=polled.request_params,
+                success=False,
+                status_code=polled.status_code,
+                data={
+                    "queries": queries,
+                    "cdsid": master or cdsid,
+                    "master_cdsid": master or cdsid,
+                    "status": status,
+                    "submit": submitted.data,
+                    "poll_history": poll_history,
+                },
+                error_type="terminal_status",
+                error_message=terminal_error,
+            )
 
     if status != STATUS_COMPLETED:
         return _tool_result(
@@ -657,7 +876,8 @@ def fetch_domains(
             status_code=last_status_code,
             data={
                 "queries": queries,
-                "cdsid": cdsid,
+                "cdsid": master or cdsid,
+                "master_cdsid": master or cdsid,
                 "status": status,
                 "submit": submitted.data,
                 "poll_history": poll_history,
@@ -669,7 +889,9 @@ def fetch_domains(
             ),
         )
 
-    hits = retrieve_hits(str(cdsid), gene_symbol=gene_symbol, settings=cfg)
+    master_id = str(master or cdsid)
+    target_data_id = str(poll_sid or master_id)
+    hits = retrieve_hits(target_data_id, gene_symbol=gene_symbol, settings=cfg)
     if not hits.success:
         return _tool_result(
             endpoint_name="fetch_domains",
@@ -680,7 +902,8 @@ def fetch_domains(
             status_code=hits.status_code,
             data={
                 "queries": queries,
-                "cdsid": cdsid,
+                "cdsid": master_id,
+                "master_cdsid": master_id,
                 "submit": submitted.data,
                 "poll_history": poll_history,
                 "hits": hits.data,
@@ -689,9 +912,62 @@ def fetch_domains(
             error_message=hits.error_message or "CDD hits retrieve failed",
         )
 
+    features = retrieve_features(master_id, gene_symbol=gene_symbol, settings=cfg)
+    feature_polls = 0
+    while (
+        features.success
+        and isinstance(features.data, dict)
+        and features.data.get("status") == STATUS_RUNNING
+        and feature_polls < max_polls
+    ):
+        feature_polls += 1
+        time.sleep(max(0.0, poll_interval_seconds))
+        feature_sid = features.data.get("request_cdsid") or features.data.get("cdsid") or master_id
+        features = retrieve_features(str(feature_sid), gene_symbol=gene_symbol, settings=cfg)
+    if not features.success:
+        return _tool_result(
+            endpoint_name="fetch_domains",
+            gene_symbol=gene_symbol or queries,
+            request_url=features.request_url,
+            request_params=features.request_params,
+            success=False,
+            status_code=features.status_code,
+            data={
+                "queries": queries,
+                "cdsid": master_id,
+                "master_cdsid": master_id,
+                "submit": submitted.data,
+                "poll_history": poll_history,
+                "hits": hits.data,
+                "features": features.data,
+            },
+            error_type=features.error_type or "features_failed",
+            error_message=features.error_message or "CDD features retrieve failed",
+        )
+    if isinstance(features.data, dict) and features.data.get("status") not in (None, STATUS_COMPLETED):
+        return _tool_result(
+            endpoint_name="fetch_domains",
+            gene_symbol=gene_symbol or queries,
+            request_url=features.request_url,
+            request_params=features.request_params,
+            success=False,
+            status_code=features.status_code,
+            data={
+                "queries": queries,
+                "cdsid": master_id,
+                "master_cdsid": master_id,
+                "submit": submitted.data,
+                "poll_history": poll_history,
+                "hits": hits.data,
+                "features": features.data,
+            },
+            error_type="features_timeout",
+            error_message=f"CDD features did not complete after {feature_polls} polls",
+        )
+
     aligns_payload: Any = None
     if include_aligns:
-        aligns = retrieve_aligns(str(cdsid), gene_symbol=gene_symbol, settings=cfg)
+        aligns = retrieve_aligns(target_data_id, gene_symbol=gene_symbol, settings=cfg)
         if not aligns.success:
             return _tool_result(
                 endpoint_name="fetch_domains",
@@ -702,7 +978,8 @@ def fetch_domains(
                 status_code=aligns.status_code,
                 data={
                     "queries": queries,
-                    "cdsid": cdsid,
+                    "cdsid": master_id,
+                    "master_cdsid": master_id,
                     "submit": submitted.data,
                     "poll_history": poll_history,
                     "hits": hits.data,
@@ -716,18 +993,19 @@ def fetch_domains(
         last_params = aligns.request_params
         last_status_code = aligns.status_code
     else:
-        last_url = hits.request_url
-        last_params = hits.request_params
-        last_status_code = hits.status_code
+        last_url = features.request_url
+        last_params = features.request_params
+        last_status_code = features.status_code
 
     hit_data = hits.data if isinstance(hits.data, dict) else {}
+    feature_data = features.data if isinstance(features.data, dict) else {}
     return _tool_result(
         endpoint_name="fetch_domains",
         gene_symbol=gene_symbol or queries,
         request_url=last_url,
         request_params={
             "queries": queries,
-            "cdsid": cdsid,
+            "cdsid": master_id,
             "include_aligns": include_aligns,
             **(last_params or {}),
         },
@@ -736,14 +1014,27 @@ def fetch_domains(
         data={
             "queries": queries,
             "gene_symbol": gene_symbol or None,
-            "cdsid": cdsid,
+            "cdsid": master_id,
+            "master_cdsid": master_id,
+            "hits_request_cdsid": hit_data.get("request_cdsid") or hit_data.get("cdsid") or target_data_id,
+            "features_request_cdsid": feature_data.get("request_cdsid") or feature_data.get("cdsid") or target_data_id,
+            "same_master_job": (
+                master_cdsid(hit_data.get("request_cdsid") or hit_data.get("cdsid") or target_data_id) == master_id
+                and master_cdsid(feature_data.get("request_cdsid") or feature_data.get("cdsid") or target_data_id)
+                == master_id
+            ),
+            "query_index": 0,
             "status": status,
             "submit": submitted.data,
             "poll_history": poll_history,
             "hits": hits.data,
+            "features": features.data,
             "hit_rows": hit_data.get("hit_rows") or [],
             "hit_summaries": hit_data.get("hit_summaries") or [],
             "hit_count": hit_data.get("hit_count") or 0,
+            "feature_rows": feature_data.get("feature_rows") or [],
+            "feature_summaries": feature_data.get("feature_summaries") or [],
+            "feature_count": feature_data.get("feature_count") or 0,
             "aligns": aligns_payload,
         },
     )
@@ -757,12 +1048,21 @@ __all__ = [
     "DEFAULT_EVALUE",
     "DEFAULT_QUERY_SREBF2",
     "STATUS_COMPLETED",
+    "STATUS_INVALID_SEARCH_ID",
+    "STATUS_NO_EFFECTIVE_INPUT",
+    "STATUS_RUNNING",
+    "STATUS_QUEUE_MANAGER_ERROR",
+    "STATUS_DATA_CORRUPTED",
+    "TERMINAL_FAILURE_STATUSES",
     "parse_status_text",
     "parse_hits_text",
+    "parse_features_text",
     "summarize_hit",
+    "summarize_feature",
     "submit_search",
     "poll_status",
     "retrieve_hits",
+    "retrieve_features",
     "retrieve_aligns",
     "fetch_domains",
 ]

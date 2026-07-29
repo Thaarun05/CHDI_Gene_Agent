@@ -591,6 +591,7 @@ def normalize_cdd(
                     "cdsid": cdsid,
                     "query_accession": hit.get("query_accession"),
                     "domain_accession": domain_acc,
+                    "pssm_id": hit.get("pssm_id"),
                     "domain_short_name": short_name,
                     "domain_description": hit.get("domain_description"),
                     "from_residue": start,

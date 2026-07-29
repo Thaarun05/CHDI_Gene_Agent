@@ -15,8 +15,10 @@ from gene_dossier.models import (
     SourceType,
     new_id,
 )
+from gene_dossier.config import PROJECT_ROOT
 from gene_dossier.report_presentation import (
     UCSC_STABLE_INTRO,
+    build_known_structure_blocks,
     build_conservation_blocks,
     transcript_selection_sentence,
 )
@@ -26,16 +28,13 @@ from gene_dossier.section_bundle import (
     SUPPORTED_SECTION_BUNDLE_KEYS,
     SectionBundleError,
     assign_opaque_refs,
-    build_provenance_index,
     build_section_bundle_document,
-    create_section_bundle_run,
     finalize_section_bundle_run,
     opaque_evidence_ref,
     render_section_bundle_html,
     run_section_bundle,
     sanitize_credentials,
     sanitize_polished_text,
-    sanitize_secrets,
     sources_for_sections,
     validate_section_keys,
     write_section_bundle_outputs,
@@ -144,12 +143,9 @@ def _ucsc_records(tmp_path: Path, gene: str = "SREBF2") -> list[EvidenceRecord]:
 
 
 def test_validate_section_keys_order_and_reject():
-    assert validate_section_keys(["1b", "1a", "1a"]) == ["1a", "1b"]
-    assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == list(
-        SUPPORTED_SECTION_BUNDLE_KEYS
-    )
-    with pytest.raises(SectionBundleError):
-        validate_section_keys(["1c"])
+    assert validate_section_keys(["1c", "1b", "1a", "1a"]) == ["1a", "1b", "1c"]
+    assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == ["1a", "1b"]
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c")
     with pytest.raises(SectionBundleError):
         validate_section_keys([])
 
@@ -158,6 +154,8 @@ def test_sources_for_sections_dependency_aware():
     assert sources_for_sections(["1a"]) == []
     assert sources_for_sections(["1b"]) == ["UCSC"]
     assert sources_for_sections(["1a", "1b"]) == ["UCSC"]
+    assert sources_for_sections(["1c"]) == ["CDD", "PDBe"]
+    assert sources_for_sections(["1a", "1b", "1c"]) == ["CDD", "PDBe", "UCSC"]
 
 
 def test_transcript_selection_sentence_flags():
@@ -348,7 +346,6 @@ def test_source_note_not_second_narrative(tmp_path, monkeypatch):
 
 
 def test_gencode_missing_release_wording():
-    from gene_dossier.report_presentation import _transcript_selection_sentence as _
     # Exercise release_phrase via build path with empty inventory release.
     # Direct unit of the else branch:
     release = None
@@ -659,6 +656,501 @@ def test_run_section_bundle_mocked_no_llm_and_1a_skips_ucsc(tmp_path, monkeypatc
     assert isinstance(calls["transients"][0], WorkflowTransientContext)
 
 
+def test_run_section_bundle_1c_calls_only_cdd_pdbe_and_bundle_derived(tmp_path, monkeypatch):
+    from gene_dossier import section_bundle as sb
+    from gene_dossier.models import DossierRun, ToolResult
+
+    calls: dict[str, Any] = {"sources": None, "derived": 0}
+
+    def _fake_create(**kwargs):
+        run = DossierRun(
+            gene_symbol=kwargs["gene_symbol"],
+            run_type="section_bundle",
+            status="running",
+            config={"selected_section_keys": list(kwargs["selected_section_keys"])},
+        )
+        state = {
+            "gene_symbol": run.gene_symbol,
+            "dossier_run_id": run.id,
+            "run_type": "section_bundle",
+            "selected_section_keys": list(kwargs["selected_section_keys"]),
+            "gene_ids": {"uniprot_accession": "Q12772", "protein_length": 1141},
+            "tool_results": [],
+            "api_runs": [],
+            "raw_artifacts": [],
+            "evidence_records": _identity_records(),
+            "coverage": [],
+            "sections": [],
+            "claims": [],
+            "verification_results": [],
+            "synthesis_notes": [],
+            "output_paths": {},
+            "errors": [],
+            "status": "running",
+        }
+        return run, state
+
+    def _fake_call(state, *, sources=None, **kwargs):
+        calls["sources"] = list(sources or [])
+        results = list(state.get("tool_results") or [])
+        for source in sources or []:
+            results.append(
+                ToolResult(
+                    source_name=source,
+                    endpoint_name="mock",
+                    gene_symbol=state["gene_symbol"],
+                    request_url="https://example.test",
+                    success=True,
+                    data={"ok": True},
+                )
+            )
+        return {**state, "tool_results": results}
+
+    def _fake_derived(state, **kwargs):
+        calls["derived"] += 1
+        return {
+            **state,
+            "section_1c": {
+                "section_status": "failed",
+                "source_status": {"CDD": "unavailable", "PDBe": "unavailable"},
+                "rendering_status": {},
+            },
+        }
+
+    monkeypatch.setattr(sb, "create_section_bundle_run", _fake_create)
+    monkeypatch.setattr(sb, "node_resolve_gene_identity", lambda state, **kwargs: state)
+    monkeypatch.setattr(sb, "node_call_source_clients", _fake_call)
+    monkeypatch.setattr(sb, "node_save_raw_artifacts", lambda state, **kwargs: state)
+    monkeypatch.setattr(sb, "node_normalize_evidence", lambda state, **kwargs: state)
+    monkeypatch.setattr(sb, "node_generate_section_1c_derived_artifacts", _fake_derived)
+    monkeypatch.setattr(sb, "finalize_section_bundle_run", lambda **kwargs: None)
+    monkeypatch.setattr(sb, "coverage_updates_from_state", lambda state: [])
+
+    result = run_section_bundle(
+        "SREBF2",
+        section_keys=["1c"],
+        output_dir=tmp_path / "1c",
+        call_network=True,
+        persist_db=False,
+        write_pdf=False,
+    )
+    assert result.status == "completed"
+    assert calls["sources"] == ["CDD", "PDBe"]
+    assert calls["derived"] == 1
+    audit = json.loads(result.output_paths["section_1_audit_json"].read_text())
+    assert audit["section_1c"]["section_status"] == "failed"
+
+
+def test_section_1c_polished_blocks_are_figure_led_not_tables():
+    from gene_dossier.config import get_settings
+
+    image_path = get_settings().raw_data_path / "tests" / "section-1c-pdbe-official.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes((PROJECT_ROOT / "src/gene_dossier/assets/rancho_wordmark.png").read_bytes())
+    relative_image = str(image_path.relative_to(get_settings().raw_data_path))
+    records = [
+        _ev(
+            source_name="UniProt",
+            source_type=SourceType.curated_database,
+            assertion_type=AssertionType.gene_identity,
+            fact_type="uniprot_accession",
+            value={
+                "uniprot_accession": "Q12772",
+                "reviewed": True,
+                "taxon_id": 9606,
+                "protein_length": 1141,
+            },
+        ),
+        _ev(
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="conserved_domain_hit",
+            value={
+                "domain_accession": "cd18922",
+                "domain_short_name": "bHLHzip_SREBP2",
+                "domain_description": "basic Helix-Loop-Helix zipper domain.",
+                "from_residue": 343,
+                "to_residue": 403,
+                "evalue": "1e-30",
+                "bitscore": 88.2,
+            },
+        ),
+        _ev(
+            source_name="PDBe",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="pdb_candidate_selection",
+            value={
+                "selected_uniprot_accession": "Q12772",
+                "candidates": [
+                    {
+                        "pdb_id": "1ukl",
+                        "chain_ids": ["C", "D", "E", "F"],
+                        "experimental_method": "X-ray diffraction",
+                        "mapped_spans": [[343, 403]],
+                        "title": "Crystal structure of Importin-beta and SREBP-2 complex",
+                        "selected": True,
+                    }
+                ],
+            },
+        ),
+        _ev(
+            source_name="PDBe",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="pdb_official_structure_image",
+            value={
+                "pdb_id": "1ukl",
+                "relative_path": relative_image,
+                "media_type": "image/png",
+                "width": 640,
+                "height": 480,
+                "attribution": "Image source: PDBe, PDB 1UKL",
+                "species_common_name": "human",
+            },
+        ),
+    ]
+
+    result = build_known_structure_blocks(
+        gene_symbol="SREBF2",
+        evidence_records=records,
+    )
+    roles = [block.presentation_role for block in result.blocks]
+    assert all(block.kind != "table" for block in result.blocks)
+    assert "section_1c_cdd_link" in roles
+    assert "section_1c_domain_summary" in roles
+    assert "section_1c_pdb_link" in roles
+    assert "section_1c_pdb_official_image" in roles
+    pdbe_fig = next(block for block in result.blocks if block.presentation_role == "section_1c_pdb_official_image")
+    assert pdbe_fig.figure_caption == "Image source: PDBe, PDB 1UKL"
+    assert "Conserved Domain Database" in result.blocks[0].text
+    assert any("1ukl" in (link.get("url") or "") for block in result.blocks for link in block.links)
+    assert not any((diag.field or "").startswith("pymol") for diag in result.diagnostics)
+
+
+def test_section_1c_dynamic_evidence_refs_use_safe_item_keys():
+    blocks = [
+        ReportContentBlock(kind="narrative", text="intro"),
+        ReportContentBlock(
+            kind="link",
+            text="CDD",
+            presentation_role="section_1c_cdd_link",
+            links=[{"label": "CDD", "url": "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdd.shtml"}],
+        ),
+        ReportContentBlock(
+            kind="narrative",
+            text="Cadherin repeat",
+            presentation_role="section_1c_domain_summary",
+            presentation_item_key="domain-cd11304",
+        ),
+        ReportContentBlock(
+            kind="figure",
+            figure_path="/tmp/missing.png",
+            presentation_role="section_1c_domain_thumbnail",
+            presentation_item_key="domain-cd11304",
+        ),
+        ReportContentBlock(
+            kind="link",
+            text="PDB",
+            presentation_role="section_1c_pdb_link",
+            presentation_item_key="pdb-6cg6",
+            links=[{"label": "PDB", "url": "https://www.ebi.ac.uk/pdbe/entry/pdb/6cg6"}],
+        ),
+        ReportContentBlock(
+            kind="figure",
+            figure_path="/tmp/missing.png",
+            presentation_role="section_1c_pdb_official_image",
+            presentation_item_key="pdb-6cg6",
+        ),
+    ]
+    polished, ref_map = assign_opaque_refs(section_key="1c", blocks=blocks)
+    refs = [block.evidence_ref for block in polished]
+    assert refs == [
+        "ev-1c-introduction",
+        "ev-1c-cdd-link",
+        "ev-1c-domain-cd11304-summary",
+        "ev-1c-domain-cd11304-thumbnail",
+        "ev-1c-pdb-6cg6-summary",
+        "ev-1c-pdb-6cg6-official-image",
+    ]
+    assert len(ref_map) == len(set(ref_map))
+
+
+def test_section_1c_dynamic_evidence_refs_reject_missing_item_key():
+    with pytest.raises(SectionBundleError):
+        assign_opaque_refs(
+            section_key="1c",
+            blocks=[
+                ReportContentBlock(
+                    kind="narrative",
+                    text="bad",
+                    presentation_role="section_1c_domain_summary",
+                )
+            ],
+        )
+
+
+def test_section_1c_presentation_strips_pssm_and_human_expression_host():
+    records = [
+        _ev(
+            source_name="UniProt",
+            source_type=SourceType.curated_database,
+            assertion_type=AssertionType.gene_identity,
+            fact_type="uniprot_accession",
+            value={"uniprot_accession": "Q12772", "taxon_id": 9606, "protein_length": 1141},
+        ),
+        _ev(
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="conserved_domain_hit",
+            value={
+                "domain_accession": "cd18922",
+                "domain_short_name": "bHLHzip_SREBP2",
+                "from_residue": 343,
+                "to_residue": 403,
+            },
+        ),
+        _ev(
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_family_summary",
+            value={
+                "canonical_accession": "cd18922",
+                "domain_accession": "cd18922",
+                "domain_short_name": "bHLHzip_SREBP2",
+                "synopsis": "cd18922 (PSSM ID: 381492): specific bHLHzip domain.",
+                "presentation_item_key": "domain-cd18922",
+            },
+        ),
+        _ev(
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_family_summary",
+            value={
+                "canonical_accession": "cl00081",
+                "domain_accession": "cl00081",
+                "domain_short_name": "bHLH_SF",
+                "synopsis": "cl00081 (PSSM ID: 444684): bHLH proteins are transcriptional regulators.",
+                "presentation_item_key": "domain-cl00081",
+            },
+        ),
+        _ev(
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_conserved_feature",
+            value={
+                "domain_accession": "cd18922",
+                "feature_label": "putative DNA binding site",
+                "feature_type": "site",
+                "query_residues": "R350, E351",
+                "presentation_item_key": "feature-cd18922-dna-binding",
+            },
+        ),
+        _ev(
+            source_name="PDBe",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="pdb_candidate_selection",
+            value={
+                "candidates": [
+                    {
+                        "pdb_id": "1ukl",
+                        "selected": True,
+                        "species_common_name": "human",
+                        "expression_host": "Escherichia coli BL21",
+                    }
+                ],
+            },
+        ),
+    ]
+    result = build_known_structure_blocks(gene_symbol="SREBF2", evidence_records=records)
+    visible = "\n".join(block.text or "" for block in result.blocks)
+    assert "PSSM ID" not in visible
+    assert "Conserved Protein Domain Family bHLH_SF" in visible
+    assert "putative DNA binding site" not in visible
+    bhlhzip_block = next(
+        block
+        for block in result.blocks
+        if block.presentation_role == "section_1c_domain_summary"
+        and block.presentation_item_key == "domain-cd18922"
+    )
+    assert bhlhzip_block.links == []
+    bhlh_sf_block = next(
+        block
+        for block in result.blocks
+        if block.presentation_role == "section_1c_domain_summary"
+        and block.presentation_item_key == "domain-cl00081"
+    )
+    assert bhlh_sf_block.links[0]["label"] == "Conserved Protein Domain Family bHLH_SF:"
+    pdb_link = next(block for block in result.blocks if block.presentation_role == "section_1c_pdb_link")
+    assert "expressed in" not in pdb_link.text
+
+
+def test_section_1c_cdh10_order_and_suppression():
+    records = [
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="conserved_domain_hit",
+            value={
+                "domain_accession": "smart00112",
+                "domain_short_name": "CA",
+                "from_residue": 100,
+                "to_residue": 160,
+            },
+        ),
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="conserved_domain_hit",
+            value={
+                "domain_accession": "cd11304",
+                "domain_short_name": "Cadherin_repeat",
+                "from_residue": 170,
+                "to_residue": 280,
+            },
+        ),
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="conserved_domain_hit",
+            value={
+                "domain_accession": "pfam01049",
+                "domain_short_name": "CADH_Y-type_LIR",
+                "from_residue": 900,
+                "to_residue": 960,
+            },
+        ),
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_family_summary",
+            value={
+                "canonical_accession": "cd11304",
+                "domain_accession": "cd11304",
+                "domain_short_name": "Cadherin_repeat",
+                "synopsis": "cd11304 (PSSM ID: 206637): Cadherins are glycoproteins.",
+                "presentation_item_key": "domain-cd11304",
+            },
+        ),
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_family_summary",
+            value={
+                "canonical_accession": "pfam01049",
+                "matched_query_domain_accession": "pfam01049",
+                "domain_accession": "pfam01049",
+                "domain_short_name": "Cadherin_C / CADH_Y-type_LIR",
+                "pssm_id": "426014",
+                "synopsis": "Cadherin cytoplasmic region: Cadherins are linked to the cytoskeleton by catenins.",
+                "presentation_item_key": "domain-pfam01049",
+            },
+        ),
+        _ev(
+            gene_symbol="CDH10",
+            source_name="CDD",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="cdd_conserved_feature",
+            value={
+                "domain_accession": "cd11304",
+                "feature_label": "Ca2+ binding site [ion binding site]",
+                "feature_type": "ion binding site",
+                "query_residues": "E171, M172",
+                "presentation_item_key": "feature-cd11304-ca2-binding-site-ion-binding-site",
+            },
+        ),
+    ]
+    result = build_known_structure_blocks(gene_symbol="CDH10", evidence_records=records)
+    visible = "\n".join(block.text or "" for block in result.blocks)
+    assert "CA:" not in visible
+    assert "Cadherin_C / CADH_Y-type_LIR" in visible
+    assert "PSSM ID" not in visible
+    feature_idx = visible.index("Ca2+ binding site [ion binding site]")
+    domain_idx = visible.index("CD11304: Cadherin_repeat")
+    cterminal_idx = visible.index("Cadherin_C / CADH_Y-type_LIR")
+    assert feature_idx < domain_idx
+    assert domain_idx < cterminal_idx
+    assert "E171" not in visible
+
+
+def test_section_1c_cdh10_mouse_pdb_heading_omits_ortholog_word():
+    records = [
+        _ev(
+            gene_symbol="CDH10",
+            source_name="PDBe",
+            source_type=SourceType.structure_database,
+            assertion_type=AssertionType.protein_structure,
+            fact_type="pdb_candidate_selection",
+            value={
+                "candidates": [
+                    {
+                        "pdb_id": "6cg6",
+                        "selected": True,
+                        "species_common_name": "mouse",
+                        "expression_host": "Escherichia coli",
+                    }
+                ],
+            },
+        )
+    ]
+    result = build_known_structure_blocks(gene_symbol="CDH10", evidence_records=records)
+    pdb_link = next(block for block in result.blocks if block.presentation_role == "section_1c_pdb_link")
+    assert pdb_link.text == (
+        "3D structures from PDB: Mouse CDH10 protein expressed in Escherichia coli (PDB link)"
+    )
+
+
+def test_render_section_bundle_html_can_suppress_major_heading_for_focused_1c():
+    from gene_dossier.report_schema import (
+        ReportCover,
+        ReportDocument,
+        ReportMajorSection,
+        ReportSubsection,
+    )
+
+    document = ReportDocument(
+        dossier_run_id="run",
+        gene_symbol="CDH10",
+        cover=ReportCover(gene_symbol="CDH10"),
+        sections=[
+            ReportMajorSection(
+                number=1,
+                key="1",
+                title="General Gene Information",
+                toc_title="GENERAL GENE INFORMATION",
+                subsections=[
+                    ReportSubsection(
+                        key="c",
+                        title="Known structure",
+                        toc_title="KNOWN STRUCTURE",
+                        presentation_blocks=[ReportContentBlock(kind="narrative", text="body")],
+                    )
+                ],
+            )
+        ],
+    )
+    html = render_section_bundle_html(document, include_major_heading=False)
+    assert "1. General Gene Information" not in html
+    assert "c. Known structure" in html
+
+
 def test_full_report_major_narrative_unchanged():
     """Full-report _render_major still emits major narrative when present."""
     from gene_dossier.rancho_report import _render_major
@@ -708,7 +1200,6 @@ def test_srebf2_and_cdh10_1a_row_order():
         "UniProt ID",
     ]
     assert "Synonyms" in labels[5] and "Aliases" in labels[5]
-    rows = {r[0]: r for r in result.blocks[0].table_rows}
     # Keys may include zero-width joiner in Synonyms label — look up by prefix.
     entrez_row = next(r for r in result.blocks[0].table_rows if r[0].startswith("Entrez"))
     assert "6721" in entrez_row[1]

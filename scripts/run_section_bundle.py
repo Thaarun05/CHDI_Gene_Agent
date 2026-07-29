@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Section-scoped generation for Sections 1a / 1b (no LLM, no full report).
+"""Section-scoped generation for Sections 1a / 1b / opt-in 1c.
 
 Example::
 
@@ -35,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Generate a standalone Section 1 bundle (1a Gene Aliases / "
-            "1b UCSC conservation) without LLM synthesis or full-report rendering."
+            "1b UCSC conservation / opt-in 1c Known structure) without LLM "
+            "synthesis or full-report rendering."
         )
     )
     parser.add_argument("--gene", required=True, help="Gene symbol (e.g. SREBF2)")
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         "--sections",
         nargs="+",
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
-        help="Section keys to include (only 1a and/or 1b). Default: 1a 1b",
+        help="Section keys to include (1a, 1b, and/or opt-in 1c). Default: 1a 1b",
     )
     parser.add_argument(
         "--output-dir",
@@ -65,6 +66,15 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=150,
         help="PNG rasterization DPI (default: 150)",
+    )
+    parser.add_argument(
+        "--acceptance-profile",
+        default=None,
+        choices=["section_1c_reference_genes"],
+        help=(
+            "Optional acceptance-validation profile. When it fails, outputs are "
+            "preserved but the CLI exits nonzero."
+        ),
     )
     parser.add_argument(
         "-v",
@@ -93,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         settings=settings,
         write_pdf=not args.no_pdf,
         dpi=args.dpi,
+        acceptance_profile=args.acceptance_profile,
     )
 
     print(f"status={result.status}")

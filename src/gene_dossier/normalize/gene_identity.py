@@ -578,6 +578,20 @@ def normalize_uniprot(
         ensembl_transcript_ids = entry.get("ensembl_transcript_ids") or []
         if not isinstance(ensembl_transcript_ids, list):
             ensembl_transcript_ids = []
+        refseq_protein_accessions = entry.get("refseq_protein_accessions") or []
+        if not isinstance(refseq_protein_accessions, list):
+            refseq_protein_accessions = []
+        protein_length = (
+            entry.get("protein_length")
+            or entry.get("sequence_length")
+            or entry.get("length")
+        )
+        try:
+            protein_length_int = (
+                int(protein_length) if protein_length is not None else None
+            )
+        except (TypeError, ValueError):
+            protein_length_int = None
 
         records.append(
             _record(
@@ -595,10 +609,17 @@ def normalize_uniprot(
                     "primaryAccession": str(accession),
                     "reviewed": bool(reviewed),
                     "protein_name": protein_name,
+                    "protein_length": protein_length_int,
+                    "sequence_length": protein_length_int,
                     "gene_names": str_names or gene_names,
                     "gene_name": str(species_symbol),
                     "aliases": aliases,
                     "gene_synonyms": aliases,
+                    "refseq_protein_accessions": [
+                        str(x).strip()
+                        for x in refseq_protein_accessions
+                        if str(x).strip()
+                    ],
                     "organism_name": organism,
                     "organism_id": organism_id,
                     "tax_id": taxon_id,

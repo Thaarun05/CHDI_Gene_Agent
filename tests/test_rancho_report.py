@@ -418,7 +418,7 @@ def test_render_fake_document_html_matches_rancho_chrome():
     assert "1. General Gene Information" in html
     assert "Fake gene aliases" in html
     assert "Identifier table" in html
-    assert "bgcolor=" in html  # light-green table header for Story/PDF
+    assert 'class="header-row"' in html
     assert REPORT_STYLE.table_header_bg in html
     assert REPORT_STYLE.green_major in html
     assert REPORT_STYLE.orange_sub in html

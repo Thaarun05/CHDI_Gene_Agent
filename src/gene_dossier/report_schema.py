@@ -72,7 +72,23 @@ BlockKind = Literal[
     "empty",
 ]
 
-PresentationRole = Literal["gene_aliases_table", "ucsc_conservation_figure"]
+PresentationRole = Literal[
+    "gene_aliases_table",
+    "ucsc_conservation_figure",
+    "section_1c_cdd_link",
+    "section_1c_domain_table",
+    "section_1c_domain_architecture_figure",
+    "section_1c_domain_summary",
+    "section_1c_domain_thumbnail",
+    "section_1c_feature_summary",
+    "section_1c_feature_thumbnail",
+    "section_1c_pdb_link",
+    "section_1c_pdb_table",
+    "section_1c_pdb_assembly_figure",
+    "section_1c_pdb_domain_focus_figure",
+    "section_1c_pdb_official_image",
+    "section_1c_image_attribution",
+]
 
 
 # --------------------------------------------------------------------------------------
@@ -697,6 +713,7 @@ class ReportContentBlock(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     evidence_record_ids: list[str] = Field(default_factory=list)
     presentation_role: PresentationRole | None = None
+    presentation_item_key: str | None = None
     # Opaque polished-output reference; never a database ID.
     evidence_ref: str | None = None
 

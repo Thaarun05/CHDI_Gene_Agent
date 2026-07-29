@@ -1,4 +1,4 @@
-"""Section-scoped dossier generation for curator review (Sections 1a / 1b).
+"""Section-scoped dossier generation for curator review (Sections 1a / 1b / 1c).
 
 Builds a standalone Section 1 document without LLM synthesis or full-report
 rendering. Provenance IDs live only in the audit JSON; polished outputs use
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -35,6 +36,7 @@ from gene_dossier.report_schema import (
     ReportSubsection,
     infer_chromosome,
 )
+from gene_dossier.section_1c import node_generate_section_1c_derived_artifacts
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -48,18 +50,37 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1a": set(),
     "1b": {"UCSC"},
+    "1c": {"CDD", "PDBe"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
     ("1a", "gene_aliases_table"): "ev-1a-gene-aliases-table",
     ("1b", "ucsc_conservation_figure"): "ev-1b-conservation-figure",
+    ("1c", "section_1c_cdd_link"): "ev-1c-cdd-link",
+    ("1c", "section_1c_domain_table"): "ev-1c-cdd-domain-table",
+    ("1c", "section_1c_domain_architecture_figure"): "ev-1c-cdd-architecture",
+    ("1c", "section_1c_pdb_table"): "ev-1c-pdbe-candidate-table",
+    ("1c", "section_1c_pdb_assembly_figure"): "ev-1c-pdbe-assembly-figure",
+    ("1c", "section_1c_pdb_domain_focus_figure"): "ev-1c-pdbe-domain-focus-figure",
+    ("1c", "section_1c_image_attribution"): "ev-1c-image-attribution",
 }
+
+_SECTION_1C_REF_SUFFIX_BY_ROLE = {
+    "section_1c_domain_summary": "summary",
+    "section_1c_domain_thumbnail": "thumbnail",
+    "section_1c_feature_summary": "summary",
+    "section_1c_feature_thumbnail": "thumbnail",
+    "section_1c_pdb_link": "summary",
+    "section_1c_pdb_official_image": "official-image",
+}
+
+_SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _RAW_ID_KEYS = frozenset(
     {
@@ -95,16 +116,20 @@ class SectionBundleResult:
 
 
 def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
-    """Accept only 1a/1b; dedupe; canonicalize order; require at least one."""
+    """Accept only supported Section 1 keys; dedupe; canonicalize order."""
     raw = [str(k).strip().lower() for k in (section_keys or [])]
     if not raw:
-        raise SectionBundleError("At least one section key is required (1a and/or 1b).")
+        raise SectionBundleError(
+            "At least one section key is required (1a, 1b, and/or 1c)."
+        )
     normalized: list[str] = []
     for key in raw:
         if key in {"1.a", "a"}:
             key = "1a"
         elif key in {"1.b", "b"}:
             key = "1b"
+        elif key in {"1.c", "c"}:
+            key = "1c"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -123,9 +148,29 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     return sorted(needed)
 
 
+def validate_safe_item_key(value: str | None) -> str:
+    """Validate a safe polished-output grouping key."""
+    key = (value or "").strip()
+    if not key or not _SAFE_ITEM_KEY_RE.fullmatch(key):
+        raise SectionBundleError(f"Unsafe or empty presentation_item_key: {value!r}")
+    return key
+
+
+def section_1c_evidence_ref(block: ReportContentBlock) -> str:
+    """Dynamic Section 1c opaque ref from safe item key + role suffix."""
+    role = str(block.presentation_role or "")
+    suffix = _SECTION_1C_REF_SUFFIX_BY_ROLE.get(role)
+    if not suffix:
+        raise SectionBundleError(f"Section 1c role is not dynamically referenceable: {role!r}")
+    key = validate_safe_item_key(block.presentation_item_key)
+    return f"ev-1c-{key}-{suffix}"
+
+
 def opaque_evidence_ref(section_key: str, block: ReportContentBlock, *, index: int) -> str:
     """Deterministic opaque ref from section + presentation role / kind."""
     role = block.presentation_role
+    if section_key == "1c" and role in _SECTION_1C_REF_SUFFIX_BY_ROLE:
+        return section_1c_evidence_ref(block)
     mapped = _OPAQUE_REF_BY_ROLE.get((section_key, role)) if role else None
     if mapped:
         return mapped
@@ -135,6 +180,8 @@ def opaque_evidence_ref(section_key: str, block: ReportContentBlock, *, index: i
         return "ev-1b-summary"
     if section_key == "1a" and block.kind == "table":
         return "ev-1a-gene-aliases-table"
+    if section_key == "1c" and block.kind == "narrative" and index == 0:
+        return "ev-1c-introduction"
     return f"ev-{section_key}-block-{index + 1}"
 
 
@@ -284,7 +331,7 @@ def create_section_bundle_run(
     if not gene:
         raise SectionBundleError("gene_symbol is required")
     keys = validate_section_keys(selected_section_keys)
-    cfg = settings or get_settings()
+    _ = settings or get_settings()
 
     run = DossierRun(
         gene_symbol=gene,
@@ -304,6 +351,8 @@ def create_section_bundle_run(
     state: DossierState = {
         "gene_symbol": gene,
         "dossier_run_id": run.id,
+        "run_type": "section_bundle",
+        "selected_section_keys": list(keys),
         "gene_ids": {},
         "tool_results": [],
         "api_runs": [],
@@ -374,9 +423,13 @@ def assign_opaque_refs(
     ref_map: dict[str, dict[str, list[str]]] = {}
     for index, block in enumerate(blocks):
         ref = opaque_evidence_ref(section_key, block, index=index)
+        if ref in ref_map:
+            raise SectionBundleError(f"Duplicate evidence_ref generated: {ref}")
         polished_block = block.model_copy(update={"evidence_ref": ref})
         polished.append(polished_block)
         ref_map[ref] = _ids_for_block(block, provenance=provenance)
+    if len(ref_map) != len(set(ref_map)):
+        raise SectionBundleError("Duplicate evidence refs generated")
     return polished, ref_map
 
 
@@ -387,6 +440,7 @@ def serialize_presentation_block(block: ReportContentBlock) -> dict[str, Any]:
         "title": block.title,
         "text": sanitize_polished_text(block.text) if block.text else None,
         "presentation_role": block.presentation_role,
+        "presentation_item_key": block.presentation_item_key,
         "evidence_ref": block.evidence_ref,
     }
     if block.table_headers:
@@ -564,6 +618,7 @@ def render_section_bundle_html(
     *,
     show_header_logos: bool = True,
     include_page_chrome: bool = True,
+    include_major_heading: bool = True,
 ) -> str:
     """Render standalone Section 1 HTML (no cover/TOC/major narrative)."""
     if not document.sections:
@@ -575,11 +630,12 @@ def render_section_bundle_html(
             f'<section id="section-{major.number}" '
             f'class="report-page section-bundle-body">'
         ),
-        (
+    ]
+    if include_major_heading:
+        body_parts.append(
             f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
             f"{_escape(heading)}</h2>"
-        ),
-    ]
+        )
     for sub in major.subsections:
         body_parts.append(_render_subsection(sub))
     body_parts.append("</section>")
@@ -688,6 +744,7 @@ def write_section_bundle_outputs(
     write_pdf: bool = True,
     dpi: int = 150,
     allow_rerender: bool = False,
+    include_major_heading: bool = True,
 ) -> dict[str, Path]:
     """Write presentation/audit JSON, HTML, PDF, and all PDF page PNGs.
 
@@ -743,18 +800,32 @@ def write_section_bundle_outputs(
         _mark_written(audit_path)
         paths["section_1_audit_json"] = audit_path
 
-        html = render_section_bundle_html(document, include_page_chrome=True)
+        html = render_section_bundle_html(
+            document,
+            include_page_chrome=True,
+            include_major_heading=include_major_heading,
+        )
         html = redact_api_key(html)
         html_path.write_text(html, encoding="utf-8")
         _mark_written(html_path)
         paths["section_1_html"] = html_path
 
         if write_pdf:
-            # PDF uses stamped chrome on every page; omit HTML chrome to avoid
-            # one-shot header/footer and stacked print padding.
+            section_one_keys = [
+                sub.key
+                for sec in document.sections
+                if sec.number == 1
+                for sub in sec.subsections
+            ]
+            stamp_first_page = section_one_keys == ["c"]
+            # Focused 1c previews have no cover/earlier page; stamp page 1 so the
+            # visual preview matches the Rancho body-page chrome without changing
+            # assembled 1a/1b output.
+            # Omit HTML chrome to avoid one-shot header/footer and stacked print padding.
             pdf_html = render_section_bundle_html(
                 document,
                 include_page_chrome=False,
+                include_major_heading=include_major_heading,
             )
             pdf_html = redact_api_key(pdf_html)
             rendered = render_rancho_pdf(
@@ -762,7 +833,7 @@ def write_section_bundle_outputs(
                 pdf_path,
                 page_size="letter",
                 stamp_page_chrome=True,
-                stamp_cover=False,
+                stamp_cover=stamp_first_page,
             )
             if rendered is not None:
                 _mark_written(Path(rendered))
@@ -796,6 +867,7 @@ def run_section_bundle(
     dossier_run_id: str | None = None,
     allow_rerender: bool = False,
     preloaded_state: DossierState | None = None,
+    acceptance_profile: str | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ UCSC when 1b) and write a standalone Section 1 bundle."""
     cfg = settings or get_settings()
@@ -827,6 +899,7 @@ def run_section_bundle(
     transient = WorkflowTransientContext()
     created_outputs: dict[str, Path] = {}
     errors: list[str] = []
+    focused_1c = keys == ["1c"]
 
     try:
         if call_network:
@@ -847,6 +920,19 @@ def run_section_bundle(
                 transient=transient,
             )
             state = node_normalize_evidence(state, persist_db=persist_db)
+            if "1c" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_1c_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                )
 
         evidence = list(state.get("evidence_records") or [])
         document, presentation, audit = build_section_bundle_document(
@@ -903,7 +989,28 @@ def run_section_bundle(
                 }
         audit["transcript_selection_provenance"] = transcript_prov
         audit["figure_provenance"] = figure_prov
+        if "1c" in keys:
+            audit["section_1c"] = sanitize_credentials(state.get("section_1c") or {})
+            if acceptance_profile:
+                section_1c_audit = dict(audit.get("section_1c") or {})
+                rendering = section_1c_audit.get("rendering_status") or {}
+                reasons: list[str] = []
+                if (
+                    acceptance_profile == "section_1c_reference_genes"
+                    and rendering.get("cdd_architecture") != "success"
+                ):
+                    reasons.append("official CDD architecture missing")
+                section_1c_audit["acceptance_validation"] = {
+                    "profile": acceptance_profile,
+                    "status": "failed" if reasons else "success",
+                    "reasons": reasons,
+                }
+                audit["section_1c"] = section_1c_audit
+                if reasons:
+                    errors.extend(reasons)
         audit["errors"] = list(state.get("errors") or [])
+        if errors:
+            audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
         audit = sanitize_credentials(audit)
 
         created_outputs = write_section_bundle_outputs(
@@ -914,6 +1021,7 @@ def run_section_bundle(
             write_pdf=write_pdf,
             dpi=dpi,
             allow_rerender=allow_rerender,
+            include_major_heading=not focused_1c,
         )
         finalize_section_bundle_run(
             dossier_run_id=run_id,
@@ -928,6 +1036,7 @@ def run_section_bundle(
             output_dir=out_dir,
             output_paths=created_outputs,
             status="completed",
+            errors=list(sanitize_credentials(errors)),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Section bundle failed for %s", gene)
@@ -965,6 +1074,8 @@ __all__ = [
     "validate_section_keys",
     "sources_for_sections",
     "opaque_evidence_ref",
+    "section_1c_evidence_ref",
+    "validate_safe_item_key",
     "sanitize_credentials",
     "sanitize_polished_text",
     "sanitize_secrets",

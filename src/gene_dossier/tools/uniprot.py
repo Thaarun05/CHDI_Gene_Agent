@@ -31,7 +31,8 @@ ORGANISM_RAT = 10116
 
 DEFAULT_FIELDS = (
     "accession,id,gene_names,protein_name,organism_name,organism_id,xref_ensembl,"
-    "cc_function,cc_subcellular_location,cc_disease,ft_domain,ft_repeat"
+    "xref_refseq,sequence,cc_function,cc_subcellular_location,cc_disease,"
+    "ft_domain,ft_repeat"
 )
 
 
@@ -179,11 +180,23 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
     ensembl_gene_ids: list[str] = []
     ensembl_transcript_ids: list[str] = []
     ensembl_protein_ids: list[str] = []
+    refseq_protein_accessions: list[str] = []
     seen_genes: set[str] = set()
     seen_transcripts: set[str] = set()
+    seen_refseq: set[str] = set()
 
     for xref in entry.get("uniProtKBCrossReferences") or []:
-        if not isinstance(xref, dict) or xref.get("database") != "Ensembl":
+        if not isinstance(xref, dict):
+            continue
+        database = xref.get("database")
+        if database == "RefSeq":
+            raw_refseq = str(xref.get("id") or "").strip()
+            if raw_refseq and raw_refseq.startswith(("NP_", "XP_", "YP_")):
+                if raw_refseq not in seen_refseq:
+                    seen_refseq.add(raw_refseq)
+                    refseq_protein_accessions.append(raw_refseq)
+            continue
+        if database != "Ensembl":
             continue
         props: dict[str, str] = {}
         for prop in xref.get("properties") or []:
@@ -224,6 +237,12 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
     gene_synonyms = gene_names[1:] if len(gene_names) > 1 else []
     entry_type = str(entry.get("entryType") or entry.get("entry_type") or "")
     reviewed = "reviewed" in entry_type.lower() if entry_type else True
+    sequence = entry.get("sequence") if isinstance(entry.get("sequence"), dict) else {}
+    length = sequence.get("length") or entry.get("length")
+    try:
+        sequence_length = int(length) if length is not None else None
+    except (TypeError, ValueError):
+        sequence_length = None
 
     return {
         "accession": entry.get("primaryAccession") or entry.get("accession"),
@@ -233,8 +252,11 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "gene_synonyms": gene_synonyms,
         "reviewed": reviewed,
         "protein_name": recommended,
+        "protein_length": sequence_length,
+        "sequence_length": sequence_length,
         "organism_name": organism.get("scientificName") or organism.get("commonName"),
         "organism_id": (organism.get("taxonId") or organism.get("taxonID")),
+        "refseq_protein_accessions": refseq_protein_accessions,
         # Gene IDs only — never transcript IDs.
         "ensembl_gene_ids": ensembl_gene_ids,
         "ensembl_xrefs": ensembl_gene_ids,

@@ -94,12 +94,13 @@ def sanitize_polished_citation_tokens(text: str | None) -> str:
 
 def _evidence_attr(block: ReportContentBlock) -> str:
     """Nonvisual opaque evidence attributes for polished HTML."""
-    if not block.evidence_ref:
-        return ""
-    return (
-        f' data-evidence-ref="{_escape(block.evidence_ref)}"'
-        f' data-evidence-supported="true"'
-    )
+    attrs = []
+    if block.evidence_ref:
+        attrs.append(f' data-evidence-ref="{_escape(block.evidence_ref)}"')
+        attrs.append(' data-evidence-supported="true"')
+    if block.presentation_item_key:
+        attrs.append(f' data-item-key="{_escape(block.presentation_item_key)}"')
+    return "".join(attrs)
 
 
 def _norm_title(text: str) -> str:
@@ -413,6 +414,13 @@ tr.toc-entry.back a {{ color: {s.brown_body}; }}
   font-size: {s.subsection_header_pt}pt;
   font-weight: 600;
   margin: 14pt 0 8pt 0;
+  break-after: avoid;
+  page-break-after: avoid;
+}}
+.section-bundle-body .report-subsection + .subsection-c,
+.section-bundle-body .report-subsection + .subsection-1c {{
+  break-before: page;
+  page-break-before: always;
 }}
 .block {{ margin: 0 0 10pt 0; }}
 .empty-note {{
@@ -465,6 +473,13 @@ table.rancho th {{
   padding: 6pt 8pt;
   border: 1px solid #6e5a4a;
 }}
+table.rancho tr {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+table.rancho tr.header-row th {{
+  background-color: {s.table_header_bg};
+}}
 table.rancho td {{
   padding: 5pt 8pt;
   border: 1px solid #6e5a4a;
@@ -490,6 +505,23 @@ table.gene-aliases-table td:first-child {{
 table.gene-aliases-table col.col-human {{ width: 29%; }}
 table.gene-aliases-table col.col-mouse {{ width: 32%; }}
 table.gene-aliases-table col.col-rat {{ width: 27%; }}
+table.section-1c-pdb-table {{
+  table-layout: fixed;
+  font-size: 10pt;
+}}
+table.section-1c-pdb-table col.col-pdb {{ width: 10%; }}
+table.section-1c-pdb-table col.col-chains {{ width: 14%; }}
+table.section-1c-pdb-table col.col-method {{ width: 17%; }}
+table.section-1c-pdb-table col.col-resolution {{ width: 13%; }}
+table.section-1c-pdb-table col.col-span {{ width: 14%; }}
+table.section-1c-pdb-table col.col-coverage {{ width: 18%; }}
+table.section-1c-pdb-table col.col-selection {{ width: 14%; }}
+table.section-1c-pdb-table th:first-child,
+table.section-1c-pdb-table td:first-child {{
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}}
 a.id-link {{
   color: {s.orange_link};
   text-decoration: underline;
@@ -525,12 +557,56 @@ figure.rancho-figure.ucsc-conservation-figure img {{
   height: auto;
   display: block;
 }}
+.section-bundle-body figure.rancho-figure.section-1c-domain-architecture-figure {{
+  text-align: left;
+  margin: 6pt 0 10pt 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-domain-architecture-figure img {{
+  width: 100%;
+  max-width: 7.3in;
+  max-height: 0.95in;
+  object-fit: contain;
+  display: block;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-domain-focus-figure {{
+  text-align: left;
+  margin: 8pt 0 12pt 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-domain-focus-figure img {{
+  width: 2.1in;
+  max-width: 50%;
+  display: block;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-assembly-figure {{
+  text-align: left;
+  margin: 10pt 0 12pt 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-assembly-figure img {{
+  width: 3.2in;
+  max-width: 70%;
+  display: block;
+}}
 a.ucsc-transcript-link {{
   color: {s.orange_link};
   text-decoration: underline;
 }}
 .ucsc-transcript-line {{
   margin: 8pt 0 6pt 0;
+  break-after: avoid;
+  page-break-after: avoid;
+}}
+.section-1c-link {{
+  color: {s.orange_link};
+  text-decoration: underline;
+}}
+.section-1c-link-line {{
+  margin: 7pt 0 7pt 0;
   break-after: avoid;
   page-break-after: avoid;
 }}
@@ -553,11 +629,75 @@ a.ucsc-transcript-link {{
 .section-bundle-body .block {{
   margin: 6pt 0 8pt 0;
 }}
+.section-bundle-body .narrative p {{
+  background-color: #ffffff;
+}}
 .section-bundle-body h3.sub-heading {{
   margin: 10pt 0 6pt 0;
 }}
 .section-bundle-body h2.major-heading {{
   margin: 0 0 8pt 0;
+}}
+.section-bundle-body .subsection-1c {{
+  max-width: 7.2in;
+  font-size: 9.5pt;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}}
+.section-bundle-body .subsection-1c .block {{
+  margin: 4pt 0 6pt 0;
+}}
+.section-bundle-body .section-1c-domain-group,
+.section-bundle-body .section-1c-feature-group,
+.section-bundle-body .section-1c-pdb-group {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 4pt 0 8pt 0;
+}}
+.section-bundle-body .section-1c-pdb-group {{
+  display: block;
+  break-before: page;
+  page-break-before: always;
+  margin-top: 0;
+}}
+@media screen {{
+  .section-bundle-body .section-1c-pdb-group {{
+    margin-top: 72pt;
+    padding-top: 24pt;
+    border-top: 1px solid transparent;
+  }}
+}}
+.section-bundle-body .section-1c-domain-group p,
+.section-bundle-body .section-1c-feature-group p {{
+  margin-bottom: 6pt;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-domain-thumbnail,
+.section-bundle-body figure.rancho-figure.section-1c-feature-thumbnail {{
+  text-align: left;
+  margin: 5pt 0 8pt 0;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-domain-thumbnail img,
+.section-bundle-body figure.rancho-figure.section-1c-feature-thumbnail img {{
+  width: auto;
+  max-width: 1.35in;
+  max-height: 1.55in;
+  object-fit: contain;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-official-image {{
+  text-align: left;
+  margin: 8pt 0 4pt 0;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-official-image img {{
+  width: 3.25in;
+  max-width: 45%;
+  max-height: 4.8in;
+  object-fit: contain;
+}}
+.section-bundle-body figure.rancho-figure.section-1c-pdb-official-image figcaption,
+.section-bundle-body .section-1c-image-attribution {{
+  color: #8a7a6a;
+  font-size: 8.5pt;
 }}
 @media (max-width: 900px) {{
   .section-preview-body, .report-page {{
@@ -597,6 +737,7 @@ def _render_block(block: ReportContentBlock) -> str:
     from gene_dossier.report_presentation import format_safe_table_cell_html
 
     parts: list[str] = [f'<div class="block"{_evidence_attr(block)}>']
+    inline_section_1c_link_rendered = False
     if block.title:
         parts.append(
             f'<p><strong style="color:{REPORT_STYLE.orange_link};">'
@@ -607,6 +748,8 @@ def _render_block(block: ReportContentBlock) -> str:
         classes = ["rancho"]
         if block.presentation_role == "gene_aliases_table":
             classes.append("gene-aliases-table")
+        elif block.presentation_role == "section_1c_pdb_table":
+            classes.append("section-1c-pdb-table")
         class_attr = " ".join(classes)
         parts.append(f'<table class="{class_attr}">')
         if block.presentation_role == "gene_aliases_table":
@@ -618,14 +761,25 @@ def _render_block(block: ReportContentBlock) -> str:
                 '<col class="col-rat" />'
                 "</colgroup>"
             )
-        parts.append("<thead><tr>")
+        elif block.presentation_role == "section_1c_pdb_table":
+            parts.append(
+                "<colgroup>"
+                '<col class="col-pdb" />'
+                '<col class="col-chains" />'
+                '<col class="col-method" />'
+                '<col class="col-resolution" />'
+                '<col class="col-span" />'
+                '<col class="col-coverage" />'
+                '<col class="col-selection" />'
+                "</colgroup>"
+            )
+        parts.append('<tbody><tr class="header-row">')
         for h in block.table_headers:
             parts.append(
-                f'<th bgcolor="{REPORT_STYLE.table_header_bg}" '
-                f'style="background-color:{REPORT_STYLE.table_header_bg};">'
+                f'<th style="background-color:{REPORT_STYLE.table_header_bg};">'
                 f"{_escape(h)}</th>"
             )
-        parts.append("</tr></thead><tbody>")
+        parts.append("</tr>")
         for row in block.table_rows:
             parts.append("<tr>")
             for cell in row:
@@ -653,11 +807,26 @@ def _render_block(block: ReportContentBlock) -> str:
         alt = caption or "figure"
         if fig_uri:
             fig_classes = ["rancho-figure"]
+            if block.presentation_role:
+                fig_classes.append(
+                    re.sub(
+                        r"[^a-z0-9]+",
+                        "-",
+                        str(block.presentation_role).lower(),
+                    ).strip("-")
+                )
             if block.presentation_role == "ucsc_conservation_figure":
                 fig_classes.append("ucsc-conservation-figure")
             parts.append(f'<figure class="{" ".join(fig_classes)}">')
             parts.append(f'<img src="{fig_uri}" alt="{alt}" />')
-            if caption and block.presentation_role != "ucsc_conservation_figure":
+            if (
+                caption
+                and block.presentation_role != "ucsc_conservation_figure"
+                and (
+                    not str(block.presentation_role or "").startswith("section_1c_")
+                    or block.presentation_role == "section_1c_pdb_official_image"
+                )
+            ):
                 parts.append(f"<figcaption>{caption}</figcaption>")
             parts.append("</figure>")
         elif block.text:
@@ -673,9 +842,15 @@ def _render_block(block: ReportContentBlock) -> str:
             link = block.links[0]
             label = _escape(link.get("label") or block.text or link.get("url") or "link")
             url = _escape(link.get("url") or "#")
+            line_class = "ucsc-transcript-line"
+            link_class = "ucsc-transcript-link"
+            if str(block.presentation_role or "").startswith("section_1c_"):
+                line_class = "section-1c-link-line"
+                link_class = "section-1c-link"
             parts.append(
-                f'<p class="ucsc-transcript-line">'
-                f'<a class="ucsc-transcript-link" href="{url}">{label}</a></p>'
+                f'<p class="{line_class}">'
+                f'<a class="{link_class}" style="color:{REPORT_STYLE.orange_link};" '
+                f'href="{url}">{label}</a></p>'
             )
         else:
             parts.append("<ul>")
@@ -687,17 +862,48 @@ def _render_block(block: ReportContentBlock) -> str:
     else:
         text = sanitize_polished_citation_tokens((block.text or "").strip())
         if text:
-            paras = text.split("\n\n")
             parts.append('<div class="narrative">')
-            for para in paras:
-                parts.append(f"<p>{_escape(para.strip())}</p>")
+            if (
+                block.presentation_role == "section_1c_domain_summary"
+                and len(block.links) == 1
+                and block.links[0].get("label")
+                and text.startswith(str(block.links[0].get("label")))
+            ):
+                link = block.links[0]
+                label_raw = str(link.get("label") or "")
+                label = _escape(label_raw)
+                url = _escape(link.get("url") or "#")
+                parts.append(
+                    f'<p class="section-1c-link-line">'
+                    f'<a class="section-1c-link" '
+                    f'style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
+                rest = text[len(label_raw) :].lstrip()
+                for para in rest.split("\n\n"):
+                    para = para.strip()
+                    if para:
+                        parts.append(f"<p>{_escape(para)}</p>")
+                inline_section_1c_link_rendered = True
+            else:
+                paras = text.split("\n\n")
+                for para in paras:
+                    parts.append(f"<p>{_escape(para.strip())}</p>")
             parts.append("</div>")
 
-    if block.links and block.kind not in {"link"}:
+    if block.links and block.kind not in {"link"} and not inline_section_1c_link_rendered:
         for link in block.links:
             label = _escape(link.get("label") or "Link")
             url = _escape(link.get("url") or "#")
-            parts.append(f'<p><a href="{url}">{label}</a></p>')
+            if str(block.presentation_role or "").startswith("section_1c_"):
+                parts.append(
+                    f'<p class="section-1c-link-line">'
+                    f'<a class="section-1c-link" '
+                    f'style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
+            else:
+                parts.append(f'<p><a href="{url}">{label}</a></p>')
 
     parts.append("</div>")
     return "\n".join(parts)
@@ -717,9 +923,70 @@ def _render_supporting_evidence(blocks: list[ReportContentBlock]) -> str:
     return "\n".join(parts)
 
 
+def _section_1c_group_class(block: ReportContentBlock) -> str | None:
+    role = str(block.presentation_role or "")
+    if role in {
+        "section_1c_domain_summary",
+        "section_1c_domain_thumbnail",
+    }:
+        return "section-1c-domain-group"
+    if role in {
+        "section_1c_feature_summary",
+        "section_1c_feature_thumbnail",
+    }:
+        return "section-1c-feature-group"
+    if role in {
+        "section_1c_pdb_link",
+        "section_1c_pdb_official_image",
+        "section_1c_image_attribution",
+    }:
+        return "section-1c-pdb-group"
+    return None
+
+
+def _render_section_1c_grouped_blocks(blocks: list[ReportContentBlock]) -> str:
+    parts: list[str] = []
+    current_class: str | None = None
+    current_key: str | None = None
+    current_blocks: list[ReportContentBlock] = []
+
+    def flush() -> None:
+        nonlocal current_class, current_key, current_blocks
+        if not current_blocks:
+            return
+        if current_class and current_key:
+            parts.append(
+                f'<div class="{_escape(current_class)}" data-item-key="{_escape(current_key)}">'
+            )
+            parts.extend(_render_block(block) for block in current_blocks)
+            parts.append("</div>")
+        else:
+            parts.extend(_render_block(block) for block in current_blocks)
+        current_class = None
+        current_key = None
+        current_blocks = []
+
+    for block in blocks:
+        group_class = _section_1c_group_class(block)
+        group_key = block.presentation_item_key if group_class else None
+        if group_class and group_key:
+            if current_blocks and (group_class != current_class or group_key != current_key):
+                flush()
+            current_class = group_class
+            current_key = group_key
+            current_blocks.append(block)
+        else:
+            flush()
+            parts.append(_render_block(block))
+    flush()
+    return "\n".join(parts)
+
+
 def _render_subsection(sub: ReportSubsection) -> str:
     heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
     parts = [
+        f'<section class="report-subsection subsection-{_escape(subsection_class)}">',
         (
             f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
             f"{_escape(heading)}</h3>"
@@ -727,8 +994,12 @@ def _render_subsection(sub: ReportSubsection) -> str:
     ]
     # Polished presentation_blocks are the complete human-facing subsection body.
     if sub.presentation_blocks:
-        for block in sub.presentation_blocks:
-            parts.append(_render_block(block))
+        if sub.key == "c":
+            parts.append(_render_section_1c_grouped_blocks(list(sub.presentation_blocks)))
+        else:
+            for block in sub.presentation_blocks:
+                parts.append(_render_block(block))
+        parts.append("</section>")
         return "\n".join(parts)
 
     narrative_html = _render_narrative_markdown(
@@ -748,6 +1019,7 @@ def _render_subsection(sub: ReportSubsection) -> str:
             '<p class="empty-note">No evidence available for this subsection in the '
             "current dossier run.</p>"
         )
+    parts.append("</section>")
     return "\n".join(parts)
 
 

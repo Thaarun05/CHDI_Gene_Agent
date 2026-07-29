@@ -76,7 +76,8 @@ class WorkflowTransientContext:
     """Per-compiled-graph transient payloads; never enters LangGraph state.
 
     Access is guarded by ``lock`` so concurrent invokes of the same compiled
-    graph cannot overwrite or consume one another's live figure payloads.
+    graph cannot overwrite or consume one another's live figure / binary
+    artifact payloads.
     """
 
     live_figures: dict[str, Any] = field(default_factory=dict)
@@ -89,6 +90,19 @@ class WorkflowTransientContext:
     def pop_figure(self, token: str) -> Any | None:
         with self.lock:
             return self.live_figures.pop(token, None)
+
+    def put(self, dossier_run_id: str, token: str, payload: Any) -> str:
+        """Store an arbitrary transient payload and return its run-scoped key."""
+        key = token if token.startswith(f"{dossier_run_id}:") else f"{dossier_run_id}:{token}"
+        with self.lock:
+            self.live_figures[key] = payload
+        return key
+
+    def pop(self, dossier_run_id: str, token: str) -> Any | None:
+        """Consume an arbitrary transient payload by run-scoped or local token."""
+        key = token if token.startswith(f"{dossier_run_id}:") else f"{dossier_run_id}:{token}"
+        with self.lock:
+            return self.live_figures.pop(key, None)
 
     def clear_run(self, dossier_run_id: str) -> None:
         """Drop any remaining payloads keyed for ``dossier_run_id``."""
@@ -677,11 +691,25 @@ def extract_gene_ids_from_tool_result(
                 updated["rat_ensembl_id"] = str(eid)
     elif source == "UniProt":
         acc = data.get("selected_accession") or data.get("primaryAccession")
+        selected_entry: dict[str, Any] = {}
+        entries = data.get("entries") or data.get("selected") or data.get("results") or []
         if not acc:
-            results = data.get("results") or data.get("selected") or data.get("entries") or []
-            if isinstance(results, list) and results and isinstance(results[0], dict):
-                acc = results[0].get("primaryAccession") or results[0].get("accession")
+            if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+                selected_entry = entries[0]
+                acc = selected_entry.get("primaryAccession") or selected_entry.get("accession")
+        elif isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_acc = entry.get("primaryAccession") or entry.get("accession")
+                if str(entry_acc) == str(acc):
+                    selected_entry = entry
+                    break
+            if not selected_entry and entries and isinstance(entries[0], dict):
+                selected_entry = entries[0]
         organism_id = data.get("organism_id")
+        if organism_id is None and selected_entry:
+            organism_id = selected_entry.get("organism_id")
         try:
             tax_int = int(organism_id) if organism_id is not None else 9606
         except (TypeError, ValueError):
@@ -689,6 +717,34 @@ def extract_gene_ids_from_tool_result(
         if acc:
             if tax_int == 9606:
                 updated["uniprot_accession"] = str(acc)
+                protein_length = (
+                    selected_entry.get("protein_length")
+                    or selected_entry.get("sequence_length")
+                    or selected_entry.get("length")
+                )
+                try:
+                    if protein_length is not None:
+                        updated["protein_length"] = int(protein_length)
+                        updated["protein_length_source"] = "reviewed canonical UniProt sequence length"
+                except (TypeError, ValueError):
+                    pass
+                refseq_accessions = selected_entry.get("refseq_protein_accessions") or []
+                if isinstance(refseq_accessions, list):
+                    selected_refseq = next(
+                        (
+                            str(x).strip()
+                            for x in refseq_accessions
+                            if str(x).strip().startswith(("NP_", "XP_", "YP_"))
+                        ),
+                        None,
+                    )
+                    if selected_refseq:
+                        updated["refseq_protein"] = selected_refseq
+                        updated["refseq_protein_accessions"] = [
+                            str(x).strip()
+                            for x in refseq_accessions
+                            if str(x).strip()
+                        ]
             elif tax_int == 10090:
                 updated["mouse_uniprot_accession"] = str(acc)
             elif tax_int == 10116:
