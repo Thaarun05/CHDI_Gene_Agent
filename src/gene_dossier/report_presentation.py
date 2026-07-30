@@ -1640,6 +1640,26 @@ def _figure_block_from_record(
     )
 
 
+# Trailing CDD link wording used by the historical Rancho domain paragraphs.
+SECTION_1C_CDD_LINK_LABEL = "(NCBI CDD Link)"
+
+# Rancho body style sets the specific-domain lead phrase in bold and continues
+# the sentence in normal weight. Renderers bold these phrases when a Section 1c
+# domain summary opens with one; the stored block text stays plain.
+SECTION_1C_BOLD_LEAD_PHRASES: tuple[str, ...] = (
+    "basic Helix-Loop-Helix-zipper (bHLHzip) domain",
+)
+
+# Domain families whose polished block opens a new Section 1c page, matching the
+# page-per-topic body flow of the original reports (C-terminal cytoplasmic
+# region follows the extracellular repeat content on its own page).
+_SECTION_1C_PAGE_LEADING_ACCESSIONS = frozenset({"pfam01049"})
+
+_SECTION_1C_PDB_PAGE_ROLES = frozenset(
+    {"section_1c_pdb_link", "section_1c_pdb_official_image"}
+)
+
+
 def _strip_visible_pssm(text: str) -> str:
     cleaned = re.sub(r"\s*\(PSSM\s*ID:\s*\d+\)", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bPSSM[-\s]*ID:\s*\d+\b[:;,\s]*", "", cleaned, flags=re.IGNORECASE)
@@ -1684,15 +1704,93 @@ def _family_record_for_accession(
     return None
 
 
-def _thumbnail_record_for_key(
+def _thumbnail_records_for_key(
     thumbnails: Sequence[EvidenceRecord],
     item_key: str,
-) -> EvidenceRecord | None:
-    for rec in thumbnails:
-        value = rec.value if isinstance(rec.value, dict) else {}
-        if str(value.get("presentation_item_key") or "") == item_key:
-            return rec
-    return None
+) -> list[EvidenceRecord]:
+    return [
+        rec
+        for rec in thumbnails
+        if isinstance(rec.value, dict)
+        and str(rec.value.get("presentation_item_key") or "") == item_key
+    ]
+
+
+# NCBI CDD serves thin alignment/sequence strips (e.g. 100x24) from the same
+# thumbnail endpoints as real Cn3D structure images, sometimes under a
+# ``*_structure_thumbnail`` role. True structure thumbnails are square-ish
+# (100x100, 300x300), so height and aspect ratio separate the two reliably.
+_MIN_STRUCTURE_THUMBNAIL_HEIGHT = 40
+_MAX_STRUCTURE_THUMBNAIL_ASPECT = 2.5
+_NON_STRUCTURE_THUMBNAIL_ROLE_TOKENS = ("alignment", "sequence", "logo", "msa")
+_CDD_UID_RE = re.compile(r"uid=(\d+)")
+
+
+def _cdd_uid(value: dict[str, Any]) -> str:
+    """CDD page uid for a family summary or thumbnail record, or ``""``."""
+    for key in ("requested_uid", "pssm_id"):
+        raw = str(value.get(key) or "").strip()
+        if raw:
+            return raw
+    match = _CDD_UID_RE.search(str(value.get("source_url") or ""))
+    return match.group(1) if match else ""
+
+
+def _is_renderable_structure_thumbnail(
+    rec: EvidenceRecord,
+    *,
+    family_uid: str = "",
+) -> bool:
+    """True when a CDD thumbnail is a real structure image for ``family_uid``.
+
+    Rejects alignment/sequence/logo/MSA roles, thin strips, and thumbnails whose
+    CDD uid differs from the family page whose synopsis is being rendered (pfam
+    accessions can resolve to more than one CDD family page).
+    """
+    value = rec.value if isinstance(rec.value, dict) else {}
+    role = str(value.get("classified_role") or "").strip().lower()
+    if any(token in role for token in _NON_STRUCTURE_THUMBNAIL_ROLE_TOKENS):
+        return False
+    thumbnail_uid = _cdd_uid(value)
+    if family_uid and thumbnail_uid and thumbnail_uid != family_uid:
+        return False
+    try:
+        width = int(value.get("width"))  # type: ignore[arg-type]
+        height = int(value.get("height"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        # Dimensions unavailable: the role and uid checks are all we can apply.
+        return True
+    if width <= 0 or height <= 0:
+        return True
+    if height <= _MIN_STRUCTURE_THUMBNAIL_HEIGHT:
+        return False
+    return (width / height) < _MAX_STRUCTURE_THUMBNAIL_ASPECT
+
+
+def _renderable_thumbnail_records(
+    thumbnails: Sequence[EvidenceRecord],
+    *,
+    item_key: str,
+    family_uid: str,
+    diagnostics: list[PresentationDiagnostic],
+) -> list[EvidenceRecord]:
+    """Structure thumbnails for ``item_key``; rejected ones become diagnostics."""
+    kept: list[EvidenceRecord] = []
+    for rec in _thumbnail_records_for_key(thumbnails, item_key):
+        if _is_renderable_structure_thumbnail(rec, family_uid=family_uid):
+            kept.append(rec)
+            continue
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_1c_domain_thumbnail_omitted",
+                (
+                    f"Omitted non-structure CDD thumbnail for {item_key}; "
+                    f"domain text and link retained."
+                ),
+                "warning",
+            )
+        )
+    return kept
 
 
 def _domain_visible_heading(
@@ -1704,7 +1802,7 @@ def _domain_visible_heading(
     acc = accession.lower()
     if acc == "cd18922":
         return (
-            "basic Helix-Loop-Helix-zipper (bHLHzip) domain found in "
+            f"{SECTION_1C_BOLD_LEAD_PHRASES[0]} found in "
             "sterol regulatory element-binding protein 2 (SREBP2) and similar proteins:"
         )
     if acc == "cl00081":
@@ -1714,19 +1812,18 @@ def _domain_visible_heading(
         prefix = "CD11304: Cadherin_repeat:"
         return f"{prefix} {synopsis}" if synopsis else prefix
     if acc == "pfam01049":
-        prefix = "Cadherin_C / CADH_Y-type_LIR:"
+        # Internal CDD aliases (CADH_Y-type_LIR) stay in audit only.
+        prefix = "Cadherin_C:"
         return f"{prefix} {synopsis}" if synopsis else prefix
     prefix = f"{name}:"
     return f"{prefix} {synopsis}" if synopsis else prefix
 
 
 def _should_suppress_visible_domain(accession: str, name: str, visible_accessions: set[str]) -> bool:
+    """True for broad repeat-family prose already covered by a specific block."""
     acc = accession.lower()
     lower_name = name.lower()
-    if "cd11304" in visible_accessions and (
-        acc in {"smart00112"}
-        or lower_name in {"ca", "cadh-y-type-lir", "cadh_y-type_lir"}
-    ):
+    if "cd11304" in visible_accessions and (acc == "smart00112" or lower_name == "ca"):
         return True
     return False
 
@@ -1873,8 +1970,9 @@ def build_known_structure_blocks(
                 )
                 continue
             accession_url = _cdd_accession_url(accession)
+            # Rancho body style puts the CDD link at the end of the paragraph.
             links = (
-                [{"label": f"{domain_label} — NCBI CDD", "url": accession_url}]
+                [{"label": SECTION_1C_CDD_LINK_LABEL, "url": accession_url}]
                 if accession_url
                 else []
             )
@@ -1967,9 +2065,59 @@ def build_known_structure_blocks(
                                 block = block.model_copy(update={"presentation_item_key": feature_item_key})
                             blocks.append(block)
 
+            family_uid = (
+                _cdd_uid(family.value)
+                if family is not None and isinstance(family.value, dict)
+                else ""
+            )
+            structure_thumbs = (
+                []
+                if accession.lower() == "cd18922"
+                else _renderable_thumbnail_records(
+                    family_thumbnails,
+                    item_key=item_key,
+                    family_uid=family_uid,
+                    diagnostics=diagnostics,
+                )
+            )
+            # A lone thumbnail sits below its paragraph; when a family page
+            # supplies several, the first leads the block and the rest follow.
+            leading_thumbs, trailing_thumbs = (
+                ([structure_thumbs[0]], structure_thumbs[1:])
+                if len(structure_thumbs) > 1
+                else ([], structure_thumbs)
+            )
+            pending_page_break = accession.lower() in _SECTION_1C_PAGE_LEADING_ACCESSIONS
+
+            def append_group_block(block: ReportContentBlock) -> None:
+                nonlocal pending_page_break
+                if pending_page_break:
+                    block = block.model_copy(
+                        update={"presentation_page_break_before": True}
+                    )
+                    pending_page_break = False
+                blocks.append(block)
+
+            def append_thumbnail_blocks(records: Sequence[EvidenceRecord]) -> None:
+                for record in records:
+                    block = _figure_block_from_record(
+                        record,
+                        role="section_1c_domain_thumbnail",
+                        caption="Source: NCBI Conserved Domain Database",
+                        diagnostics=diagnostics,
+                    )
+                    if block is None:
+                        continue
+                    if not block.presentation_item_key:
+                        block = block.model_copy(
+                            update={"presentation_item_key": item_key}
+                        )
+                    append_group_block(block)
+
             if accession.lower() == "cd11304":
                 append_feature_blocks()
-            blocks.append(
+            append_thumbnail_blocks(leading_thumbs)
+            append_group_block(
                 ReportContentBlock(
                     kind="narrative",
                     text=summary_text,
@@ -1982,18 +2130,7 @@ def build_known_structure_blocks(
                     ),
                 )
             )
-            thumb = _thumbnail_record_for_key(family_thumbnails, item_key)
-            if thumb is not None and accession.lower() != "cd18922":
-                block = _figure_block_from_record(
-                    thumb,
-                    role="section_1c_domain_thumbnail",
-                    caption="Source: NCBI Conserved Domain Database",
-                    diagnostics=diagnostics,
-                )
-                if block is not None:
-                    if not block.presentation_item_key:
-                        block = block.model_copy(update={"presentation_item_key": item_key})
-                    blocks.append(block)
+            append_thumbnail_blocks(trailing_thumbs)
             if accession.lower() != "cd11304":
                 append_feature_blocks()
             if accession.lower() == "cd18922":
@@ -2026,8 +2163,12 @@ def build_known_structure_blocks(
                             evidence_record_ids=[companion.id] if companion.id else [],
                         )
                     )
-                    companion_thumb = _thumbnail_record_for_key(family_thumbnails, companion_key)
-                    if companion_thumb is not None:
+                    for companion_thumb in _renderable_thumbnail_records(
+                        family_thumbnails,
+                        item_key=companion_key,
+                        family_uid=_cdd_uid(companion_value),
+                        diagnostics=diagnostics,
+                    ):
                         block = _figure_block_from_record(
                             companion_thumb,
                             role="section_1c_domain_thumbnail",
@@ -2119,12 +2260,22 @@ def build_known_structure_blocks(
             )
         )
 
+    # The PDB heading, image, and attribution always occupy their own page.
+    for index, block in enumerate(blocks):
+        if block.presentation_role in _SECTION_1C_PDB_PAGE_ROLES:
+            blocks[index] = block.model_copy(
+                update={"presentation_page_break_before": True}
+            )
+            break
+
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
+    "SECTION_1C_BOLD_LEAD_PHRASES",
+    "SECTION_1C_CDD_LINK_LABEL",
     "UCSC_STABLE_INTRO",
     "PresentationDiagnostic",
     "SectionPresentationResult",

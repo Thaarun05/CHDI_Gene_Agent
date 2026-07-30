@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
+# Page-break sentinel for section-bundle output. It is a plain HTML comment
+# (invisible to browsers) that :func:`render_rancho_pdf` uses to split a document
+# into consecutive ``fitz.Story`` segments, each starting on a fresh page. Only
+# ``render_section_bundle_html`` emits it; the full dossier renderer neither
+# emits nor depends on it.
+SECTION_1C_PDF_PAGE_BREAK = "<!--RANCHO_PDF_PAGE_BREAK-->"
+
 # Known synthesis section titles (duplicate-heading suppression only — not a slot map).
 _SYNTHESIS_TITLE_ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -638,13 +645,15 @@ a.ucsc-transcript-link {{
 .section-bundle-body h2.major-heading {{
   margin: 0 0 8pt 0;
 }}
+.section-bundle-body .subsection-c,
 .section-bundle-body .subsection-1c {{
-  max-width: 7.2in;
+  max-width: 6.9in;
   font-size: 9.5pt;
   line-height: 1.18;
   overflow-wrap: anywhere;
   word-break: normal;
 }}
+.section-bundle-body .subsection-c .block,
 .section-bundle-body .subsection-1c .block {{
   margin: 4pt 0 6pt 0;
 }}
@@ -668,6 +677,20 @@ a.ucsc-transcript-link {{
     border-top: 1px solid transparent;
   }}
 }}
+/* Section-bundle continuation pages already start a new page/Story, so the
+   CSS break would otherwise add an empty leading page. */
+.section-bundle-body.section-1c-continuation .section-1c-pdb-group {{
+  break-before: auto;
+  page-break-before: auto;
+  margin-top: 0;
+  padding-top: 0;
+}}
+@media screen {{
+  .section-bundle-body.section-1c-continuation .section-1c-pdb-group {{
+    margin-top: 0;
+    padding-top: 0;
+  }}
+}}
 .section-bundle-body .section-1c-domain-group p,
 .section-bundle-body .section-1c-feature-group p {{
   margin-bottom: 6pt;
@@ -677,11 +700,21 @@ a.ucsc-transcript-link {{
   text-align: left;
   margin: 5pt 0 8pt 0;
 }}
-.section-bundle-body figure.rancho-figure.section-1c-domain-thumbnail img,
+/* Absolute widths: the PyMuPDF Story engine honours ``width`` but ignores
+   ``max-width``/``max-height``, so thumbnails need an explicit size to match the
+   original report scale in PDF and PNG as well as in the browser. */
+.section-bundle-body figure.rancho-figure.section-1c-domain-thumbnail img {{
+  width: 1.45in;
+  max-width: 1.55in;
+  max-height: 1.75in;
+  height: auto;
+  object-fit: contain;
+}}
 .section-bundle-body figure.rancho-figure.section-1c-feature-thumbnail img {{
-  width: auto;
-  max-width: 1.35in;
-  max-height: 1.55in;
+  width: 2.15in;
+  max-width: 2.25in;
+  max-height: 2.45in;
+  height: auto;
   object-fit: contain;
 }}
 .section-bundle-body figure.rancho-figure.section-1c-pdb-official-image {{
@@ -689,15 +722,17 @@ a.ucsc-transcript-link {{
   margin: 8pt 0 4pt 0;
 }}
 .section-bundle-body figure.rancho-figure.section-1c-pdb-official-image img {{
-  width: 3.25in;
-  max-width: 45%;
+  width: 3.4in;
+  max-width: 55%;
   max-height: 4.8in;
+  height: auto;
   object-fit: contain;
 }}
 .section-bundle-body figure.rancho-figure.section-1c-pdb-official-image figcaption,
 .section-bundle-body .section-1c-image-attribution {{
   color: #8a7a6a;
   font-size: 8.5pt;
+  text-align: left;
 }}
 @media (max-width: 900px) {{
   .section-preview-body, .report-page {{
@@ -731,6 +766,19 @@ def _img_tag(data_uri: str | None, *, cls: str, alt: str) -> str:
     if not data_uri:
         return f'<span class="{_escape(cls)}-fallback">{_escape(alt)}</span>'
     return f'<img class="{_escape(cls)}" src="{data_uri}" alt="{_escape(alt)}" />'
+
+
+def _section_1c_emphasized_paragraph(text: str) -> str:
+    """Escape a Section 1c paragraph, bolding a known specific-domain lead phrase."""
+    from gene_dossier.report_presentation import SECTION_1C_BOLD_LEAD_PHRASES
+
+    for phrase in SECTION_1C_BOLD_LEAD_PHRASES:
+        if text.startswith(phrase):
+            return (
+                f"<strong>{_escape(phrase)}</strong>"
+                f"{_escape(text[len(phrase):])}"
+            )
+    return _escape(text)
 
 
 def _render_block(block: ReportContentBlock) -> str:
@@ -886,9 +934,34 @@ def _render_block(block: ReportContentBlock) -> str:
                         parts.append(f"<p>{_escape(para)}</p>")
                 inline_section_1c_link_rendered = True
             else:
-                paras = text.split("\n\n")
-                for para in paras:
-                    parts.append(f"<p>{_escape(para.strip())}</p>")
+                paras = [para.strip() for para in text.split("\n\n") if para.strip()]
+                # Rancho body style closes a domain paragraph with its CDD link.
+                trailing_link = (
+                    block.links[0]
+                    if (
+                        block.presentation_role == "section_1c_domain_summary"
+                        and len(block.links) == 1
+                        and paras
+                    )
+                    else None
+                )
+                for index, para in enumerate(paras):
+                    body = (
+                        _section_1c_emphasized_paragraph(para)
+                        if block.presentation_role == "section_1c_domain_summary"
+                        else _escape(para)
+                    )
+                    if trailing_link is not None and index == len(paras) - 1:
+                        label = _escape(trailing_link.get("label") or "Link")
+                        url = _escape(trailing_link.get("url") or "#")
+                        body += (
+                            f' <a class="section-1c-link" '
+                            f'style="color:{REPORT_STYLE.orange_link};" '
+                            f'href="{url}">{label}</a>'
+                        )
+                    parts.append(f"<p>{body}</p>")
+                if trailing_link is not None:
+                    inline_section_1c_link_rendered = True
             parts.append("</div>")
 
     if block.links and block.kind not in {"link"} and not inline_section_1c_link_rendered:
@@ -980,6 +1053,53 @@ def _render_section_1c_grouped_blocks(blocks: list[ReportContentBlock]) -> str:
             parts.append(_render_block(block))
     flush()
     return "\n".join(parts)
+
+
+def split_section_1c_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 1c blocks into one list per rendered page.
+
+    A new segment starts at every block flagged ``presentation_page_break_before``
+    by the presentation builder, so page breaks are decided by content roles
+    rather than by CSS pagination.
+    """
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_1c_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 1c as one subsection HTML string per page segment.
+
+    Only the first segment carries the subsection heading; the section-bundle
+    renderer wraps later segments in their own ``report-page`` so the C-terminal
+    family block and the PDB group each start on a real new page.
+    """
+    segments = split_section_1c_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)}">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_1c_grouped_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered
 
 
 def _render_subsection(sub: ReportSubsection) -> str:
@@ -1569,6 +1689,29 @@ def _stamp_pdf_chrome(
                 pass
 
 
+def _split_pdf_page_segments(html_document: str) -> list[str]:
+    """Split a document at page-break sentinels into standalone documents.
+
+    Each segment keeps the original ``<head>``, and therefore the report
+    stylesheet, so every ``fitz.Story`` renders with identical styling.
+    Documents without a sentinel are returned unchanged as a single segment.
+    """
+    if SECTION_1C_PDF_PAGE_BREAK not in html_document:
+        return [html_document]
+    body_open = html_document.find("<body>")
+    body_close = html_document.rfind("</body>")
+    if body_open == -1 or body_close == -1 or body_close < body_open:
+        return [html_document]
+    body_start = body_open + len("<body>")
+    prefix = html_document[:body_start]
+    suffix = html_document[body_close:]
+    body = html_document[body_start:body_close]
+    parts = [
+        part for part in body.split(SECTION_1C_PDF_PAGE_BREAK) if part.strip()
+    ]
+    return [f"{prefix}{part}{suffix}" for part in parts] or [html_document]
+
+
 def render_rancho_pdf(
     html_document: str,
     pdf_path: str | Path,
@@ -1595,15 +1738,18 @@ def render_rancho_pdf(
 
     try:
         mediabox = fitz.paper_rect("a4" if page_size.lower() == "a4" else "letter")
-        story = fitz.Story(html=html_document)
         writer = fitz.DocumentWriter(str(dest))
-        more = True
-        while more:
-            device = writer.begin_page(mediabox)
-            where = mediabox + (36, 56, -36, -48)
-            more, _ = story.place(where)
-            story.draw(device)
-            writer.end_page()
+        # One Story per segment: a new Story always begins on a new page, which
+        # makes the section-bundle page splits deterministic.
+        for segment in _split_pdf_page_segments(html_document):
+            story = fitz.Story(html=segment)
+            more = True
+            while more:
+                device = writer.begin_page(mediabox)
+                where = mediabox + (36, 56, -36, -48)
+                more, _ = story.place(where)
+                story.draw(device)
+                writer.end_page()
         writer.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("PDF export failed; HTML report remains available: %s", exc)

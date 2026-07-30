@@ -1080,14 +1080,35 @@ def test_section_1c_cdh10_order_and_suppression():
     result = build_known_structure_blocks(gene_symbol="CDH10", evidence_records=records)
     visible = "\n".join(block.text or "" for block in result.blocks)
     assert "CA:" not in visible
-    assert "Cadherin_C / CADH_Y-type_LIR" in visible
+    # Broad smart00112 "CA" prose stays suppressed while the specific
+    # Cadherin_C block renders under its polished name only.
+    assert "Cadherin_C: Cadherin cytoplasmic region:" in visible
+    assert "CADH_Y-type_LIR" not in visible
     assert "PSSM ID" not in visible
     feature_idx = visible.index("Ca2+ binding site [ion binding site]")
     domain_idx = visible.index("CD11304: Cadherin_repeat")
-    cterminal_idx = visible.index("Cadherin_C / CADH_Y-type_LIR")
+    cterminal_idx = visible.index("Cadherin_C:")
     assert feature_idx < domain_idx
     assert domain_idx < cterminal_idx
     assert "E171" not in visible
+
+    cadherin_repeat = next(
+        block
+        for block in result.blocks
+        if block.presentation_item_key == "domain-cd11304"
+        and block.presentation_role == "section_1c_domain_summary"
+    )
+    assert cadherin_repeat.links[0]["label"] == "(NCBI CDD Link)"
+    assert cadherin_repeat.presentation_page_break_before is False
+
+    cadherin_c = next(
+        block
+        for block in result.blocks
+        if block.presentation_item_key == "domain-pfam01049"
+        and block.presentation_role == "section_1c_domain_summary"
+    )
+    assert cadherin_c.links[0]["label"] == "(NCBI CDD Link)"
+    assert cadherin_c.presentation_page_break_before is True
 
 
 def test_section_1c_cdh10_mouse_pdb_heading_omits_ortholog_word():
@@ -1115,6 +1136,536 @@ def test_section_1c_cdh10_mouse_pdb_heading_omits_ortholog_word():
     assert pdb_link.text == (
         "3D structures from PDB: Mouse CDH10 protein expressed in Escherichia coli (PDB link)"
     )
+    assert "ortholog" not in (pdb_link.text or "").lower()
+
+
+# --------------------------------------------------------------------------------------
+# Section 1c page layout against the original Rancho report body flow
+# --------------------------------------------------------------------------------------
+def _probe_figure(name: str) -> str:
+    """Write a managed figure fixture and return its portable relative path."""
+    from gene_dossier.config import get_settings
+
+    root = get_settings().raw_data_path
+    path = root / "tests" / f"section-1c-{name}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        (PROJECT_ROOT / "src/gene_dossier/assets/rancho_wordmark.png").read_bytes()
+    )
+    return str(path.relative_to(root))
+
+
+def _cdd(gene: str, fact_type: str, value: dict[str, Any]) -> EvidenceRecord:
+    return _ev(
+        gene_symbol=gene,
+        source_name="CDD",
+        source_type=SourceType.structure_database,
+        assertion_type=AssertionType.protein_structure,
+        fact_type=fact_type,
+        value=value,
+    )
+
+
+def _pdbe(gene: str, fact_type: str, value: dict[str, Any]) -> EvidenceRecord:
+    return _ev(
+        gene_symbol=gene,
+        source_name="PDBe",
+        source_type=SourceType.structure_database,
+        assertion_type=AssertionType.protein_structure,
+        fact_type=fact_type,
+        value=value,
+    )
+
+
+def _srebf2_1c_records() -> list[EvidenceRecord]:
+    """SREBF2 Section 1c evidence shaped like a real CDD/PDBe bundle."""
+    figure = _probe_figure("srebf2")
+    return [
+        _ev(
+            source_name="UniProt",
+            source_type=SourceType.curated_database,
+            assertion_type=AssertionType.gene_identity,
+            fact_type="uniprot_accession",
+            value={"uniprot_accession": "Q12772", "taxon_id": 9606, "protein_length": 1141},
+        ),
+        _cdd(
+            "SREBF2",
+            "conserved_domain_hit",
+            {
+                "domain_accession": "cd18922",
+                "domain_short_name": "bHLHzip_SREBP2",
+                "from_residue": 343,
+                "to_residue": 403,
+            },
+        ),
+        _cdd(
+            "SREBF2",
+            "cdd_official_architecture_figure",
+            {"relative_path": figure, "width": 1197, "height": 148},
+        ),
+        _cdd(
+            "SREBF2",
+            "cdd_family_summary",
+            {
+                "canonical_accession": "cd18922",
+                "domain_accession": "cd18922",
+                "domain_short_name": "bHLHzip_SREBP2",
+                "requested_uid": "381492",
+                "synopsis": "specific bHLHzip domain.",
+                "presentation_item_key": "domain-cd18922",
+            },
+        ),
+        _cdd(
+            "SREBF2",
+            "cdd_family_summary",
+            {
+                "canonical_accession": "cl00081",
+                "domain_accession": "cl00081",
+                "domain_short_name": "bHLH_SF",
+                "requested_uid": "444684",
+                "synopsis": (
+                    "basic Helix Loop Helix (bHLH) domain superfamily: bHLH proteins "
+                    "are transcriptional regulators found from yeast to humans."
+                ),
+                "presentation_item_key": "domain-cl00081",
+            },
+        ),
+        # Square official structure thumbnail from the same CDD page: renders.
+        _cdd(
+            "SREBF2",
+            "cdd_family_thumbnail",
+            {
+                "presentation_item_key": "domain-cl00081",
+                "relative_path": figure,
+                "width": 100,
+                "height": 100,
+                "classified_role": "family_structure_thumbnail",
+                "source_url": (
+                    "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=444684"
+                ),
+            },
+        ),
+        # Thin alignment strip served for the specific hit: never renders.
+        _cdd(
+            "SREBF2",
+            "cdd_family_thumbnail",
+            {
+                "presentation_item_key": "domain-cd18922",
+                "relative_path": figure,
+                "width": 100,
+                "height": 24,
+                "classified_role": "family_structure_thumbnail",
+                "source_url": (
+                    "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=381492"
+                ),
+            },
+        ),
+        _pdbe(
+            "SREBF2",
+            "pdb_candidate_selection",
+            {
+                "candidates": [
+                    {
+                        "pdb_id": "1ukl",
+                        "selected": True,
+                        "species_common_name": "human",
+                        "expression_host": "Escherichia coli",
+                    }
+                ]
+            },
+        ),
+        _pdbe(
+            "SREBF2",
+            "pdb_official_structure_image",
+            {
+                "pdb_id": "1ukl",
+                "relative_path": figure,
+                "attribution": "Image source: PDBe, PDB 1UKL",
+            },
+        ),
+    ]
+
+
+def _cdh10_1c_records(
+    *, pfam_thumbnails: list[dict[str, Any]] | None = None
+) -> list[EvidenceRecord]:
+    """CDH10 Section 1c evidence; ``pfam_thumbnails`` overrides Cadherin_C images.
+
+    The default reproduces the live bundle, whose only pfam01049 thumbnail is a
+    100x24 strip served from the neighbouring ``uid=460041`` family page.
+    """
+    figure = _probe_figure("cdh10")
+    default_thumbnails = [
+        {
+            "presentation_item_key": "domain-pfam01049",
+            "relative_path": figure,
+            "width": 100,
+            "height": 24,
+            "classified_role": "family_structure_thumbnail",
+            "source_url": (
+                "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=460041"
+            ),
+        }
+    ]
+    records = [
+        _cdd(
+            "CDH10",
+            "conserved_domain_hit",
+            {
+                "domain_accession": "smart00112",
+                "domain_short_name": "CA",
+                "from_residue": 80,
+                "to_residue": 158,
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "conserved_domain_hit",
+            {
+                "domain_accession": "cd11304",
+                "domain_short_name": "Cadherin_repeat",
+                "from_residue": 170,
+                "to_residue": 280,
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "conserved_domain_hit",
+            {
+                "domain_accession": "pfam01049",
+                "domain_short_name": "CADH_Y-type_LIR",
+                "from_residue": 721,
+                "to_residue": 780,
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "cdd_official_architecture_figure",
+            {"relative_path": figure, "width": 1197, "height": 148},
+        ),
+        _cdd(
+            "CDH10",
+            "cdd_family_summary",
+            {
+                "canonical_accession": "cd11304",
+                "domain_accession": "cd11304",
+                "domain_short_name": "Cadherin_repeat",
+                "requested_uid": "206637",
+                "synopsis": (
+                    "Cadherin tandem repeat domain.: Cadherins are glycoproteins "
+                    "involved in Ca2+-mediated cell-cell adhesion."
+                ),
+                "presentation_item_key": "domain-cd11304",
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "cdd_family_summary",
+            {
+                "canonical_accession": "pfam01049",
+                "matched_query_domain_accession": "pfam01049",
+                "domain_accession": "pfam01049",
+                "domain_short_name": "Cadherin_C / CADH_Y-type_LIR",
+                "pssm_id": "426014",
+                "requested_uid": "426014",
+                "synopsis": (
+                    "Cadherin cytoplasmic region: Cadherins are vital in cell-cell "
+                    "adhesion during tissue differentiation."
+                ),
+                "presentation_item_key": "domain-pfam01049",
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "cdd_conserved_feature",
+            {
+                "domain_accession": "cd11304",
+                "feature_label": "Ca2+ binding site [ion binding site]",
+                "feature_type": "ion binding site",
+                "query_residues": "E280, S281",
+                "presentation_item_key": "feature-cd11304-ca2",
+            },
+        ),
+        _cdd(
+            "CDH10",
+            "cdd_feature_thumbnail",
+            {
+                "presentation_item_key": "feature-cd11304-ca2",
+                "relative_path": figure,
+                "width": 300,
+                "height": 300,
+                "classified_role": "conserved_feature_structure_thumbnail",
+            },
+        ),
+        _pdbe(
+            "CDH10",
+            "pdb_candidate_selection",
+            {
+                "candidates": [
+                    {
+                        "pdb_id": "6cg6",
+                        "selected": True,
+                        "species_common_name": "mouse",
+                        "expression_host": "Escherichia coli",
+                    }
+                ]
+            },
+        ),
+        _pdbe(
+            "CDH10",
+            "pdb_official_structure_image",
+            {
+                "pdb_id": "6cg6",
+                "relative_path": figure,
+                "attribution": "Image source: PDBe, PDB 6CG6",
+            },
+        ),
+    ]
+    thumbnails = default_thumbnails if pfam_thumbnails is None else pfam_thumbnails
+    records.extend(_cdd("CDH10", "cdd_family_thumbnail", value) for value in thumbnails)
+    return records
+
+
+def _rendered_1c_pages(gene: str, records: list[EvidenceRecord]) -> tuple[list[str], dict[str, Any]]:
+    """Focused Section 1c HTML split into its rendered report pages, plus audit."""
+    document, _presentation, audit = build_section_bundle_document(
+        dossier_run_id="layout-run",
+        gene_symbol=gene,
+        section_keys=["1c"],
+        evidence_records=records,
+    )
+    html = render_section_bundle_html(
+        document,
+        include_page_chrome=False,
+        include_major_heading=False,
+    )
+    pages = [f'<section id="section-1{part}' for part in html.split('<section id="section-1')[1:]]
+    return pages, audit
+
+
+def test_section_1c_srebf2_page_layout_matches_rancho_body_flow():
+    pages, _audit = _rendered_1c_pages("SREBF2", _srebf2_1c_records())
+    assert len(pages) == 2
+    cdd_page, pdb_page = pages
+
+    # Page 1: architecture, then the bHLHzip lead sentence with a bold lead
+    # phrase and no standalone bHLHzip_SREBP2 link block, then the linked
+    # bHLH_SF family heading, its synopsis, and the square green thumbnail.
+    assert "section-1c-domain-architecture-figure" in cdd_page
+    assert (
+        "<strong>basic Helix-Loop-Helix-zipper (bHLHzip) domain</strong>"
+        " found in sterol regulatory element-binding protein 2"
+    ) in cdd_page
+    assert "bHLHzip_SREBP2" not in cdd_page
+    assert ">Conserved Protein Domain Family bHLH_SF:</a>" in cdd_page
+    assert "transcriptional regulators found from yeast to humans" in cdd_page
+    assert 'data-item-key="domain-cl00081"' in cdd_page
+    assert "section-1c-domain-thumbnail" in cdd_page
+
+    # The bHLHzip specific-hit alignment strip never becomes a thumbnail.
+    assert cdd_page.count("section-1c-domain-thumbnail") == 1
+    assert "3D structures from PDB" not in cdd_page
+
+    # Page 2: PDB heading, official image, and attribution only.
+    assert "3D structures from PDB: Human SREBF2 protein (PDB link)" in pdb_page
+    assert "section-1c-pdb-official-image" in pdb_page
+    assert "Image source: PDBe, PDB 1UKL" in pdb_page
+    assert "section-1c-domain-architecture-figure" not in pdb_page
+
+
+def test_section_1c_cdh10_page_layout_matches_rancho_body_flow():
+    pages, audit = _rendered_1c_pages("CDH10", _cdh10_1c_records())
+    assert len(pages) == 3
+    repeat_page, cadherin_c_page, pdb_page = pages
+
+    # Page 1: architecture, then the Ca2+ feature heading and its larger
+    # thumbnail, then the Cadherin_repeat paragraph closing with its CDD link.
+    assert "section-1c-domain-architecture-figure" in repeat_page
+    assert "Ca2+ binding site [ion binding site]" in repeat_page
+    assert "section-1c-feature-thumbnail" in repeat_page
+    assert "CD11304: Cadherin_repeat:" in repeat_page
+    assert repeat_page.index("Ca2+ binding site") < repeat_page.index("CD11304: Cadherin_repeat:")
+    assert ">(NCBI CDD Link)</a>" in repeat_page
+    # Broad smart00112 "CA" prose is not a separate visible family block.
+    assert ">CA:" not in repeat_page
+    assert "3D structures from PDB" not in repeat_page
+
+    # Page 2: Cadherin_C text and link under its polished name only. The live
+    # bundle's only pfam01049 image is a rejected strip, so no image renders.
+    assert "Cadherin_C: Cadherin cytoplasmic region:" in cadherin_c_page
+    assert "CADH_Y-type_LIR" not in cadherin_c_page
+    assert ">(NCBI CDD Link)</a>" in cadherin_c_page
+    assert "section-1c-domain-thumbnail" not in cadherin_c_page
+    assert "3D structures from PDB" not in cadherin_c_page
+    omitted = [
+        diag
+        for diag in audit["diagnostics"]
+        if diag["field"] == "section_1c_domain_thumbnail_omitted"
+    ]
+    assert omitted and "domain-pfam01049" in omitted[0]["reason"]
+
+    # Page 3: PDB heading without "ortholog", official image, attribution.
+    assert (
+        "3D structures from PDB: Mouse CDH10 protein expressed in Escherichia coli (PDB link)"
+    ) in pdb_page
+    assert "ortholog" not in pdb_page.lower()
+    assert "section-1c-pdb-official-image" in pdb_page
+    assert "Image source: PDBe, PDB 6CG6" in pdb_page
+
+
+def test_section_1c_two_official_thumbnails_bracket_the_cadherin_c_paragraph():
+    figure = _probe_figure("cdh10")
+    records = _cdh10_1c_records(
+        pfam_thumbnails=[
+            {
+                "presentation_item_key": "domain-pfam01049",
+                "relative_path": figure,
+                "width": 100,
+                "height": 100,
+                "classified_role": "family_structure_thumbnail",
+                "source_url": (
+                    "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=426014"
+                ),
+            },
+            {
+                "presentation_item_key": "domain-pfam01049",
+                "relative_path": figure,
+                "width": 120,
+                "height": 110,
+                "classified_role": "family_structure_thumbnail",
+                "source_url": (
+                    "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=426014"
+                ),
+            },
+        ]
+    )
+    result = build_known_structure_blocks(gene_symbol="CDH10", evidence_records=records)
+    roles = [
+        block.presentation_role
+        for block in result.blocks
+        if block.presentation_item_key == "domain-pfam01049"
+    ]
+    assert roles == [
+        "section_1c_domain_thumbnail",
+        "section_1c_domain_summary",
+        "section_1c_domain_thumbnail",
+    ]
+    # The page break stays on whichever block opens the Cadherin_C page.
+    leading = next(
+        block
+        for block in result.blocks
+        if block.presentation_item_key == "domain-pfam01049"
+    )
+    assert leading.presentation_page_break_before is True
+
+    pages, _audit = _rendered_1c_pages("CDH10", records)
+    assert len(pages) == 3
+    assert pages[1].count("section-1c-domain-thumbnail") == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ({"width": 100, "height": 100}, True),
+        ({"width": 300, "height": 300}, True),
+        ({"width": 120, "height": 110}, True),
+        ({}, True),
+        ({"width": 100, "height": 24}, False),
+        ({"width": 100, "height": 40}, False),
+        ({"width": 250, "height": 100}, False),
+        ({"width": 100, "height": 100, "classified_role": "alignment_or_sequence_thumbnail"}, False),
+        ({"width": 100, "height": 100, "classified_role": "family_sequence_logo"}, False),
+        ({"width": 100, "height": 100, "classified_role": "msa_graphic"}, False),
+    ],
+)
+def test_section_1c_structure_thumbnail_gate(value: dict[str, Any], expected: bool):
+    from gene_dossier.report_presentation import _is_renderable_structure_thumbnail
+
+    record = _cdd("CDH10", "cdd_family_thumbnail", value)
+    assert _is_renderable_structure_thumbnail(record) is expected
+
+
+def test_section_1c_thumbnail_from_other_cdd_family_page_is_rejected():
+    from gene_dossier.report_presentation import _is_renderable_structure_thumbnail
+
+    record = _cdd(
+        "CDH10",
+        "cdd_family_thumbnail",
+        {
+            "width": 100,
+            "height": 100,
+            "classified_role": "family_structure_thumbnail",
+            "source_url": (
+                "https://www.ncbi.nlm.nih.gov/Structure/cdd/cdThumbnail.cgi?uid=460041"
+            ),
+        },
+    )
+    assert _is_renderable_structure_thumbnail(record, family_uid="426014") is False
+    assert _is_renderable_structure_thumbnail(record, family_uid="460041") is True
+
+
+def test_section_1c_page_split_is_identical_in_html_pdf_and_pngs(tmp_path):
+    document, presentation, audit = build_section_bundle_document(
+        dossier_run_id="split-run",
+        gene_symbol="CDH10",
+        section_keys=["1c"],
+        evidence_records=_cdh10_1c_records(),
+    )
+    paths = write_section_bundle_outputs(
+        document=document,
+        presentation=presentation,
+        audit=audit,
+        output_dir=tmp_path / "cdh10",
+        dpi=72,
+        include_major_heading=False,
+    )
+    pdf = paths.get("section_1_pdf")
+    assert pdf is not None
+
+    import fitz
+
+    with fitz.open(str(pdf)) as doc:
+        page_texts = [doc[index].get_text() for index in range(doc.page_count)]
+    assert len(page_texts) == 3
+    assert "Ca2+ binding site" in page_texts[0]
+    assert "Cadherin_C:" in page_texts[1]
+    assert "3D structures from PDB" in page_texts[2]
+    # No PDB heading leaks onto an earlier page.
+    assert not any("3D structures from PDB" in text for text in page_texts[:2])
+
+    pngs = sorted((tmp_path / "cdh10").glob("section_1_page_*.png"))
+    assert len(pngs) == 3
+
+
+def test_section_1c_pdf_page_break_sentinel_is_bundle_only():
+    from gene_dossier.rancho_report import (
+        SECTION_1C_PDF_PAGE_BREAK,
+        _split_pdf_page_segments,
+    )
+
+    document, _presentation, _audit = build_section_bundle_document(
+        dossier_run_id="sentinel-run",
+        gene_symbol="SREBF2",
+        section_keys=["1c"],
+        evidence_records=_srebf2_1c_records(),
+    )
+    bundle_html = render_section_bundle_html(document, include_page_chrome=False)
+    assert bundle_html.count(SECTION_1C_PDF_PAGE_BREAK) == 1
+    segments = _split_pdf_page_segments(bundle_html)
+    assert len(segments) == 2
+    # Every segment keeps the stylesheet so both stories render identically.
+    assert all("section-1c-pdb-official-image" in segment for segment in segments)
+    assert "3D structures from PDB" not in segments[0]
+    assert "3D structures from PDB" in segments[1]
+
+    # A document without the sentinel is one unchanged segment.
+    plain = "<html><body><p>no sentinel</p></body></html>"
+    assert _split_pdf_page_segments(plain) == [plain]
+
+
+def test_section_1c_opt_in_defaults_unchanged():
+    assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c")
 
 
 def test_render_section_bundle_html_can_suppress_major_heading_for_focused_1c():

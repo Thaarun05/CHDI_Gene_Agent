@@ -714,6 +714,9 @@ class ReportContentBlock(BaseModel):
     evidence_record_ids: list[str] = Field(default_factory=list)
     presentation_role: PresentationRole | None = None
     presentation_item_key: str | None = None
+    # Deterministic page segmentation: renderers close the current report page
+    # and open a new one before this block instead of relying on CSS breaks.
+    presentation_page_break_before: bool = False
     # Opaque polished-output reference; never a database ID.
     evidence_ref: str | None = None
 

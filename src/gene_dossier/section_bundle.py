@@ -18,11 +18,13 @@ from gene_dossier.config import Settings, get_settings
 from gene_dossier.db import get_dossier_run, init_db, save_dossier_run, session_scope
 from gene_dossier.models import DossierRun, EvidenceRecord, utcnow
 from gene_dossier.rancho_report import (
+    SECTION_1C_PDF_PAGE_BREAK,
     _escape,
     _rancho_css,
     _render_subsection,
     rasterize_pdf_pages_to_pngs,
     render_rancho_pdf,
+    render_section_1c_subsection_segments,
     sanitize_polished_citation_tokens,
 )
 from gene_dossier.report_presentation import build_section_presentation
@@ -422,9 +424,15 @@ def assign_opaque_refs(
     polished: list[ReportContentBlock] = []
     ref_map: dict[str, dict[str, list[str]]] = {}
     for index, block in enumerate(blocks):
-        ref = opaque_evidence_ref(section_key, block, index=index)
-        if ref in ref_map:
-            raise SectionBundleError(f"Duplicate evidence_ref generated: {ref}")
+        base_ref = opaque_evidence_ref(section_key, block, index=index)
+        # One item can carry several official images (e.g. two Cadherin_C
+        # structure thumbnails), so repeats take a deterministic ordinal rather
+        # than colliding.
+        ref = base_ref
+        ordinal = 2
+        while ref in ref_map:
+            ref = f"{base_ref}-{ordinal}"
+            ordinal += 1
         polished_block = block.model_copy(update={"evidence_ref": ref})
         polished.append(polished_block)
         ref_map[ref] = _ids_for_block(block, provenance=provenance)
@@ -636,9 +644,25 @@ def render_section_bundle_html(
             f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
             f"{_escape(heading)}</h2>"
         )
+    # Section 1c pages past the first are emitted as sibling report pages so the
+    # C-terminal family block and the PDB group each start on a real new page in
+    # HTML, PDF, and the rasterized PNGs alike.
+    continuation_segments: list[str] = []
     for sub in major.subsections:
-        body_parts.append(_render_subsection(sub))
+        if sub.key == "c" and sub.presentation_blocks:
+            segments = render_section_1c_subsection_segments(sub)
+            body_parts.extend(segments[:1])
+            continuation_segments.extend(segments[1:])
+        else:
+            body_parts.append(_render_subsection(sub))
     body_parts.append("</section>")
+    for index, segment in enumerate(continuation_segments):
+        body_parts.append(SECTION_1C_PDF_PAGE_BREAK)
+        body_parts.append(
+            f'<section id="section-{major.number}c-page-{index + 2}" '
+            f'class="report-page section-bundle-body section-1c-continuation">'
+            f"{segment}</section>"
+        )
     body = "\n".join(body_parts)
 
     from gene_dossier.rancho_report import _asset_data_uri, _img_tag
