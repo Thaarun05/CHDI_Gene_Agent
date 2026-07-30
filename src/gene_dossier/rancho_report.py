@@ -734,6 +734,86 @@ a.ucsc-transcript-link {{
   font-size: 8.5pt;
   text-align: left;
 }}
+.section-bundle-body .subsection-d {{
+  margin-top: 10pt;
+}}
+.section-bundle-body .section-1d-link-line {{
+  margin: 4pt 0 6pt 0;
+  font-size: 13pt;
+}}
+.section-bundle-body .section-1d-link {{
+  text-decoration: underline;
+}}
+.section-bundle-body .section-1d-status-line {{
+  margin: 4pt 0 6pt 0;
+  font-size: 12.5pt;
+  color: #8a7a6a;
+}}
+.section-bundle-body .section-1d-visual-table {{
+  width: 100%;
+  border-collapse: collapse;
+  border: none;
+  background: transparent;
+  margin: 2pt 0 14pt 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body .section-1d-visual-table td {{
+  border: none;
+  background: transparent;
+  vertical-align: top;
+  padding: 0 6pt 0 0;
+}}
+.section-bundle-body .section-1d-visual-table col.section-1d-model-col {{
+  width: 47%;
+}}
+.section-bundle-body .section-1d-visual-table col.section-1d-confidence-col {{
+  width: 24%;
+}}
+.section-bundle-body .section-1d-visual-table col.section-1d-blurb-col {{
+  width: 29%;
+}}
+.section-bundle-body figure.rancho-figure.section-1d-human-structure-capture {{
+  margin: 0;
+  max-width: 100%;
+}}
+.section-bundle-body figure.rancho-figure.section-1d-human-structure-capture img {{
+  width: 100%;
+  max-width: 4.0in;
+  max-height: 3.25in;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}}
+.section-bundle-body .section-1d-confidence-legend {{
+  font-size: 10pt;
+  line-height: 1.3;
+}}
+.section-bundle-body .section-1d-confidence-legend .legend-title {{
+  font-weight: 700;
+  font-size: 10.5pt;
+  margin-bottom: 4pt;
+}}
+.section-bundle-body .section-1d-confidence-legend .legend-row {{
+  margin: 1.5pt 0;
+  font-size: 10pt;
+}}
+.section-bundle-body .section-1d-confidence-legend .swatch {{
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.35em;
+  vertical-align: middle;
+}}
+.section-bundle-body .section-1d-confidence-legend .swatch-very-high {{ background: #0053D6; }}
+.section-bundle-body .section-1d-confidence-legend .swatch-high {{ background: #65CBF3; }}
+.section-bundle-body .section-1d-confidence-legend .swatch-low {{ background: #FFDB13; }}
+.section-bundle-body .section-1d-confidence-legend .swatch-very-low {{ background: #FF7D45; }}
+.section-bundle-body .section-1d-blurb {{
+  font-size: 9.5pt;
+  line-height: 1.35;
+  color: {REPORT_STYLE.brown_body};
+}}
 @media (max-width: 900px) {{
   .section-preview-body, .report-page {{
     max-width: 100%;
@@ -870,6 +950,7 @@ def _render_block(block: ReportContentBlock) -> str:
             if (
                 caption
                 and block.presentation_role != "ucsc_conservation_figure"
+                and not str(block.presentation_role or "").startswith("section_1d_")
                 and (
                     not str(block.presentation_role or "").startswith("section_1c_")
                     or block.presentation_role == "section_1c_pdb_official_image"
@@ -890,16 +971,26 @@ def _render_block(block: ReportContentBlock) -> str:
             link = block.links[0]
             label = _escape(link.get("label") or block.text or link.get("url") or "link")
             url = _escape(link.get("url") or "#")
-            line_class = "ucsc-transcript-line"
-            link_class = "ucsc-transcript-link"
-            if str(block.presentation_role or "").startswith("section_1c_"):
-                line_class = "section-1c-link-line"
-                link_class = "section-1c-link"
-            parts.append(
-                f'<p class="{line_class}">'
-                f'<a class="{link_class}" style="color:{REPORT_STYLE.orange_link};" '
-                f'href="{url}">{label}</a></p>'
-            )
+            role = str(block.presentation_role or "")
+            if role.startswith("section_1d_"):
+                prefix = _escape(block.text or "")
+                parts.append(
+                    f'<p class="section-1d-link-line">'
+                    f"{prefix}"
+                    f'<a class="section-1d-link" style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
+            else:
+                line_class = "ucsc-transcript-line"
+                link_class = "ucsc-transcript-link"
+                if role.startswith("section_1c_"):
+                    line_class = "section-1c-link-line"
+                    link_class = "section-1c-link"
+                parts.append(
+                    f'<p class="{line_class}">'
+                    f'<a class="{link_class}" style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
         else:
             parts.append("<ul>")
             for link in block.links:
@@ -1102,6 +1193,86 @@ def render_section_1c_subsection_segments(sub: ReportSubsection) -> list[str]:
     return rendered
 
 
+def _render_section_1d_confidence_legend(block: ReportContentBlock) -> str:
+    """Deterministic report-side pLDDT color key (title + four rows)."""
+    _ = block
+    return (
+        '<div class="section-1d-confidence-legend">'
+        '<div class="legend-title">Model Confidence</div>'
+        '<div class="legend-row">'
+        '<span class="swatch swatch-very-high"></span>'
+        "Very high (pLDDT &gt; 90)</div>"
+        '<div class="legend-row">'
+        '<span class="swatch swatch-high"></span>'
+        "High (90 &gt; pLDDT &gt; 70)</div>"
+        '<div class="legend-row">'
+        '<span class="swatch swatch-low"></span>'
+        "Low (70 &gt; pLDDT &gt; 50)</div>"
+        '<div class="legend-row">'
+        '<span class="swatch swatch-very-low"></span>'
+        "Very low (pLDDT &lt; 50)</div>"
+        "</div>"
+    )
+
+
+def _render_section_1d_confidence_blurb() -> str:
+    return (
+        '<div class="section-1d-blurb">'
+        "AlphaFold produces a per-residue model confidence score (pLDDT) "
+        "between 0 and 100. Some regions below 50 pLDDT may be unstructured "
+        "in isolation."
+        "</div>"
+    )
+
+
+def _render_section_1d_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render 1d blocks; pair capture + legend into one PDF-stable visual table."""
+    parts: list[str] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        role = str(block.presentation_role or "")
+        if role == "section_1d_human_structure_capture":
+            legend = None
+            if index + 1 < len(blocks) and (
+                blocks[index + 1].presentation_role == "section_1d_confidence_legend"
+            ):
+                legend = blocks[index + 1]
+                index += 1
+            if legend is None:
+                # Capture without legend is incomplete; still emit the image alone.
+                parts.append(_render_block(block))
+            else:
+                parts.append(
+                    '<table class="section-1d-visual-table">'
+                    "<colgroup>"
+                    '<col class="section-1d-model-col" />'
+                    '<col class="section-1d-confidence-col" />'
+                    '<col class="section-1d-blurb-col" />'
+                    "</colgroup>"
+                    "<tr>"
+                    f'<td class="section-1d-model-cell">{_render_block(block)}</td>'
+                    f'<td class="section-1d-confidence-cell">'
+                    f"{_render_section_1d_confidence_legend(legend)}</td>"
+                    f'<td class="section-1d-blurb-cell">'
+                    f"{_render_section_1d_confidence_blurb()}</td>"
+                    "</tr></table>"
+                )
+        elif role == "section_1d_confidence_legend":
+            # Legend-only visuals are not accepted; skip standalone emission.
+            pass
+        elif role == "section_1d_species_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-1d-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        else:
+            parts.append(_render_block(block))
+        index += 1
+    return "\n".join(parts)
+
+
 def _render_subsection(sub: ReportSubsection) -> str:
     heading = f"{sub.key}. {sub.title}"
     subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
@@ -1116,6 +1287,8 @@ def _render_subsection(sub: ReportSubsection) -> str:
     if sub.presentation_blocks:
         if sub.key == "c":
             parts.append(_render_section_1c_grouped_blocks(list(sub.presentation_blocks)))
+        elif sub.key == "d":
+            parts.append(_render_section_1d_blocks(list(sub.presentation_blocks)))
         else:
             for block in sub.presentation_blocks:
                 parts.append(_render_block(block))

@@ -1,4 +1,4 @@
-"""Section-scoped dossier generation for curator review (Sections 1a / 1b / 1c).
+"""Section-scoped dossier generation for curator review (Sections 1a / 1b / 1c / 1d).
 
 Builds a standalone Section 1 document without LLM synthesis or full-report
 rendering. Provenance IDs live only in the audit JSON; polished outputs use
@@ -39,6 +39,10 @@ from gene_dossier.report_schema import (
     infer_chromosome,
 )
 from gene_dossier.section_1c import node_generate_section_1c_derived_artifacts
+from gene_dossier.section_1d import (
+    evaluate_section_1d_reference_genes_acceptance,
+    node_generate_section_1d_derived_artifacts,
+)
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -52,13 +56,14 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1a": set(),
     "1b": {"UCSC"},
     "1c": {"CDD", "PDBe"},
+    "1d": {"AlphaFold"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -81,6 +86,17 @@ _SECTION_1C_REF_SUFFIX_BY_ROLE = {
     "section_1c_pdb_link": "summary",
     "section_1c_pdb_official_image": "official-image",
 }
+
+_SECTION_1D_REF_SUFFIX_BY_ROLE = {
+    "section_1d_species_link": "summary",
+    "section_1d_human_structure_capture": "viewer-capture",
+}
+
+# Status lines and the deterministic report-side legend are visible but are not
+# source-backed structural evidence.
+_SECTION_1D_NON_EVIDENCE_ROLES = frozenset(
+    {"section_1d_species_status", "section_1d_confidence_legend"}
+)
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -122,7 +138,7 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
     raw = [str(k).strip().lower() for k in (section_keys or [])]
     if not raw:
         raise SectionBundleError(
-            "At least one section key is required (1a, 1b, and/or 1c)."
+            "At least one section key is required (1a, 1b, 1c, and/or 1d)."
         )
     normalized: list[str] = []
     for key in raw:
@@ -132,6 +148,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "1b"
         elif key in {"1.c", "c"}:
             key = "1c"
+        elif key in {"1.d", "d"}:
+            key = "1d"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -143,10 +161,17 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
 
 
 def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
-    """Non-identity sources required by the selected sections."""
+    """Non-identity sources required by the selected sections.
+
+    Section 1d declares AlphaFold as a dependency for accounting, but the
+    generic human-only AlphaFold client must **not** be invoked when 1d is
+    selected — ``section_1d`` owns those network requests exclusively.
+    """
     needed: set[str] = set()
     for key in section_keys:
         needed |= SECTION_SOURCE_DEPENDENCIES.get(key, set())
+    if "1d" in section_keys:
+        needed.discard("AlphaFold")
     return sorted(needed)
 
 
@@ -168,11 +193,23 @@ def section_1c_evidence_ref(block: ReportContentBlock) -> str:
     return f"ev-1c-{key}-{suffix}"
 
 
+def section_1d_evidence_ref(block: ReportContentBlock) -> str:
+    """Dynamic Section 1d opaque ref from safe item key + role suffix."""
+    role = str(block.presentation_role or "")
+    suffix = _SECTION_1D_REF_SUFFIX_BY_ROLE.get(role)
+    if not suffix:
+        raise SectionBundleError(f"Section 1d role is not dynamically referenceable: {role!r}")
+    key = validate_safe_item_key(block.presentation_item_key)
+    return f"ev-1d-{key}-{suffix}"
+
+
 def opaque_evidence_ref(section_key: str, block: ReportContentBlock, *, index: int) -> str:
     """Deterministic opaque ref from section + presentation role / kind."""
     role = block.presentation_role
     if section_key == "1c" and role in _SECTION_1C_REF_SUFFIX_BY_ROLE:
         return section_1c_evidence_ref(block)
+    if section_key == "1d" and role in _SECTION_1D_REF_SUFFIX_BY_ROLE:
+        return section_1d_evidence_ref(block)
     mapped = _OPAQUE_REF_BY_ROLE.get((section_key, role)) if role else None
     if mapped:
         return mapped
@@ -420,10 +457,17 @@ def assign_opaque_refs(
     blocks: Sequence[ReportContentBlock],
     provenance: dict[str, Any] | None = None,
 ) -> tuple[list[ReportContentBlock], dict[str, dict[str, list[str]]]]:
-    """Attach deterministic evidence_ref and build audit map entries."""
+    """Attach deterministic evidence_ref and build audit map entries.
+
+    Blocks with ``presentation_role == section_1d_species_status`` remain visible
+    but receive ``evidence_ref=None`` and are omitted from ``evidence_reference_map``.
+    """
     polished: list[ReportContentBlock] = []
     ref_map: dict[str, dict[str, list[str]]] = {}
     for index, block in enumerate(blocks):
+        if block.presentation_role in _SECTION_1D_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
         # One item can carry several official images (e.g. two Cadherin_C
         # structure thumbnails), so repeats take a deterministic ordinal rather
@@ -477,6 +521,7 @@ def build_section_bundle_document(
     evidence_records: Sequence[EvidenceRecord],
     api_runs: Sequence[Any] | None = None,
     raw_artifacts: Sequence[Any] | None = None,
+    section_status_by_key: dict[str, Any] | None = None,
 ) -> tuple[ReportDocument, dict[str, Any], dict[str, Any]]:
     """Build a Section 1-only document plus presentation and audit payloads."""
     keys = validate_section_keys(section_keys)
@@ -487,6 +532,7 @@ def build_section_bundle_document(
         api_runs=api_runs,
         raw_artifacts=raw_artifacts,
     )
+    status_by_key = section_status_by_key or {}
 
     evidence_reference_map: dict[str, dict[str, list[str]]] = {}
     diagnostics: list[dict[str, Any]] = []
@@ -501,6 +547,7 @@ def build_section_bundle_document(
             section_key=section_key,
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
+            section_status=status_by_key.get(section_key),
         )
         for diag in result.diagnostics:
             diagnostics.append(
@@ -617,6 +664,7 @@ def build_section_bundle_document(
         "evidence_reference_map": evidence_reference_map,
         "diagnostics": diagnostics,
         "figure_notes": figure_notes,
+        "section_1d_status": status_by_key.get("1d"),
     }
     return document, presentation, audit
 
@@ -647,12 +695,36 @@ def render_section_bundle_html(
     # Section 1c pages past the first are emitted as sibling report pages so the
     # C-terminal family block and the PDB group each start on a real new page in
     # HTML, PDF, and the rasterized PNGs alike.
+    # When Section 1d is also selected, append its subsection HTML to the *last*
+    # 1c segment (PDB page) via structured parts — never before continuation pages.
     continuation_segments: list[str] = []
+    subsection_d = next((s for s in major.subsections if s.key == "d"), None)
+    subsection_c = next((s for s in major.subsections if s.key == "c"), None)
+    merge_1d_onto_pdb = bool(
+        subsection_c
+        and subsection_c.presentation_blocks
+        and subsection_d
+        and subsection_d.presentation_blocks
+    )
+
     for sub in major.subsections:
+        if sub.key == "d" and merge_1d_onto_pdb:
+            continue
         if sub.key == "c" and sub.presentation_blocks:
             segments = render_section_1c_subsection_segments(sub)
             body_parts.extend(segments[:1])
-            continuation_segments.extend(segments[1:])
+            rest = list(segments[1:])
+            if merge_1d_onto_pdb and subsection_d is not None:
+                d_html = _render_subsection(subsection_d)
+                if rest:
+                    last_1c_segment_parts = [rest[-1], d_html]
+                    rest[-1] = "\n".join(last_1c_segment_parts)
+                else:
+                    # Focused-ish path: only one 1c segment — append 1d there.
+                    if body_parts:
+                        # Last emitted piece is the first (only) 1c segment.
+                        body_parts[-1] = "\n".join([body_parts[-1], d_html])
+            continuation_segments.extend(rest)
         else:
             body_parts.append(_render_subsection(sub))
     body_parts.append("</section>")
@@ -913,6 +985,8 @@ def run_section_bundle(
             "raw_artifacts",
             "evidence_records",
             "errors",
+            "section_1d_status",
+            "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
                 state[key] = preloaded_state[key]  # type: ignore[literal-required]
@@ -924,6 +998,7 @@ def run_section_bundle(
     created_outputs: dict[str, Path] = {}
     errors: list[str] = []
     focused_1c = keys == ["1c"]
+    focused_1d = keys == ["1d"]
 
     try:
         if call_network:
@@ -957,8 +1032,24 @@ def run_section_bundle(
                     persist_db=persist_db,
                     transient=transient,
                 )
+            if "1d" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_1d_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                )
 
         evidence = list(state.get("evidence_records") or [])
+        section_status_by_key: dict[str, Any] = {}
+        if state.get("section_1d_status"):
+            section_status_by_key["1d"] = state["section_1d_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -966,14 +1057,20 @@ def run_section_bundle(
             evidence_records=evidence,
             api_runs=list(state.get("api_runs") or []),
             raw_artifacts=list(state.get("raw_artifacts") or []),
+            section_status_by_key=section_status_by_key,
         )
         coverage = coverage_updates_from_state(state)
+        # Include Section 1d coverage diagnostics emitted outside the generic client.
+        for row in list(state.get("coverage") or []):
+            if getattr(row, "source_name", None) == "AlphaFold":
+                coverage.append(row)
         audit["coverage"] = [
             {
                 "source_name": row.source_name,
                 "status": row.status.value if hasattr(row.status, "value") else str(row.status),
                 "evidence_record_count": row.evidence_record_count,
                 "error_message": row.error_message,
+                "notes": getattr(row, "notes", None),
             }
             for row in coverage
         ]
@@ -1032,6 +1129,11 @@ def run_section_bundle(
                 audit["section_1c"] = section_1c_audit
                 if reasons:
                     errors.extend(reasons)
+        if "1d" in keys and state.get("section_1d_status"):
+            audit["section_1d"] = sanitize_credentials(
+                (state.get("section_1d_status") or {}).get("audit")
+                or state.get("section_1d_status")
+            )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
             audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
@@ -1045,8 +1147,54 @@ def run_section_bundle(
             write_pdf=write_pdf,
             dpi=dpi,
             allow_rerender=allow_rerender,
-            include_major_heading=not focused_1c,
+            include_major_heading=not (focused_1c or focused_1d),
         )
+
+        if "1d" in keys and acceptance_profile == "section_1d_reference_genes":
+            section_status = dict(state.get("section_1d_status") or {})
+            d_blocks: list[ReportContentBlock] = []
+            for sec in document.sections:
+                for sub in sec.subsections:
+                    if sub.key == "d":
+                        d_blocks = list(sub.presentation_blocks or [])
+            html_text = None
+            html_path = created_outputs.get("section_1_html")
+            if html_path and Path(html_path).is_file():
+                html_text = Path(html_path).read_text(encoding="utf-8")
+            pdf_path = created_outputs.get("section_1_pdf")
+            reasons = evaluate_section_1d_reference_genes_acceptance(
+                gene_symbol=gene,
+                section_status=section_status,
+                presentation_blocks=d_blocks,
+                html=html_text,
+                pdf_path=Path(pdf_path) if pdf_path else None,
+                selected_section_keys=keys,
+            )
+            section_1d_audit = dict(audit.get("section_1d") or {})
+            section_1d_audit["acceptance_validation"] = {
+                "profile": acceptance_profile,
+                "status": "failed" if reasons else "success",
+                "reasons": reasons,
+            }
+            audit["section_1d"] = sanitize_credentials(section_1d_audit)
+            if reasons:
+                errors.extend(reasons)
+                audit["errors"] = list(
+                    dict.fromkeys([*(audit.get("errors") or []), *errors])
+                )
+            audit_path = created_outputs.get("section_1_audit_json")
+            if audit_path:
+                Path(audit_path).write_text(
+                    json.dumps(
+                        sanitize_credentials(audit),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
         finalize_section_bundle_run(
             dossier_run_id=run_id,
             status="completed",

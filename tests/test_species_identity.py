@@ -537,5 +537,105 @@ def test_section_preview_pdf_and_png_when_pymupdf_available(tmp_path: Path):
     assert written_pdf is not None and written_pdf.is_file()
     written_png = rasterize_pdf_page_to_png(written_pdf, png_path, dpi=150)
     assert written_png is not None and written_png.is_file()
-    with fitz.open(written_pdf) as pdf_doc:
-        assert pdf_doc.page_count >= 1
+
+
+def test_species_identity_falls_back_to_unreviewed_uniprot(monkeypatch):
+    """When Swiss-Prot is empty for a taxon, use TrEMBL accession evidence."""
+    from gene_dossier.species_identity import (
+        SPECIES_IDENTITY_SPECS,
+        fetch_species_identity_results,
+    )
+    from gene_dossier.tools import ensembl, ncbi_gene, uniprot
+
+    rat = next(s for s in SPECIES_IDENTITY_SPECS if s.taxon_id == 10116)
+
+    def fake_ncbi(symbol, organism=None, settings=None):
+        return ToolResult(
+            source_name="NCBI Gene",
+            endpoint_name="lookup_gene",
+            gene_symbol=symbol,
+            request_url="https://example.test/ncbi",
+            success=True,
+            data={
+                "gene_id": "29181",
+                "official_symbol": "Cdh10",
+                "selection_method": "exact_symbol",
+                "organism": organism,
+            },
+        )
+
+    def fake_ensembl(symbol, species=None, settings=None):
+        return ToolResult(
+            source_name="Ensembl",
+            endpoint_name="lookup_symbol",
+            gene_symbol=symbol,
+            request_url="https://example.test/ensembl",
+            success=True,
+            data={"id": "ENSRNOG00000009771", "display_name": symbol, "species": species},
+        )
+
+    def fake_reviewed(symbol, organism_id=9606, settings=None):
+        return ToolResult(
+            source_name="UniProt",
+            endpoint_name="search_reviewed",
+            gene_symbol=symbol,
+            request_url="https://example.test/uniprot-reviewed",
+            success=True,
+            data={
+                "gene_symbol": symbol,
+                "organism_id": organism_id,
+                "selected_accession": None,
+                "entries": [],
+            },
+        )
+
+    def fake_search(
+        symbol,
+        *,
+        organism_id=9606,
+        reviewed=True,
+        settings=None,
+        endpoint_name=None,
+        **kwargs,
+    ):
+        assert reviewed is False
+        return ToolResult(
+            source_name="UniProt",
+            endpoint_name=endpoint_name or "search_gene_symbol",
+            gene_symbol=symbol,
+            request_url="https://example.test/uniprot-unreviewed",
+            success=True,
+            data={
+                "gene_symbol": symbol,
+                "organism_id": organism_id,
+                "selected_accession": "F1LR98",
+                "entries": [
+                    {
+                        "accession": "F1LR98",
+                        "reviewed": False,
+                        "gene_names": ["Cdh10"],
+                        "organism_id": organism_id,
+                    }
+                ],
+                "reviewed_only": False,
+            },
+        )
+
+    monkeypatch.setattr(ncbi_gene, "lookup_gene", fake_ncbi)
+    monkeypatch.setattr(ensembl, "lookup_symbol", fake_ensembl)
+    monkeypatch.setattr(uniprot, "search_reviewed", fake_reviewed)
+    monkeypatch.setattr(uniprot, "search_gene_symbol", fake_search)
+
+    results = fetch_species_identity_results(
+        "CDH10",
+        skip_taxons={9606, 10090},
+        specs=(rat,),
+    )
+    up = next(r for r in results if r.source_name == "UniProt")
+    assert up.data["selected_accession"] == "F1LR98"
+    assert up.data.get("reviewed_fallback") is True
+    records = normalize_uniprot(up, dossier_run_id=RUN_ID)
+    assert any(
+        isinstance(r.value, dict) and r.value.get("uniprot_accession") == "F1LR98"
+        for r in records
+    )

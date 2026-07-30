@@ -36,6 +36,10 @@ ALLOWED_LINK_HOSTS = frozenset(
         "www.ensembl.org",
         "www.uniprot.org",
         "genome.ucsc.edu",
+        "alphafold.ebi.ac.uk",
+        "www.alphafold.ebi.ac.uk",
+        "alphafold.com",
+        "www.alphafold.com",
     }
 )
 
@@ -89,6 +93,7 @@ def build_section_presentation(
     section_key: str,
     gene_symbol: str,
     evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
 ) -> SectionPresentationResult:
     """Build polished presentation blocks for a known section key.
 
@@ -121,6 +126,18 @@ def build_section_presentation(
         return build_known_structure_blocks(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
+        )
+    if key in {
+        "1d",
+        "1.d",
+        "alphafold",
+        "alphafold_prediction",
+        "alphafold-protein-structure-prediction",
+    }:
+        return build_alphafold_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
         )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
@@ -2271,14 +2288,208 @@ def build_known_structure_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+SECTION_1D_CONFIDENCE_BLURB = (
+    "AlphaFold produces a per-residue model confidence score (pLDDT) between 0 and 100. "
+    "Some regions below 50 pLDDT may be unstructured in isolation."
+)
+
+SECTION_1D_CONFIDENCE_LEGEND_TEXT = (
+    "Model Confidence\n"
+    "Very high (pLDDT > 90)\n"
+    "High (90 > pLDDT > 70)\n"
+    "Low (70 > pLDDT > 50)\n"
+    "Very low (pLDDT < 50)\n\n"
+    f"{SECTION_1D_CONFIDENCE_BLURB}"
+)
+
+
+def build_alphafold_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 1d polished AlphaFold blocks (human image + species links)."""
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    slots = list(status.get("species_slots") or [])
+
+    predictions_by_species: dict[str, EvidenceRecord] = {}
+    for rec in records:
+        if rec.source_name != "AlphaFold" or rec.fact_type != "alphafold_species_prediction":
+            continue
+        value = rec.value if isinstance(rec.value, dict) else {}
+        species_key = str(value.get("species_key") or rec.species or "").lower()
+        if species_key:
+            predictions_by_species[species_key] = rec
+
+    capture = next(
+        (
+            rec
+            for rec in records
+            if rec.source_name == "AlphaFold"
+            and rec.fact_type == "alphafold_official_viewer_capture"
+        ),
+        None,
+    )
+
+    # Default slot order when status is absent: human → rat → mouse from predictions.
+    if not slots:
+        for species_key, label in (("human", "Human"), ("rat", "Rat"), ("mouse", "Mouse")):
+            rec = predictions_by_species.get(species_key)
+            if rec is None:
+                continue
+            value = rec.value if isinstance(rec.value, dict) else {}
+            slots.append(
+                {
+                    "species_key": species_key,
+                    "species_label": label,
+                    "display_symbol": value.get("display_symbol") or gene_symbol,
+                    "accession": value.get("uniprot_accession"),
+                    "status": "selected",
+                    "model_entity_id": value.get("model_entity_id"),
+                    "entry_url": value.get("entry_url"),
+                    "presentation_item_key": value.get("presentation_item_key"),
+                }
+            )
+
+    blocks: list[ReportContentBlock] = []
+    human_rendered = False
+    for slot in slots:
+        species_key = str(slot.get("species_key") or "").lower()
+        label = str(slot.get("species_label") or species_key.title())
+        symbol = str(slot.get("display_symbol") or gene_symbol)
+        status_code = str(slot.get("status") or "")
+        item_key = str(
+            slot.get("presentation_item_key")
+            or f"alphafold-{species_key}-unavailable"
+        )
+
+        if status_code == "selected":
+            rec = predictions_by_species.get(species_key)
+            value = rec.value if rec and isinstance(rec.value, dict) else {}
+            url = str(slot.get("entry_url") or value.get("entry_url") or "").strip()
+            if not url:
+                diagnostics.append(
+                    PresentationDiagnostic(
+                        f"{species_key}_link",
+                        "selected prediction missing entry URL",
+                        "warning",
+                    )
+                )
+                blocks.append(
+                    ReportContentBlock(
+                        kind="narrative",
+                        text=f"{label} {symbol}: AlphaFold prediction not available",
+                        presentation_role="section_1d_species_status",
+                        presentation_item_key=item_key,
+                    )
+                )
+                continue
+            link_block = ReportContentBlock(
+                kind="link",
+                text=f"{label} {symbol}: ",
+                links=[
+                    {
+                        "label": "AlphaFold Protein Structure Link",
+                        "url": url,
+                    }
+                ],
+                presentation_role="section_1d_species_link",
+                presentation_item_key=item_key,
+                source_ids=[rec.source_id] if rec and rec.source_id else [],
+                evidence_record_ids=[rec.id] if rec and rec.id else [],
+            )
+            blocks.append(link_block)
+
+            if species_key == "human" and not human_rendered:
+                human_rendered = True
+                fig = None
+                if capture is not None:
+                    fig = _figure_block_from_record(
+                        capture,
+                        role="section_1d_human_structure_capture",
+                        caption="",
+                        diagnostics=diagnostics,
+                    )
+                    if fig is not None:
+                        fig = fig.model_copy(
+                            update={
+                                "presentation_item_key": item_key,
+                            }
+                        )
+                        blocks.append(fig)
+                        blocks.append(
+                            ReportContentBlock(
+                                kind="narrative",
+                                text=SECTION_1D_CONFIDENCE_LEGEND_TEXT,
+                                presentation_role="section_1d_confidence_legend",
+                                presentation_item_key=f"{item_key}-legend",
+                            )
+                        )
+                if fig is None:
+                    diagnostics.append(
+                        PresentationDiagnostic(
+                            "viewer_capture",
+                            "human AlphaFold viewer capture unavailable",
+                            "warning",
+                        )
+                    )
+                    blocks.append(
+                        ReportContentBlock(
+                            kind="narrative",
+                            text=(
+                                "AlphaFold structure visualization temporarily "
+                                "unavailable"
+                            ),
+                            presentation_role="section_1d_species_status",
+                            presentation_item_key=f"{item_key}-visualization-unavailable",
+                        )
+                    )
+            continue
+
+        # Unavailable / failed — visible status line, no evidence refs.
+        text = slot.get("message") or f"{label} {symbol}: AlphaFold prediction not available"
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=str(text),
+                presentation_role="section_1d_species_status",
+                presentation_item_key=item_key,
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic(
+                f"{species_key}_status",
+                str(status_code or "unavailable"),
+                "info",
+            )
+        )
+
+    if not blocks:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_1d",
+                "no AlphaFold species slots or predictions available",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
     "SECTION_1C_BOLD_LEAD_PHRASES",
     "SECTION_1C_CDD_LINK_LABEL",
+    "SECTION_1D_CONFIDENCE_BLURB",
+    "SECTION_1D_CONFIDENCE_LEGEND_TEXT",
     "UCSC_STABLE_INTRO",
     "PresentationDiagnostic",
     "SectionPresentationResult",
+    "build_alphafold_blocks",
     "build_conservation_blocks",
     "build_gene_aliases_blocks",
     "build_known_structure_blocks",

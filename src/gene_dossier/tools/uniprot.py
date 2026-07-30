@@ -290,16 +290,52 @@ def search_reviewed(
           "raw": <full search json>,
         }
     """
+    return search_gene_symbol(
+        gene_symbol,
+        organism_id=organism_id,
+        reviewed=True,
+        fields=fields,
+        size=size,
+        settings=settings,
+        endpoint_name="search_reviewed",
+    )
+
+
+def search_gene_symbol(
+    gene_symbol: str,
+    *,
+    organism_id: int = ORGANISM_HUMAN,
+    reviewed: bool | None = True,
+    fields: str = DEFAULT_FIELDS,
+    size: int = 25,
+    settings: Settings | None = None,
+    endpoint_name: str | None = None,
+) -> ToolResult:
+    """Search UniProtKB for an exact gene symbol + organism.
+
+    ``reviewed=True`` restricts to Swiss-Prot; ``False`` allows TrEMBL;
+    ``None`` omits the reviewed filter entirely.
+    """
     cfg = settings or get_settings()
-    query = build_search_query(gene_symbol, organism_id=organism_id, reviewed=True)
+    if reviewed is None:
+        query = (
+            f"(gene_exact:{gene_symbol}) AND (organism_id:{organism_id})"
+        )
+    else:
+        query = build_search_query(
+            gene_symbol, organism_id=organism_id, reviewed=reviewed
+        )
     params = {
         "query": query,
         "format": "json",
         "fields": fields,
         "size": str(size),
     }
+    name = endpoint_name or (
+        "search_reviewed" if reviewed else "search_gene_symbol"
+    )
     result = _request_json(
-        endpoint_name="search_reviewed",
+        endpoint_name=name,
         gene_symbol=gene_symbol,
         path="/uniprotkb/search",
         params=params,
@@ -313,7 +349,7 @@ def search_reviewed(
     selected = entries[0]["accession"] if entries else None
 
     return _tool_result(
-        endpoint_name="search_reviewed",
+        endpoint_name=name,
         gene_symbol=gene_symbol,
         request_url=result.request_url,
         request_params=result.request_params,
@@ -325,6 +361,7 @@ def search_reviewed(
             "query": query,
             "selected_accession": selected,
             "entries": entries,
+            "reviewed_only": reviewed,
             "raw": raw,
         },
     )
@@ -339,6 +376,7 @@ __all__ = [
     "DEFAULT_FIELDS",
     "build_search_query",
     "search_reviewed",
+    "search_gene_symbol",
     "extract_results",
     "summarize_entry",
 ]

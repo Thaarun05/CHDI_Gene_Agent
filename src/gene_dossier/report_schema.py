@@ -88,6 +88,11 @@ PresentationRole = Literal[
     "section_1c_pdb_domain_focus_figure",
     "section_1c_pdb_official_image",
     "section_1c_image_attribution",
+    "section_1d_species_link",
+    "section_1d_species_status",
+    "section_1d_human_structure_capture",
+    "section_1d_confidence_legend",
+    "section_1d_image_attribution",
 ]
 
 

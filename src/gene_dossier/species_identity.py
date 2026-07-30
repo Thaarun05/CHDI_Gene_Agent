@@ -8,6 +8,8 @@ Workflow:
 2. Resolve the species-specific canonical symbol from NCBI (or fall back).
 3. Ensembl lookup/symbol with that resolved symbol.
 4. UniProt reviewed search with that resolved symbol + taxon ID.
+   If Swiss-Prot returns no accession, fall back to an unreviewed
+   (TrEMBL) UniProtKB search for the same symbol + taxon.
 
 ToolResult.gene_symbol always retains the dossier query symbol. The
 species-specific symbol is carried in request_params / payload metadata as
@@ -215,6 +217,47 @@ def fetch_species_identity_results(
             data["query_symbol"] = query_symbol
             data["resolved_symbol"] = resolved
             up = up.model_copy(update={"data": data})
+        # When no Swiss-Prot hit exists for this taxon (e.g. rat CDH10 → TrEMBL
+        # F1LR98), fall back to an unreviewed UniProtKB search so Section 1a/1d
+        # share the same structured identity accession evidence.
+        selected = None
+        if isinstance(up.data, dict):
+            selected = up.data.get("selected_accession")
+        if up.success and not selected:
+            fallback = uniprot.search_gene_symbol(
+                resolved,
+                organism_id=spec.taxon_id,
+                reviewed=False,
+                settings=cfg,
+                endpoint_name=f"search_unreviewed_{spec.common_name}",
+            )
+            fallback = _tag_tool_result(
+                fallback,
+                endpoint_name=f"search_unreviewed_{spec.common_name}",
+                query_symbol=query_symbol,
+                resolved_symbol=resolved,
+                extra_params={
+                    "common_name": spec.common_name,
+                    "taxon_id": spec.taxon_id,
+                    "scientific_name": spec.scientific_name,
+                    "reviewed_fallback": True,
+                },
+            )
+            if isinstance(fallback.data, dict):
+                data = dict(fallback.data)
+                data.setdefault("organism_id", spec.taxon_id)
+                data.setdefault("scientific_name", spec.scientific_name)
+                data.setdefault("common_name", spec.common_name)
+                data["query_gene_symbol"] = query_symbol
+                data["species_gene_symbol"] = resolved
+                data["query_symbol"] = query_symbol
+                data["resolved_symbol"] = resolved
+                data["reviewed_fallback"] = True
+                fallback = fallback.model_copy(update={"data": data})
+            if fallback.success and isinstance(fallback.data, dict) and fallback.data.get(
+                "selected_accession"
+            ):
+                up = fallback
         results.append(up)
 
     return results
