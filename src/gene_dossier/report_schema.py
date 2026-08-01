@@ -93,6 +93,10 @@ PresentationRole = Literal[
     "section_1d_human_structure_capture",
     "section_1d_confidence_legend",
     "section_1d_image_attribution",
+    "section_1e_narrative",
+    "section_1e_ortholog_capture",
+    "section_1e_fallback_table",
+    "section_1e_attribution",
 ]
 
 

@@ -1255,6 +1255,490 @@ def _fetch_cdd_family_enrichment(
     return api, artifact, meta, parsed
 
 
+_ARCH_LEFT_MARGIN = 130
+_ARCH_RIGHT_MARGIN = 40
+_ARCH_TOP_MARGIN = 28
+_ARCH_PLOT_WIDTH = 900
+_ARCH_LANE_HEIGHT = 42
+_ARCH_BAR_HEIGHT = 16
+_ARCH_QUERY_HEIGHT = 10
+_ARCH_RENDERER_VERSION = "cdd_domain_architecture_render_v1"
+
+
+def _architecture_x(residue: float, *, protein_length: int) -> float:
+    clamped = max(0.0, min(float(residue), float(protein_length)))
+    return _ARCH_LEFT_MARGIN + (clamped / float(protein_length)) * _ARCH_PLOT_WIDTH
+
+
+def _domain_as_dict(item: Any) -> dict[str, Any] | None:
+    if isinstance(item, EvidenceRecord):
+        value = item.value if isinstance(item.value, dict) else {}
+        return {
+            **value,
+            "evidence_record_id": item.id,
+            "from_residue": value.get("from_residue"),
+            "to_residue": value.get("to_residue"),
+            "domain_accession": value.get("domain_accession"),
+            "domain_short_name": value.get("domain_short_name"),
+            "superfamily": value.get("superfamily"),
+        }
+    if isinstance(item, dict):
+        return item
+    return None
+
+
+def _hit_lane_class(domain: dict[str, Any]) -> str:
+    """Classify a conserved-domain hit as specific or superfamily for architecture lanes."""
+    acc = str(domain.get("domain_accession") or "").strip().lower()
+    if acc.startswith("cl"):
+        return "superfamily"
+    raw = domain.get("raw") if isinstance(domain.get("raw"), dict) else {}
+    hit_type = str(
+        domain.get("hit_type")
+        or raw.get("Hit type")
+        or raw.get("hit type")
+        or ""
+    ).strip().lower()
+    if hit_type in {"superfamily", "superfamily hit"}:
+        return "superfamily"
+    sf = str(domain.get("superfamily") or "").strip().lower()
+    if sf in {"superfamily", "superfamily hit"}:
+        return "superfamily"
+    return "specific"
+
+
+def _companion_superfamily_from_hit(domain: dict[str, Any]) -> dict[str, Any] | None:
+    if _hit_lane_class(domain) != "specific":
+        return None
+    start = _as_int(domain.get("from_residue"))
+    end = _as_int(domain.get("to_residue"))
+    if start is None or end is None:
+        return None
+    sf = str(domain.get("superfamily") or "").strip()
+    match = re.search(r"\b(cl\d+)\b", sf, re.IGNORECASE)
+    if not match:
+        return None
+    accession = match.group(1)
+    name_match = re.search(r"\bcl\d+\b\s*[-:,]?\s*([A-Za-z0-9_./+-]+)", sf, re.IGNORECASE)
+    short_name = name_match.group(1) if name_match else accession
+    if short_name.lower() in {"superfamily", "hit", "specific"}:
+        short_name = accession
+    return {
+        "domain_accession": accession,
+        "domain_short_name": short_name,
+        "from_residue": start,
+        "to_residue": end,
+        "superfamily": accession,
+        "derived_from_specific_hit": True,
+        "evidence_record_id": domain.get("evidence_record_id"),
+    }
+
+
+def _feature_marker_positions(feature: dict[str, Any]) -> list[int]:
+    start = _as_int(feature.get("from_residue"))
+    end = _as_int(feature.get("to_residue"))
+    if start is not None and end is not None:
+        return [int(round((start + end) / 2))]
+    if start is not None:
+        return [start]
+    residues = str(feature.get("query_residues") or "")
+    numbers = [int(n) for n in re.findall(r"\d+", residues)]
+    return numbers
+
+
+def _architecture_lane_rows(
+    domains: Sequence[Any],
+    features: Sequence[Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build specific-hit, superfamily, and feature rows without prose-level dedup."""
+    specific: list[dict[str, Any]] = []
+    superfamily: list[dict[str, Any]] = []
+    seen_sf_keys: set[tuple[Any, ...]] = set()
+
+    for item in domains:
+        domain = _domain_as_dict(item)
+        if domain is None:
+            continue
+        start = _as_int(domain.get("from_residue"))
+        end = _as_int(domain.get("to_residue"))
+        if start is None or end is None:
+            continue
+        if end < start:
+            start, end = end, start
+        row = {
+            **domain,
+            "from_residue": start,
+            "to_residue": end,
+            "domain_short_name": domain.get("domain_short_name")
+            or domain.get("domain_accession")
+            or "domain",
+        }
+        if _hit_lane_class(domain) == "superfamily":
+            key = (row.get("domain_accession"), start, end)
+            if key not in seen_sf_keys:
+                seen_sf_keys.add(key)
+                superfamily.append(row)
+        else:
+            # Retain every specific-hit instance (repeats stay).
+            specific.append(row)
+            companion = _companion_superfamily_from_hit(row)
+            if companion is not None:
+                key = (
+                    companion.get("domain_accession"),
+                    companion["from_residue"],
+                    companion["to_residue"],
+                )
+                if key not in seen_sf_keys:
+                    seen_sf_keys.add(key)
+                    superfamily.append(companion)
+
+    feature_rows: list[dict[str, Any]] = []
+    for item in features:
+        feature = _domain_as_dict(item) if not isinstance(item, dict) else item
+        if feature is None:
+            continue
+        positions = _feature_marker_positions(feature)
+        if not positions:
+            continue
+        label = (
+            feature.get("feature_label")
+            or feature.get("feature_name")
+            or feature.get("feature_type")
+            or "feature"
+        )
+        for pos in positions:
+            feature_rows.append(
+                {
+                    **feature,
+                    "position": pos,
+                    "feature_label": label,
+                }
+            )
+    return specific, superfamily, feature_rows
+
+
+def _build_cdd_architecture_svg_bytes(
+    *,
+    protein_length: int,
+    gene_symbol: str,
+    specific_hits: Sequence[dict[str, Any]],
+    superfamily_hits: Sequence[dict[str, Any]],
+    feature_markers: Sequence[dict[str, Any]],
+) -> tuple[bytes, int, int]:
+    lanes: list[tuple[str, str]] = [("query", "Query sequence")]
+    if specific_hits:
+        lanes.append(("specific", "Specific hits"))
+    if superfamily_hits:
+        lanes.append(("superfamily", "Superfamilies"))
+    if feature_markers:
+        lanes.append(("features", "Conserved features"))
+
+    height = _ARCH_TOP_MARGIN + len(lanes) * _ARCH_LANE_HEIGHT + 36
+    width = _ARCH_LEFT_MARGIN + _ARCH_PLOT_WIDTH + _ARCH_RIGHT_MARGIN
+    parts: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{html.escape(gene_symbol)} '
+        f'CDD domain architecture">'
+        f"<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
+        f'<text x="8" y="18" font-size="12" font-family="Helvetica, Arial, sans-serif" fill="#333">'
+        f"{html.escape(gene_symbol)} domain architecture (derived)</text>"
+    ]
+
+    for idx, (lane_id, label) in enumerate(lanes):
+        y = _ARCH_TOP_MARGIN + idx * _ARCH_LANE_HEIGHT
+        mid = y + _ARCH_LANE_HEIGHT / 2
+        parts.append(
+            f'<text x="8" y="{mid + 4:.1f}" font-size="11" '
+            f'font-family="Helvetica, Arial, sans-serif" fill="#444">{html.escape(label)}</text>'
+        )
+        if lane_id == "query":
+            x0 = _architecture_x(0, protein_length=protein_length)
+            x1 = _architecture_x(protein_length, protein_length=protein_length)
+            parts.append(
+                f'<rect x="{x0:.2f}" y="{mid - _ARCH_QUERY_HEIGHT / 2:.2f}" '
+                f'width="{max(1.0, x1 - x0):.2f}" height="{_ARCH_QUERY_HEIGHT}" '
+                f'rx="3" fill="#9aa0a6"/>'
+            )
+            for tick in (1, max(1, protein_length // 4), max(1, protein_length // 2),
+                         max(1, (3 * protein_length) // 4), protein_length):
+                tx = _architecture_x(tick, protein_length=protein_length)
+                parts.append(
+                    f'<line x1="{tx:.2f}" y1="{mid + _ARCH_QUERY_HEIGHT / 2 + 2:.2f}" '
+                    f'x2="{tx:.2f}" y2="{mid + _ARCH_QUERY_HEIGHT / 2 + 8:.2f}" '
+                    f'stroke="#666" stroke-width="1"/>'
+                    f'<text x="{tx:.2f}" y="{mid + 22:.1f}" font-size="9" text-anchor="middle" '
+                    f'font-family="Helvetica, Arial, sans-serif" fill="#555">{tick}</text>'
+                )
+        elif lane_id == "specific":
+            for hit in specific_hits:
+                x0 = _architecture_x(hit["from_residue"], protein_length=protein_length)
+                x1 = _architecture_x(hit["to_residue"], protein_length=protein_length)
+                label_text = html.escape(str(hit.get("domain_short_name") or hit.get("domain_accession") or ""))
+                parts.append(
+                    f'<rect x="{x0:.2f}" y="{mid - _ARCH_BAR_HEIGHT / 2:.2f}" '
+                    f'width="{max(2.0, x1 - x0):.2f}" height="{_ARCH_BAR_HEIGHT}" '
+                    f'rx="3" fill="#2f6fed" stroke="#1d4ed8" stroke-width="1"/>'
+                    f'<text x="{(x0 + x1) / 2:.2f}" y="{mid + 4:.1f}" font-size="9" '
+                    f'text-anchor="middle" fill="#fff" '
+                    f'font-family="Helvetica, Arial, sans-serif">{label_text}</text>'
+                )
+        elif lane_id == "superfamily":
+            for hit in superfamily_hits:
+                x0 = _architecture_x(hit["from_residue"], protein_length=protein_length)
+                x1 = _architecture_x(hit["to_residue"], protein_length=protein_length)
+                label_text = html.escape(str(hit.get("domain_short_name") or hit.get("domain_accession") or ""))
+                parts.append(
+                    f'<rect x="{x0:.2f}" y="{mid - _ARCH_BAR_HEIGHT / 2:.2f}" '
+                    f'width="{max(2.0, x1 - x0):.2f}" height="{_ARCH_BAR_HEIGHT}" '
+                    f'rx="3" fill="#0f9d58" stroke="#0b7a43" stroke-width="1"/>'
+                    f'<text x="{(x0 + x1) / 2:.2f}" y="{mid + 4:.1f}" font-size="9" '
+                    f'text-anchor="middle" fill="#fff" '
+                    f'font-family="Helvetica, Arial, sans-serif">{label_text}</text>'
+                )
+        elif lane_id == "features":
+            for marker in feature_markers:
+                cx = _architecture_x(marker["position"], protein_length=protein_length)
+                parts.append(
+                    f'<circle cx="{cx:.2f}" cy="{mid:.2f}" r="5" fill="#f4b400" '
+                    f'stroke="#c48f00" stroke-width="1"/>'
+                )
+    parts.append("</svg>")
+    return "".join(parts).encode("utf-8"), width, height
+
+
+def _rasterize_cdd_architecture_png(
+    *,
+    protein_length: int,
+    gene_symbol: str,
+    specific_hits: Sequence[dict[str, Any]],
+    superfamily_hits: Sequence[dict[str, Any]],
+    feature_markers: Sequence[dict[str, Any]],
+    width: int,
+    height: int,
+) -> bytes:
+    if Image is None:
+        raise RuntimeError("Pillow is required to rasterize derived CDD architecture figures")
+    from PIL import ImageDraw, ImageFont
+
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default()
+    except Exception:  # noqa: BLE001
+        font = None
+
+    lanes: list[tuple[str, str]] = [("query", "Query sequence")]
+    if specific_hits:
+        lanes.append(("specific", "Specific hits"))
+    if superfamily_hits:
+        lanes.append(("superfamily", "Superfamilies"))
+    if feature_markers:
+        lanes.append(("features", "Conserved features"))
+
+    draw.text((8, 6), f"{gene_symbol} domain architecture (derived)", fill=(51, 51, 51), font=font)
+
+    for idx, (lane_id, label) in enumerate(lanes):
+        y = _ARCH_TOP_MARGIN + idx * _ARCH_LANE_HEIGHT
+        mid = y + _ARCH_LANE_HEIGHT / 2
+        draw.text((8, mid - 6), label, fill=(68, 68, 68), font=font)
+        if lane_id == "query":
+            x0 = _architecture_x(0, protein_length=protein_length)
+            x1 = _architecture_x(protein_length, protein_length=protein_length)
+            draw.rounded_rectangle(
+                (x0, mid - _ARCH_QUERY_HEIGHT / 2, x1, mid + _ARCH_QUERY_HEIGHT / 2),
+                radius=3,
+                fill=(154, 160, 166),
+            )
+            for tick in (1, max(1, protein_length // 4), max(1, protein_length // 2),
+                         max(1, (3 * protein_length) // 4), protein_length):
+                tx = _architecture_x(tick, protein_length=protein_length)
+                draw.line((tx, mid + _ARCH_QUERY_HEIGHT / 2 + 2, tx, mid + _ARCH_QUERY_HEIGHT / 2 + 8), fill=(102, 102, 102))
+                draw.text((tx - 8, mid + 10), str(tick), fill=(85, 85, 85), font=font)
+        elif lane_id == "specific":
+            for hit in specific_hits:
+                x0 = _architecture_x(hit["from_residue"], protein_length=protein_length)
+                x1 = max(x0 + 2, _architecture_x(hit["to_residue"], protein_length=protein_length))
+                draw.rounded_rectangle(
+                    (x0, mid - _ARCH_BAR_HEIGHT / 2, x1, mid + _ARCH_BAR_HEIGHT / 2),
+                    radius=3,
+                    fill=(47, 111, 237),
+                    outline=(29, 78, 216),
+                )
+                label_text = str(hit.get("domain_short_name") or hit.get("domain_accession") or "")
+                draw.text(((x0 + x1) / 2 - 4, mid - 5), label_text[:18], fill=(255, 255, 255), font=font)
+        elif lane_id == "superfamily":
+            for hit in superfamily_hits:
+                x0 = _architecture_x(hit["from_residue"], protein_length=protein_length)
+                x1 = max(x0 + 2, _architecture_x(hit["to_residue"], protein_length=protein_length))
+                draw.rounded_rectangle(
+                    (x0, mid - _ARCH_BAR_HEIGHT / 2, x1, mid + _ARCH_BAR_HEIGHT / 2),
+                    radius=3,
+                    fill=(15, 157, 88),
+                    outline=(11, 122, 67),
+                )
+                label_text = str(hit.get("domain_short_name") or hit.get("domain_accession") or "")
+                draw.text(((x0 + x1) / 2 - 4, mid - 5), label_text[:18], fill=(255, 255, 255), font=font)
+        elif lane_id == "features":
+            for marker in feature_markers:
+                cx = _architecture_x(marker["position"], protein_length=protein_length)
+                r = 5
+                draw.ellipse((cx - r, mid - r, cx + r, mid + r), fill=(244, 180, 0), outline=(196, 143, 0))
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _render_cdd_architecture_fallback(
+    *,
+    dossier_run_id: str,
+    gene_symbol: str,
+    protein_length: int,
+    domains: Sequence[Any],
+    features: Sequence[Any],
+    settings: Settings,
+    persist_db: bool,
+    parent_raw_artifact_ids: Sequence[str] | None = None,
+    parent_evidence_record_ids: Sequence[str] | None = None,
+) -> tuple[RawArtifact | None, dict[str, Any] | None, dict[str, Any]]:
+    """Derive a local CDD-style architecture PNG from hit/feature evidence.
+
+    Private helper (not part of the public section_1c API). Geometry is always
+    scaled by canonical protein_length; never fabricates a length from spans.
+    """
+    if protein_length is None or int(protein_length) <= 0:
+        return None, None, {
+            "status": "unavailable",
+            "reason": "protein_length_unavailable",
+            "origin": "derived",
+            "derivation_type": "cdd_domain_architecture_render",
+        }
+    length = int(protein_length)
+    specific, superfamily, feature_markers = _architecture_lane_rows(domains, features)
+    usable_markers = [m for m in feature_markers if 1 <= int(m["position"]) <= length]
+    if not specific and not superfamily:
+        return None, None, {
+            "status": "unavailable",
+            "reason": "no usable conserved_domain_hit spans for architecture",
+            "origin": "derived",
+            "derivation_type": "cdd_domain_architecture_render",
+        }
+
+    try:
+        svg_bytes, width, height = _build_cdd_architecture_svg_bytes(
+            protein_length=length,
+            gene_symbol=gene_symbol,
+            specific_hits=specific,
+            superfamily_hits=superfamily,
+            feature_markers=usable_markers,
+        )
+        png_bytes = _rasterize_cdd_architecture_png(
+            protein_length=length,
+            gene_symbol=gene_symbol,
+            specific_hits=specific,
+            superfamily_hits=superfamily,
+            feature_markers=usable_markers,
+            width=width,
+            height=height,
+        )
+        artifact, meta = _persist_artifact_bytes(
+            dossier_run_id=dossier_run_id,
+            source_name="CDD",
+            content=png_bytes,
+            extension="png",
+            artifact_type="image",
+            filename_hint="cdd-derived-architecture",
+            settings=settings,
+            api_run=None,
+            persist_db=persist_db,
+            notes={
+                "artifact_class": "derived",
+                "artifact_origin": "cdd_domain_architecture_render",
+                "artifact_role": "cdd_architecture_figure",
+                "derivation_type": "cdd_domain_architecture_render",
+                "renderer_version": _ARCH_RENDERER_VERSION,
+                "protein_length": length,
+                "gene_symbol": gene_symbol,
+                "svg_sha256": compute_hash(svg_bytes),
+                "parent_raw_artifact_ids": list(parent_raw_artifact_ids or []),
+                "parent_evidence_record_ids": list(parent_evidence_record_ids or []),
+                "specific_hit_count": len(specific),
+                "superfamily_hit_count": len(superfamily),
+                "feature_marker_count": len(usable_markers),
+            },
+            validate=_validate_nonblank_image,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, None, {
+            "status": "unavailable",
+            "reason": f"derived architecture render failed: {type(exc).__name__}: {exc}"[:400],
+            "origin": "derived",
+            "derivation_type": "cdd_domain_architecture_render",
+        }
+
+    value = {
+        "status": "success",
+        "origin": "derived",
+        "fact_type": "cdd_architecture_figure",
+        "artifact_class": "derived",
+        "derivation_type": "cdd_domain_architecture_render",
+        "renderer_version": _ARCH_RENDERER_VERSION,
+        "relative_path": meta["relative_path"],
+        "media_type": meta.get("media_type") or "image/png",
+        "width": meta.get("width"),
+        "height": meta.get("height"),
+        "sha256": artifact.content_hash,
+        "byte_size": meta.get("byte_size"),
+        "protein_length": length,
+        "source": "NCBI Conserved Domain Database (derived architecture)",
+        "figure_raw_artifact_id": artifact.id,
+        "parent_raw_artifact_ids": list(parent_raw_artifact_ids or []),
+        "parent_evidence_record_ids": list(parent_evidence_record_ids or []),
+        "specific_hit_count": len(specific),
+        "superfamily_hit_count": len(superfamily),
+        "feature_marker_count": len(usable_markers),
+        "domain_accessions": [
+            str(h.get("domain_accession"))
+            for h in [*specific, *superfamily]
+            if h.get("domain_accession")
+        ],
+        "svg_sha256": compute_hash(svg_bytes),
+    }
+    return artifact, meta, value
+
+
+def _launch_playwright_chromium(pw: Any) -> tuple[Any, list[dict[str, Any]]]:
+    """Launch Chrome channel first, then bundled Chromium; keep both attempts."""
+    attempts: list[dict[str, Any]] = []
+    try:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        attempts.append({"channel": "chrome", "success": True})
+        return browser, attempts
+    except Exception as chrome_exc:  # noqa: BLE001
+        attempts.append(
+            {
+                "channel": "chrome",
+                "success": False,
+                "error_type": type(chrome_exc).__name__,
+                "error_message": str(chrome_exc)[:400],
+            }
+        )
+    try:
+        browser = pw.chromium.launch(headless=True)
+        attempts.append({"channel": "chromium", "success": True})
+        return browser, attempts
+    except Exception as chromium_exc:  # noqa: BLE001
+        attempts.append(
+            {
+                "channel": "chromium",
+                "success": False,
+                "error_type": type(chromium_exc).__name__,
+                "error_message": str(chromium_exc)[:400],
+            }
+        )
+        raise
+
+
 def _capture_cdd_architecture_with_playwright(
     *,
     dossier_run_id: str,
@@ -1288,6 +1772,7 @@ def _capture_cdd_architecture_with_playwright(
         success=False,
     )
     browser = None
+    launch_attempts: list[dict[str, Any]] = []
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
@@ -1299,11 +1784,16 @@ def _capture_cdd_architecture_with_playwright(
             f"{type(exc).__name__}: {exc}"
         )
         _save_api_run_failure(api, persist_db=persist_db)
-        return api, None, None, {"status": "unavailable", "reason": api.error_message, **lineage}
+        return api, None, None, {
+            "status": "unavailable",
+            "reason": api.error_message,
+            "browser_launch_attempts": launch_attempts,
+            **lineage,
+        }
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser, launch_attempts = _launch_playwright_chromium(pw)
             page = browser.new_page(viewport={"width": 1280, "height": 900})
             page.goto(summary_url, wait_until="domcontentloaded", timeout=20_000)
             if urlparse(page.url).hostname != "www.ncbi.nlm.nih.gov":
@@ -1386,7 +1876,7 @@ def _capture_cdd_architecture_with_playwright(
                 api_run=api,
                 persist_db=persist_db,
                 notes={
-                    "artifact_class": "derived_capture",
+                    "artifact_class": "official",
                     "artifact_origin": "ncbi_cdsearch_official_graphic",
                     "artifact_role": "ncbi_cdsearch_official_graphic",
                     "source_url": page.url,
@@ -1396,19 +1886,21 @@ def _capture_cdd_architecture_with_playwright(
                     "bounding_box": second_box,
                     "parent_raw_artifact_ids": list(parent_raw_artifact_ids),
                     "standard_fallback_accession": standard_fallback_accession,
+                    "browser_launch_attempts": launch_attempts,
                 },
                 validate=_validate_nonblank_image,
             )
             api.success = True
             value = {
                 "status": "success",
+                "origin": "official",
                 "relative_path": meta["relative_path"],
                 "media_type": meta["media_type"],
                 "width": meta.get("width"),
                 "height": meta.get("height"),
                 "sha256": artifact.content_hash,
                 "byte_size": meta.get("byte_size"),
-                "artifact_class": "derived_capture",
+                "artifact_class": "official",
                 "artifact_origin": "ncbi_cdsearch_official_graphic",
                 "retrieval_method": retrieval_method,
                 "display_mode": display_mode,
@@ -1421,6 +1913,7 @@ def _capture_cdd_architecture_with_playwright(
                 "figure_raw_artifact_id": artifact.id,
                 "parent_raw_artifact_ids": list(parent_raw_artifact_ids),
                 "standard_fallback_accession": standard_fallback_accession,
+                "browser_launch_attempts": launch_attempts,
                 **lineage,
             }
             if retrieval_method == "official_standard_cdd_architecture_fallback":
@@ -1439,7 +1932,12 @@ def _capture_cdd_architecture_with_playwright(
         except Exception:  # noqa: BLE001
             pass
     _save_api_run_failure(api, persist_db=persist_db)
-    return api, None, None, {"status": "unavailable", "reason": api.error_message, **lineage}
+    return api, None, None, {
+        "status": "unavailable",
+        "reason": api.error_message,
+        "browser_launch_attempts": launch_attempts,
+        **lineage,
+    }
 
 
 def _looks_like_cdd_architecture_image(url: str) -> bool:
@@ -2252,6 +2750,8 @@ def node_generate_section_1c_derived_artifacts(
         domains = cdd_domain_rows(evidence, protein_length=seed.protein_length)
         features = _feature_summaries(state)
 
+        official_failure_reason: str | None = None
+        official_attempt: dict[str, Any] | None = None
         if cdd_payload and lineage.get("master_cdsid"):
             try:
                 arch_api, arch_meta, arch_artifact, _arch_artifact_meta, arch_value = _discover_cdd_architecture(
@@ -2264,8 +2764,13 @@ def node_generate_section_1c_derived_artifacts(
                 )
                 api_runs.extend(arch_api)
                 raw_meta.extend(arch_meta)
-                audit["cdd_architecture"] = arch_value
+                official_attempt = dict(arch_value or {})
                 if arch_artifact is not None and arch_value.get("status") == "success":
+                    arch_value = {
+                        **arch_value,
+                        "origin": "official",
+                        "artifact_class": arch_value.get("artifact_class") or "official",
+                    }
                     rec = _record(
                         dossier_run_id=run_id,
                         gene_symbol=gene,
@@ -2283,11 +2788,139 @@ def node_generate_section_1c_derived_artifacts(
                     )
                     if _append_evidence(evidence, rec, persist_db=persist_db):
                         rendering_status["cdd_architecture"] = "success"
+                        audit["cdd_architecture"] = {
+                            **arch_value,
+                            "status": "success",
+                            "origin": "official",
+                            "selected_fact_type": "cdd_official_architecture_figure",
+                        }
+                else:
+                    official_failure_reason = str(
+                        (arch_value or {}).get("reason") or "official CDD architecture capture failed"
+                    )[:400]
             except Exception as exc:  # noqa: BLE001
+                official_failure_reason = str(exc)[:400]
+                official_attempt = {
+                    "status": "unavailable",
+                    "reason": official_failure_reason,
+                    **lineage,
+                }
+        elif domains:
+            official_failure_reason = "official CDD architecture not attempted (missing master cdsid)"
+
+        if rendering_status["cdd_architecture"] != "success":
+            valid_length = seed.protein_length is not None and int(seed.protein_length) > 0
+            parent_evidence_ids = [
+                str(row.get("evidence_record_id"))
+                for row in domains
+                if row.get("evidence_record_id")
+            ]
+            parent_raw_ids = [
+                str(row.get("raw_artifact_id"))
+                for row in domains
+                if row.get("raw_artifact_id")
+            ]
+            feature_inputs: list[Any] = list(features)
+            for rec in evidence:
+                if rec.source_name == "CDD" and rec.fact_type == "cdd_conserved_feature":
+                    if isinstance(rec.value, dict):
+                        feature_inputs.append(rec.value)
+
+            if domains and valid_length:
+                try:
+                    derived_artifact, derived_meta, derived_value = _render_cdd_architecture_fallback(
+                        dossier_run_id=run_id,
+                        gene_symbol=gene,
+                        protein_length=int(seed.protein_length),
+                        domains=domains,
+                        features=feature_inputs,
+                        settings=cfg,
+                        persist_db=persist_db,
+                        parent_raw_artifact_ids=parent_raw_ids,
+                        parent_evidence_record_ids=parent_evidence_ids,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    derived_artifact, derived_meta, derived_value = None, None, {
+                        "status": "unavailable",
+                        "reason": str(exc)[:400],
+                        "origin": "derived",
+                        "derivation_type": "cdd_domain_architecture_render",
+                    }
+                if derived_meta is not None:
+                    raw_meta.append(derived_meta)
+                derived_reason = str((derived_value or {}).get("reason") or "derived architecture render failed")[:400]
+                if derived_artifact is not None and (derived_value or {}).get("status") == "success":
+                    audit["forbidden_paths"]["custom_architecture_svg"] = True
+                    derived_value = {
+                        **derived_value,
+                        "origin": "derived",
+                        "artifact_class": "derived",
+                        "derivation_type": "cdd_domain_architecture_render",
+                    }
+                    rec = _record(
+                        dossier_run_id=run_id,
+                        gene_symbol=gene,
+                        source_name="CDD",
+                        assertion_type=AssertionType.protein_structure,
+                        fact_type="cdd_architecture_figure",
+                        key="architecture-derived",
+                        value=derived_value,
+                        display_text=f"{gene} derived CDD domain architecture from conserved-domain hits.",
+                        evidence_grade=EvidenceGrade.E,
+                        raw_artifact_id=derived_artifact.id,
+                        confidence_notes=(
+                            "Derived local CDD domain-architecture render from conserved_domain_hit "
+                            "coordinates and canonical protein length; not an NCBI official capture."
+                        ),
+                        manual_review_required=True,
+                    )
+                    if _append_evidence(evidence, rec, persist_db=persist_db):
+                        rendering_status["cdd_architecture"] = "success"
+                        audit["cdd_architecture"] = {
+                            **derived_value,
+                            "status": "success",
+                            "origin": "derived",
+                            "selected_fact_type": "cdd_architecture_figure",
+                            "official_attempt": official_attempt,
+                            "official_failure_reason": official_failure_reason,
+                        }
+                else:
+                    reasons = [r for r in (official_failure_reason, derived_reason) if r]
+                    rendering_status["cdd_architecture"] = "unavailable"
+                    audit["cdd_architecture"] = {
+                        "status": "unavailable",
+                        "origin": "unavailable",
+                        "reason": "; ".join(reasons) if reasons else "architecture unavailable",
+                        "reasons": reasons,
+                        "official_attempt": official_attempt,
+                        "official_failure_reason": official_failure_reason,
+                        "derived_attempt": derived_value,
+                        "derived_failure_reason": derived_reason,
+                        **lineage,
+                    }
+            elif domains and not valid_length:
+                reasons = ["protein_length_unavailable"]
+                if official_failure_reason:
+                    reasons.insert(0, official_failure_reason)
                 rendering_status["cdd_architecture"] = "unavailable"
                 audit["cdd_architecture"] = {
                     "status": "unavailable",
-                    "reason": str(exc)[:400],
+                    "origin": "unavailable",
+                    "reason": "protein_length_unavailable",
+                    "reasons": reasons,
+                    "official_attempt": official_attempt,
+                    "official_failure_reason": official_failure_reason,
+                    **lineage,
+                }
+            else:
+                rendering_status["cdd_architecture"] = "unavailable"
+                audit["cdd_architecture"] = {
+                    "status": "unavailable",
+                    "origin": "unavailable",
+                    "reason": official_failure_reason or "no conserved domain evidence for architecture",
+                    "reasons": [r for r in (official_failure_reason,) if r],
+                    "official_attempt": official_attempt,
+                    "official_failure_reason": official_failure_reason,
                     **lineage,
                 }
 

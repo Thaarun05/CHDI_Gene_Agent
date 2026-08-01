@@ -40,6 +40,8 @@ ALLOWED_LINK_HOSTS = frozenset(
         "www.alphafold.ebi.ac.uk",
         "alphafold.com",
         "www.alphafold.com",
+        "www.orthodb.org",
+        "orthodb.org",
     }
 )
 
@@ -135,6 +137,18 @@ def build_section_presentation(
         "alphafold-protein-structure-prediction",
     }:
         return build_alphafold_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
+    if key in {
+        "1e",
+        "1.e",
+        "homologues",
+        "homologues_in_model_animals",
+        "orthologs",
+    }:
+        return build_homologues_blocks(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
             section_status=section_status,
@@ -1895,6 +1909,7 @@ def build_known_structure_blocks(
         in {
             "conserved_domain_hit",
             "cdd_official_architecture_figure",
+            "cdd_architecture_figure",
             "cdd_family_summary",
             "cdd_family_thumbnail",
             "cdd_conserved_feature",
@@ -2479,6 +2494,205 @@ def build_alphafold_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_homologues_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 1e polished NCBI Orthologs / OrthoDB blocks."""
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary_rec = next(
+        (
+            rec
+            for rec in records
+            if rec.fact_type == "ortholog_collection_summary"
+            and (
+                rec.source_name == "NCBI Datasets"
+                or rec.subsection == "Homologues in model animals"
+            )
+        ),
+        None,
+    )
+    capture_rec = next(
+        (rec for rec in records if rec.fact_type == "ortholog_table_capture"),
+        None,
+    )
+    orthodb_rec = next(
+        (
+            rec
+            for rec in records
+            if rec.source_name == "OrthoDB" and rec.fact_type == "orthodb_gene_search"
+        ),
+        None,
+    )
+
+    summary_value: dict[str, Any] = {}
+    if summary_rec is not None and isinstance(summary_rec.value, dict):
+        summary_value = dict(summary_rec.value)
+    elif isinstance(status.get("summary"), dict):
+        summary_value = dict(status["summary"])
+
+    if not summary_value:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_1e",
+                "ortholog collection summary unavailable",
+                "warning",
+            )
+        )
+        return SectionPresentationResult(blocks=(), diagnostics=tuple(diagnostics))
+
+    item_key = str(
+        summary_value.get("presentation_item_key")
+        or f"orthologs-{(gene_symbol or '').lower()}"
+    )
+    narrative = str(
+        summary_value.get("narrative")
+        or (summary_rec.display_text if summary_rec else "")
+        or ""
+    ).strip()
+    table_status = str(
+        summary_value.get("table_status")
+        or (status.get("rendering_status") or {}).get("table_status")
+        or "unavailable"
+    )
+    ncbi_url = str(summary_value.get("ncbi_url") or "").strip()
+    orthodb_url = str(summary_value.get("orthodb_url") or "").strip()
+
+    blocks: list[ReportContentBlock] = []
+    if narrative:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=narrative,
+                presentation_role="section_1e_narrative",
+                presentation_item_key=item_key,
+                source_ids=[summary_rec.source_id]
+                if summary_rec and summary_rec.source_id
+                else [],
+                evidence_record_ids=[summary_rec.id]
+                if summary_rec and summary_rec.id
+                else [],
+            )
+        )
+
+    capture_fig = None
+    if table_status == "official_capture" and capture_rec is not None:
+        capture_fig = _figure_block_from_record(
+            capture_rec,
+            role="section_1e_ortholog_capture",
+            caption="",
+            diagnostics=diagnostics,
+        )
+        if capture_fig is not None:
+            capture_fig = capture_fig.model_copy(
+                update={"presentation_item_key": item_key}
+            )
+            blocks.append(capture_fig)
+        else:
+            diagnostics.append(
+                PresentationDiagnostic(
+                    "viewer_capture",
+                    "ortholog table capture path unresolved",
+                    "warning",
+                )
+            )
+
+    if capture_fig is None and table_status in {
+        "complete_api_fallback",
+        "partial_api_fallback",
+        "official_capture",
+    }:
+        rows_raw = summary_value.get("fallback_rows") or []
+        headers = ["Species", "Gene", "Description", "Gene ID"]
+        rows: list[list[str]] = []
+        for row in rows_raw:
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                [
+                    str(row.get("species") or ""),
+                    str(row.get("gene") or ""),
+                    str(row.get("description") or ""),
+                    str(row.get("gene_id") or ""),
+                ]
+            )
+        if rows:
+            blocks.append(
+                ReportContentBlock(
+                    kind="table",
+                    table_headers=headers,
+                    table_rows=rows,
+                    presentation_role="section_1e_fallback_table",
+                    presentation_item_key=f"{item_key}-fallback",
+                    source_ids=[summary_rec.source_id]
+                    if summary_rec and summary_rec.source_id
+                    else [],
+                    evidence_record_ids=[summary_rec.id]
+                    if summary_rec and summary_rec.id
+                    else [],
+                )
+            )
+            if table_status == "official_capture":
+                diagnostics.append(
+                    PresentationDiagnostic(
+                        "viewer_capture",
+                        "falling back to structured ortholog table",
+                        "warning",
+                    )
+                )
+        elif table_status != "unavailable":
+            diagnostics.append(
+                PresentationDiagnostic(
+                    "fallback_table",
+                    "fallback table requested but no scoped rows available",
+                    "warning",
+                )
+            )
+
+    attr_links: list[dict[str, str]] = []
+    if ncbi_url:
+        attr_links.append({"label": "NCBI Orthologs", "url": ncbi_url})
+    if orthodb_url:
+        attr_links.append({"label": "OrthoDB", "url": orthodb_url})
+    if attr_links:
+        source_ids = []
+        evidence_ids = []
+        if summary_rec and summary_rec.source_id:
+            source_ids.append(summary_rec.source_id)
+        if summary_rec and summary_rec.id:
+            evidence_ids.append(summary_rec.id)
+        if orthodb_rec and orthodb_rec.source_id:
+            source_ids.append(orthodb_rec.source_id)
+        if orthodb_rec and orthodb_rec.id:
+            evidence_ids.append(orthodb_rec.id)
+        blocks.append(
+            ReportContentBlock(
+                kind="link",
+                text="Sources: ",
+                links=attr_links,
+                presentation_role="section_1e_attribution",
+                presentation_item_key=f"{item_key}-attribution",
+                source_ids=list(dict.fromkeys(source_ids)),
+                evidence_record_ids=list(dict.fromkeys(evidence_ids)),
+            )
+        )
+
+    if not blocks:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_1e",
+                "no homologues presentation blocks available",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -2492,6 +2706,7 @@ __all__ = [
     "build_alphafold_blocks",
     "build_conservation_blocks",
     "build_gene_aliases_blocks",
+    "build_homologues_blocks",
     "build_known_structure_blocks",
     "build_section_presentation",
     "format_safe_table_cell_html",

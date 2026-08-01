@@ -737,6 +737,46 @@ a.ucsc-transcript-link {{
 .section-bundle-body .subsection-d {{
   margin-top: 10pt;
 }}
+.section-bundle-body .subsection-e {{
+  margin-top: 0;
+}}
+.section-bundle-body .section-1e-narrative {{
+  margin: 0 0 10pt 0;
+  font-size: 11pt;
+  line-height: 1.35;
+}}
+.section-bundle-body figure.rancho-figure.section-1e-ortholog-capture {{
+  margin: 4pt 0 10pt 0;
+  text-align: left;
+}}
+.section-bundle-body figure.rancho-figure.section-1e-ortholog-capture img {{
+  width: 4.8in;
+  max-width: 72%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}}
+table.section-1e-fallback-table {{
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6pt 0 10pt 0;
+  font-size: 9.5pt;
+}}
+table.section-1e-fallback-table th,
+table.section-1e-fallback-table td {{
+  border: 0.5pt solid #c9c0b4;
+  padding: 3pt 5pt;
+  vertical-align: top;
+}}
+.section-bundle-body .section-1e-attribution {{
+  margin: 8pt 0 0 0;
+  font-size: 9pt;
+  color: #8a7a6a;
+}}
+.section-bundle-body .section-1e-attribution a {{
+  color: {REPORT_STYLE.orange_link};
+  text-decoration: underline;
+}}
 .section-bundle-body .section-1d-link-line {{
   margin: 4pt 0 6pt 0;
   font-size: 13pt;
@@ -878,6 +918,8 @@ def _render_block(block: ReportContentBlock) -> str:
             classes.append("gene-aliases-table")
         elif block.presentation_role == "section_1c_pdb_table":
             classes.append("section-1c-pdb-table")
+        elif block.presentation_role == "section_1e_fallback_table":
+            classes.append("section-1e-fallback-table")
         class_attr = " ".join(classes)
         parts.append(f'<table class="{class_attr}">')
         if block.presentation_role == "gene_aliases_table":
@@ -951,6 +993,7 @@ def _render_block(block: ReportContentBlock) -> str:
                 caption
                 and block.presentation_role != "ucsc_conservation_figure"
                 and not str(block.presentation_role or "").startswith("section_1d_")
+                and not str(block.presentation_role or "").startswith("section_1e_")
                 and (
                     not str(block.presentation_role or "").startswith("section_1c_")
                     or block.presentation_role == "section_1c_pdb_official_image"
@@ -980,6 +1023,16 @@ def _render_block(block: ReportContentBlock) -> str:
                     f'<a class="section-1d-link" style="color:{REPORT_STYLE.orange_link};" '
                     f'href="{url}">{label}</a></p>'
                 )
+            elif role == "section_1e_attribution":
+                # Multi-link attribution handled in the multi-link branch below
+                # when len(links) > 1; single-link OrthoDB/NCBI still fits here.
+                prefix = _escape(block.text or "")
+                parts.append(
+                    f'<p class="section-1e-attribution" {_evidence_attr(block)}>'
+                    f"{prefix}"
+                    f'<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
             else:
                 line_class = "ucsc-transcript-line"
                 link_class = "ucsc-transcript-link"
@@ -992,12 +1045,28 @@ def _render_block(block: ReportContentBlock) -> str:
                     f'href="{url}">{label}</a></p>'
                 )
         else:
-            parts.append("<ul>")
-            for link in block.links:
-                label = _escape(link.get("label") or link.get("url") or "link")
-                url = _escape(link.get("url") or "#")
-                parts.append(f'<li><a href="{url}">{label}</a></li>')
-            parts.append("</ul>")
+            role = str(block.presentation_role or "")
+            if role == "section_1e_attribution":
+                link_bits: list[str] = []
+                for link in block.links:
+                    label = _escape(link.get("label") or link.get("url") or "link")
+                    url = _escape(link.get("url") or "#")
+                    link_bits.append(
+                        f'<a style="color:{REPORT_STYLE.orange_link};" '
+                        f'href="{url}">{label}</a>'
+                    )
+                prefix = _escape(block.text or "")
+                parts.append(
+                    f'<p class="section-1e-attribution" {_evidence_attr(block)}>'
+                    f"{prefix}{' · '.join(link_bits)}</p>"
+                )
+            else:
+                parts.append("<ul>")
+                for link in block.links:
+                    label = _escape(link.get("label") or link.get("url") or "link")
+                    url = _escape(link.get("url") or "#")
+                    parts.append(f'<li><a href="{url}">{label}</a></li>')
+                parts.append("</ul>")
     else:
         text = sanitize_polished_citation_tokens((block.text or "").strip())
         if text:
@@ -1273,6 +1342,22 @@ def _render_section_1d_blocks(blocks: list[ReportContentBlock]) -> str:
     return "\n".join(parts)
 
 
+def _render_section_1e_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 1e narrative, capture/fallback table, and attribution."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_1e_narrative":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-1e-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+        else:
+            parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
 def _render_subsection(sub: ReportSubsection) -> str:
     heading = f"{sub.key}. {sub.title}"
     subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
@@ -1289,6 +1374,8 @@ def _render_subsection(sub: ReportSubsection) -> str:
             parts.append(_render_section_1c_grouped_blocks(list(sub.presentation_blocks)))
         elif sub.key == "d":
             parts.append(_render_section_1d_blocks(list(sub.presentation_blocks)))
+        elif sub.key == "e":
+            parts.append(_render_section_1e_blocks(list(sub.presentation_blocks)))
         else:
             for block in sub.presentation_blocks:
                 parts.append(_render_block(block))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Section-scoped generation for Sections 1a / 1b / opt-in 1c / opt-in 1d.
+"""Section-scoped generation for Sections 1a / 1b / opt-in 1c / 1d / 1e.
 
 Example::
 
@@ -21,6 +21,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from gene_dossier.config import get_settings  # noqa: E402
+from gene_dossier.section_1e import (  # noqa: E402
+    SUPPORTED_SECTION_1E_SCOPES,
+    Section1eConfig,
+)
 from gene_dossier.section_bundle import (  # noqa: E402
     DEFAULT_SECTION_BUNDLE_KEYS,
     SectionBundleError,
@@ -36,7 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Generate a standalone Section 1 bundle (1a Gene Aliases / "
             "1b UCSC conservation / opt-in 1c Known structure / opt-in 1d "
-            "AlphaFold) without LLM synthesis or full-report rendering."
+            "AlphaFold / opt-in 1e Homologues) without LLM synthesis or "
+            "full-report rendering."
         )
     )
     parser.add_argument("--gene", required=True, help="Gene symbol (e.g. SREBF2)")
@@ -44,7 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         "--sections",
         nargs="+",
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
-        help="Section keys to include (1a, 1b, and/or opt-in 1c/1d). Default: 1a 1b",
+        help=(
+            "Section keys to include (1a, 1b, and/or opt-in 1c/1d/1e). "
+            "Default: 1a 1b"
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -66,6 +74,25 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=150,
         help="PNG rasterization DPI (default: 150)",
+    )
+    parser.add_argument(
+        "--ortholog-scope-tax-id",
+        type=int,
+        default=7776,
+        help=(
+            "NCBI taxonomy scope for Section 1e orthologs "
+            f"(supported: {', '.join(str(k) for k in sorted(SUPPORTED_SECTION_1E_SCOPES))}; "
+            "default: 7776 jawed vertebrates)"
+        ),
+    )
+    parser.add_argument(
+        "--max-visible-rows",
+        type=int,
+        default=20,
+        help=(
+            "Max NCBI Orthologs table rows to crop for Section 1e capture "
+            "(default: 20)"
+        ),
     )
     parser.add_argument(
         "--acceptance-profile",
@@ -95,6 +122,17 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("%s", exc)
         return 2
 
+    section_1e_config = None
+    if "1e" in keys:
+        try:
+            section_1e_config = Section1eConfig(
+                ortholog_scope_tax_id=args.ortholog_scope_tax_id,
+                max_visible_rows=args.max_visible_rows,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 2
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -104,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         write_pdf=not args.no_pdf,
         dpi=args.dpi,
         acceptance_profile=args.acceptance_profile,
+        section_1e_config=section_1e_config,
     )
 
     print(f"status={result.status}")

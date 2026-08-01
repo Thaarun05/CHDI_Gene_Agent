@@ -1,4 +1,4 @@
-"""Section-scoped dossier generation for curator review (Sections 1a / 1b / 1c / 1d).
+"""Section-scoped dossier generation for curator review (Sections 1a–1e).
 
 Builds a standalone Section 1 document without LLM synthesis or full-report
 rendering. Provenance IDs live only in the audit JSON; polished outputs use
@@ -43,6 +43,10 @@ from gene_dossier.section_1d import (
     evaluate_section_1d_reference_genes_acceptance,
     node_generate_section_1d_derived_artifacts,
 )
+from gene_dossier.section_1e import (
+    Section1eConfig,
+    node_generate_section_1e_derived_artifacts,
+)
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -56,7 +60,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
@@ -64,6 +68,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1b": {"UCSC"},
     "1c": {"CDD", "PDBe"},
     "1d": {"AlphaFold"},
+    "1e": {"NCBI Datasets", "OrthoDB"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -76,6 +81,9 @@ _OPAQUE_REF_BY_ROLE = {
     ("1c", "section_1c_pdb_assembly_figure"): "ev-1c-pdbe-assembly-figure",
     ("1c", "section_1c_pdb_domain_focus_figure"): "ev-1c-pdbe-domain-focus-figure",
     ("1c", "section_1c_image_attribution"): "ev-1c-image-attribution",
+    ("1e", "section_1e_narrative"): "ev-1e-ortholog-summary",
+    ("1e", "section_1e_fallback_table"): "ev-1e-ortholog-fallback-table",
+    ("1e", "section_1e_attribution"): "ev-1e-ortholog-attribution",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -90,6 +98,10 @@ _SECTION_1C_REF_SUFFIX_BY_ROLE = {
 _SECTION_1D_REF_SUFFIX_BY_ROLE = {
     "section_1d_species_link": "summary",
     "section_1d_human_structure_capture": "viewer-capture",
+}
+
+_SECTION_1E_REF_SUFFIX_BY_ROLE = {
+    "section_1e_ortholog_capture": "viewer-capture",
 }
 
 # Status lines and the deterministic report-side legend are visible but are not
@@ -138,7 +150,7 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
     raw = [str(k).strip().lower() for k in (section_keys or [])]
     if not raw:
         raise SectionBundleError(
-            "At least one section key is required (1a, 1b, 1c, and/or 1d)."
+            "At least one section key is required (1a, 1b, 1c, 1d, and/or 1e)."
         )
     normalized: list[str] = []
     for key in raw:
@@ -150,6 +162,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "1c"
         elif key in {"1.d", "d"}:
             key = "1d"
+        elif key in {"1.e", "e"}:
+            key = "1e"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -166,12 +180,19 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     Section 1d declares AlphaFold as a dependency for accounting, but the
     generic human-only AlphaFold client must **not** be invoked when 1d is
     selected — ``section_1d`` owns those network requests exclusively.
+
+    Section 1e likewise owns NCBI Datasets ortholog/taxonomy and OrthoDB
+    network requests; the generic Datasets ortholog client must not run when
+    1e is selected.
     """
     needed: set[str] = set()
     for key in section_keys:
         needed |= SECTION_SOURCE_DEPENDENCIES.get(key, set())
     if "1d" in section_keys:
         needed.discard("AlphaFold")
+    if "1e" in section_keys:
+        needed.discard("NCBI Datasets")
+        needed.discard("OrthoDB")
     return sorted(needed)
 
 
@@ -203,6 +224,16 @@ def section_1d_evidence_ref(block: ReportContentBlock) -> str:
     return f"ev-1d-{key}-{suffix}"
 
 
+def section_1e_evidence_ref(block: ReportContentBlock) -> str:
+    """Dynamic Section 1e opaque ref from safe item key + role suffix."""
+    role = str(block.presentation_role or "")
+    suffix = _SECTION_1E_REF_SUFFIX_BY_ROLE.get(role)
+    if not suffix:
+        raise SectionBundleError(f"Section 1e role is not dynamically referenceable: {role!r}")
+    key = validate_safe_item_key(block.presentation_item_key)
+    return f"ev-1e-{key}-{suffix}"
+
+
 def opaque_evidence_ref(section_key: str, block: ReportContentBlock, *, index: int) -> str:
     """Deterministic opaque ref from section + presentation role / kind."""
     role = block.presentation_role
@@ -210,6 +241,8 @@ def opaque_evidence_ref(section_key: str, block: ReportContentBlock, *, index: i
         return section_1c_evidence_ref(block)
     if section_key == "1d" and role in _SECTION_1D_REF_SUFFIX_BY_ROLE:
         return section_1d_evidence_ref(block)
+    if section_key == "1e" and role in _SECTION_1E_REF_SUFFIX_BY_ROLE:
+        return section_1e_evidence_ref(block)
     mapped = _OPAQUE_REF_BY_ROLE.get((section_key, role)) if role else None
     if mapped:
         return mapped
@@ -665,6 +698,7 @@ def build_section_bundle_document(
         "diagnostics": diagnostics,
         "figure_notes": figure_notes,
         "section_1d_status": status_by_key.get("1d"),
+        "section_1e_status": status_by_key.get("1e"),
     }
     return document, presentation, audit
 
@@ -697,6 +731,7 @@ def render_section_bundle_html(
     # HTML, PDF, and the rasterized PNGs alike.
     # When Section 1d is also selected, append its subsection HTML to the *last*
     # 1c segment (PDB page) via structured parts — never before continuation pages.
+    # Section 1e always starts on its own Letter page (never merged onto 1c/1d).
     continuation_segments: list[str] = []
     subsection_d = next((s for s in major.subsections if s.key == "d"), None)
     subsection_c = next((s for s in major.subsections if s.key == "c"), None)
@@ -706,9 +741,17 @@ def render_section_bundle_html(
         and subsection_d
         and subsection_d.presentation_blocks
     )
+    has_prior_to_1e = any(s.key != "e" for s in major.subsections)
 
     for sub in major.subsections:
         if sub.key == "d" and merge_1d_onto_pdb:
+            continue
+        if sub.key == "e":
+            e_html = _render_subsection(sub)
+            if has_prior_to_1e:
+                continuation_segments.append(e_html)
+            else:
+                body_parts.append(e_html)
             continue
         if sub.key == "c" and sub.presentation_blocks:
             segments = render_section_1c_subsection_segments(sub)
@@ -730,9 +773,15 @@ def render_section_bundle_html(
     body_parts.append("</section>")
     for index, segment in enumerate(continuation_segments):
         body_parts.append(SECTION_1C_PDF_PAGE_BREAK)
+        is_1e_page = 'class="report-subsection subsection-e"' in segment
+        page_class = (
+            "report-page section-bundle-body section-1e-page"
+            if is_1e_page
+            else "report-page section-bundle-body section-1c-continuation"
+        )
         body_parts.append(
-            f'<section id="section-{major.number}c-page-{index + 2}" '
-            f'class="report-page section-bundle-body section-1c-continuation">'
+            f'<section id="section-{major.number}-cont-{index + 2}" '
+            f'class="{page_class}">'
             f"{segment}</section>"
         )
     body = "\n".join(body_parts)
@@ -964,6 +1013,7 @@ def run_section_bundle(
     allow_rerender: bool = False,
     preloaded_state: DossierState | None = None,
     acceptance_profile: str | None = None,
+    section_1e_config: Section1eConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ UCSC when 1b) and write a standalone Section 1 bundle."""
     cfg = settings or get_settings()
@@ -986,6 +1036,7 @@ def run_section_bundle(
             "evidence_records",
             "errors",
             "section_1d_status",
+            "section_1e_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -999,6 +1050,7 @@ def run_section_bundle(
     errors: list[str] = []
     focused_1c = keys == ["1c"]
     focused_1d = keys == ["1d"]
+    focused_1e = keys == ["1e"]
 
     try:
         if call_network:
@@ -1045,11 +1097,27 @@ def run_section_bundle(
                     persist_db=persist_db,
                     transient=transient,
                 )
+            if "1e" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_1e_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_1e_config or Section1eConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
         if state.get("section_1d_status"):
             section_status_by_key["1d"] = state["section_1d_status"]
+        if state.get("section_1e_status"):
+            section_status_by_key["1e"] = state["section_1e_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1060,9 +1128,14 @@ def run_section_bundle(
             section_status_by_key=section_status_by_key,
         )
         coverage = coverage_updates_from_state(state)
-        # Include Section 1d coverage diagnostics emitted outside the generic client.
+        # Include Section 1d/1e coverage diagnostics emitted outside the generic client.
         for row in list(state.get("coverage") or []):
-            if getattr(row, "source_name", None) == "AlphaFold":
+            if getattr(row, "source_name", None) in {
+                "AlphaFold",
+                "NCBI Datasets",
+                "OrthoDB",
+                "NCBI Gene",
+            }:
                 coverage.append(row)
         audit["coverage"] = [
             {
@@ -1134,6 +1207,11 @@ def run_section_bundle(
                 (state.get("section_1d_status") or {}).get("audit")
                 or state.get("section_1d_status")
             )
+        if "1e" in keys and state.get("section_1e_status"):
+            audit["section_1e"] = sanitize_credentials(
+                (state.get("section_1e_status") or {}).get("audit")
+                or state.get("section_1e_status")
+            )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
             audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
@@ -1147,7 +1225,7 @@ def run_section_bundle(
             write_pdf=write_pdf,
             dpi=dpi,
             allow_rerender=allow_rerender,
-            include_major_heading=not (focused_1c or focused_1d),
+            include_major_heading=not (focused_1c or focused_1d or focused_1e),
         )
 
         if "1d" in keys and acceptance_profile == "section_1d_reference_genes":

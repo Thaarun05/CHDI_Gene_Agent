@@ -80,7 +80,24 @@ def _safe_params(params: dict[str, Any], *, api_key_used: bool) -> dict[str, Any
     return out
 
 
-def summarize_ortholog_report(report: dict[str, Any]) -> dict[str, Any]:
+def _report_query_ids(report: dict[str, Any], payload: dict[str, Any] | None = None) -> list[str]:
+    """Return query Gene IDs attached to a report or page payload."""
+    raw = report.get("query")
+    if raw is None and isinstance(payload, dict):
+        raw = payload.get("query")
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    text = str(raw).strip()
+    return [text] if text else []
+
+
+def summarize_ortholog_report(
+    report: dict[str, Any],
+    *,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Extract key fields from one ortholog ``reports[*]`` entry (not evidence)."""
     gene = report.get("gene") or {}
     if not isinstance(gene, dict):
@@ -88,18 +105,52 @@ def summarize_ortholog_report(report: dict[str, Any]) -> dict[str, Any]:
     organism = gene.get("organism") or {}
     if not isinstance(organism, dict):
         organism = {}
+    annotations = gene.get("annotations")
+    genomic_locations: list[Any] = []
+    if isinstance(annotations, list):
+        for item in annotations:
+            if not isinstance(item, dict):
+                continue
+            locs = item.get("genomic_locations")
+            if isinstance(locs, list):
+                genomic_locations.extend(locs)
     return {
         "gene_id": gene.get("gene_id"),
         "symbol": gene.get("symbol"),
         "description": gene.get("description"),
         "tax_id": gene.get("tax_id"),
+        "taxname": gene.get("taxname"),
         "common_name": gene.get("common_name"),
-        "scientific_name": organism.get("scientific_name")
-        or gene.get("scientific_name"),
+        "scientific_name": (
+            gene.get("taxname")
+            or organism.get("scientific_name")
+            or gene.get("scientific_name")
+        ),
+        "type": gene.get("type"),
         "chromosomes": gene.get("chromosomes"),
+        "swiss_prot_accessions": gene.get("swiss_prot_accessions"),
+        "ensembl_gene_ids": gene.get("ensembl_gene_ids"),
+        "protein_count": gene.get("protein_count"),
+        "gene_groups": gene.get("gene_groups"),
+        "annotations": annotations,
+        "genomic_locations": genomic_locations or None,
         "genomic_ranges": gene.get("genomic_ranges"),
-        "annotations": gene.get("annotations"),
+        "query_gene_ids": _report_query_ids(report, payload),
     }
+
+
+def extract_next_page_token(payload: Any) -> str | None:
+    """Return the next-page token from a Datasets ortholog payload, if any."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("next_page_token", "nextPageToken", "page_token", "pageToken"):
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return None
 
 
 def extract_reports(payload: Any) -> list[dict[str, Any]]:
@@ -219,15 +270,19 @@ def gene_by_id(
     )
 
 
+DEFAULT_MAX_ORTHOLOG_PAGES = 100
+
+
 def orthologs_by_gene_id(
     gene_id: str | int,
     *,
     gene_symbol: str = "",
     returned_content: str = DEFAULT_RETURNED_CONTENT,
     page_size: int = DEFAULT_PAGE_SIZE,
+    page_token: str | None = None,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Fetch NCBI Datasets ortholog reports for an Entrez Gene ID."""
+    """Fetch one NCBI Datasets ortholog page for an Entrez Gene ID."""
     cfg = settings or get_settings()
     gid = str(gene_id).strip()
     if not gid:
@@ -241,10 +296,12 @@ def orthologs_by_gene_id(
             error_message="gene_id is required",
         )
     path = f"gene/id/{quote(gid, safe='')}/orthologs"
-    params = {
+    params: dict[str, Any] = {
         "returned_content": returned_content,
         "page_size": page_size,
     }
+    if page_token:
+        params["page_token"] = page_token
     return _request_json(
         endpoint_name="orthologs_by_gene_id",
         gene_symbol=gene_symbol or gid,
@@ -254,54 +311,161 @@ def orthologs_by_gene_id(
     )
 
 
+def iter_ortholog_pages(
+    gene_id: str | int,
+    *,
+    gene_symbol: str = "",
+    returned_content: str = DEFAULT_RETURNED_CONTENT,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = DEFAULT_MAX_ORTHOLOG_PAGES,
+    settings: Settings | None = None,
+) -> tuple[list[ToolResult], dict[str, Any]]:
+    """Fetch ortholog pages until exhaustion or a defensive stop.
+
+    Returns ``(page_tool_results, pagination_audit)``. Each successful or failed
+    HTTP attempt is a separate :class:`ToolResult` for one ApiRun/raw artifact.
+    """
+    cfg = settings or get_settings()
+    gid = str(gene_id).strip()
+    pages: list[ToolResult] = []
+    seen_tokens: set[str] = set()
+    token: str | None = None
+    retrieval_complete = False
+    stop_reason: str | None = None
+    empty_token_streak = 0
+
+    for page_index in range(1, max_pages + 1):
+        if token is not None:
+            if token in seen_tokens:
+                stop_reason = "repeated_page_token"
+                break
+            seen_tokens.add(token)
+        result = orthologs_by_gene_id(
+            gid,
+            gene_symbol=gene_symbol,
+            returned_content=returned_content,
+            page_size=page_size,
+            page_token=token,
+            settings=cfg,
+        )
+        pages.append(result)
+        if not result.success:
+            stop_reason = result.error_type or "page_request_failed"
+            break
+        payload = result.data if isinstance(result.data, dict) else {}
+        reports = extract_reports(payload)
+        next_token = extract_next_page_token(payload)
+        if next_token and not reports:
+            empty_token_streak += 1
+            if empty_token_streak >= 2:
+                stop_reason = "empty_pages_with_token"
+                break
+        else:
+            empty_token_streak = 0
+        # Drift check: page-level or report-level query should match requested gene.
+        page_query = _report_query_ids({}, payload)
+        if not page_query and reports:
+            page_query = _report_query_ids(reports[0], payload)
+        if page_query and gid not in page_query:
+            stop_reason = "query_gene_id_drift"
+            break
+        if not next_token:
+            retrieval_complete = True
+            stop_reason = "exhausted"
+            break
+        token = next_token
+    else:
+        stop_reason = "max_pages_exceeded"
+
+    audit = {
+        "requested_gene_id": gid,
+        "page_count": len(pages),
+        "successful_pages": sum(1 for page in pages if page.success),
+        "retrieval_complete": retrieval_complete,
+        "stop_reason": stop_reason,
+        "seen_page_tokens": sorted(seen_tokens),
+        "max_pages": max_pages,
+        "page_size": page_size,
+    }
+    return pages, audit
+
+
 def fetch_orthologs(
     gene_id: str | int,
     *,
     gene_symbol: str = "",
     page_size: int = DEFAULT_PAGE_SIZE,
     include_gene_package: bool = False,
+    max_pages: int = DEFAULT_MAX_ORTHOLOG_PAGES,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Fetch orthologs (validated) with light summaries.
+    """Fetch orthologs (validated) with light summaries across pages.
 
     On success, ``data`` includes::
 
         {
           "gene_id": ...,
           "gene_symbol": ...,
-          "orthologs": <raw>,
+          "orthologs": <first_or_combined_raw>,
+          "ortholog_pages": [<raw page payloads>...],
           "ortholog_summaries": [...],
           "ortholog_count": N,
+          "retrieval_complete": bool,
+          "pagination": {...},
           "gene_package": <optional raw>,
         }
 
-    Never raises.
+    Never raises. Prefer :func:`iter_ortholog_pages` when each page must become
+    its own ApiRun/raw artifact (Section 1e).
     """
     cfg = settings or get_settings()
     gid = str(gene_id).strip()
-    orth = orthologs_by_gene_id(
-        gid, gene_symbol=gene_symbol, page_size=page_size, settings=cfg
+    pages, pagination = iter_ortholog_pages(
+        gid,
+        gene_symbol=gene_symbol,
+        page_size=page_size,
+        max_pages=max_pages,
+        settings=cfg,
     )
-    if not orth.success:
+    if not pages:
         return _tool_result(
             endpoint_name="fetch_orthologs",
             gene_symbol=gene_symbol or gid,
-            request_url=orth.request_url,
-            request_params=orth.request_params,
+            request_url=f"{DATASETS_BASE}/gene/id/{quote(gid, safe='')}/orthologs",
+            request_params={"gene_id": gid, "page_size": page_size},
             success=False,
-            status_code=orth.status_code,
-            data={"gene_id": gid, "orthologs": orth.data},
-            error_type=orth.error_type or "orthologs_failed",
-            error_message=orth.error_message or "NCBI Datasets orthologs failed",
+            data={"gene_id": gid, "pagination": pagination},
+            error_type="orthologs_failed",
+            error_message="NCBI Datasets orthologs returned no pages",
         )
 
-    reports = extract_reports(orth.data)
-    summaries = [summarize_ortholog_report(r) for r in reports]
+    first = pages[0]
+    if not first.success and len(pages) == 1:
+        return _tool_result(
+            endpoint_name="fetch_orthologs",
+            gene_symbol=gene_symbol or gid,
+            request_url=first.request_url,
+            request_params=first.request_params,
+            success=False,
+            status_code=first.status_code,
+            data={"gene_id": gid, "orthologs": first.data, "pagination": pagination},
+            error_type=first.error_type or "orthologs_failed",
+            error_message=first.error_message or "NCBI Datasets orthologs failed",
+        )
+
+    summaries: list[dict[str, Any]] = []
+    raw_pages: list[Any] = []
+    for page in pages:
+        if not page.success or not isinstance(page.data, dict):
+            continue
+        raw_pages.append(page.data)
+        for report in extract_reports(page.data):
+            summaries.append(summarize_ortholog_report(report, payload=page.data))
 
     gene_payload: Any = None
-    last_url = orth.request_url
-    last_params = orth.request_params
-    last_status = orth.status_code
+    last_url = pages[-1].request_url
+    last_params = pages[-1].request_params
+    last_status = pages[-1].status_code
     if include_gene_package:
         gene = gene_by_id(gid, gene_symbol=gene_symbol, settings=cfg)
         last_url = gene.request_url
@@ -317,9 +481,12 @@ def fetch_orthologs(
                 status_code=gene.status_code,
                 data={
                     "gene_id": gid,
-                    "orthologs": orth.data,
+                    "orthologs": raw_pages[0] if raw_pages else first.data,
+                    "ortholog_pages": raw_pages,
                     "ortholog_summaries": summaries,
                     "ortholog_count": len(summaries),
+                    "retrieval_complete": bool(pagination.get("retrieval_complete")),
+                    "pagination": pagination,
                     "gene_package": gene.data,
                 },
                 error_type=gene.error_type or "gene_package_failed",
@@ -328,6 +495,7 @@ def fetch_orthologs(
             )
         gene_payload = gene.data
 
+    success = bool(raw_pages)
     return _tool_result(
         endpoint_name="fetch_orthologs",
         gene_symbol=gene_symbol or gid,
@@ -338,16 +506,23 @@ def fetch_orthologs(
             "include_gene_package": include_gene_package,
             **(last_params or {}),
         },
-        success=True,
+        success=success,
         status_code=last_status,
         data={
             "gene_id": gid,
             "gene_symbol": gene_symbol or None,
-            "orthologs": orth.data,
+            "orthologs": raw_pages[0] if raw_pages else first.data,
+            "ortholog_pages": raw_pages,
             "ortholog_summaries": summaries,
             "ortholog_count": len(summaries),
+            "retrieval_complete": bool(pagination.get("retrieval_complete")),
+            "pagination": pagination,
             "gene_package": gene_payload,
         },
+        error_type=None if success else (first.error_type or "orthologs_failed"),
+        error_message=None
+        if success
+        else (first.error_message or "NCBI Datasets orthologs failed"),
     )
 
 
@@ -357,9 +532,12 @@ __all__ = [
     "DEFAULT_PAGE_SIZE",
     "DEFAULT_RETURNED_CONTENT",
     "DEFAULT_GENE_ID_SREBF2",
+    "DEFAULT_MAX_ORTHOLOG_PAGES",
     "summarize_ortholog_report",
     "extract_reports",
+    "extract_next_page_token",
     "gene_by_id",
     "orthologs_by_gene_id",
+    "iter_ortholog_pages",
     "fetch_orthologs",
 ]
