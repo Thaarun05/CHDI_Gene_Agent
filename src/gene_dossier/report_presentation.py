@@ -42,6 +42,10 @@ ALLOWED_LINK_HOSTS = frozenset(
         "www.alphafold.com",
         "www.orthodb.org",
         "orthodb.org",
+        "www.gtexportal.org",
+        "gtexportal.org",
+        "hbatlas.org",
+        "www.hbatlas.org",
     }
 )
 
@@ -149,6 +153,18 @@ def build_section_presentation(
         "orthologs",
     }:
         return build_homologues_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
+    if key in {
+        "2a",
+        "2.a",
+        "tissue_specific",
+        "tissue-specific",
+        "tissue_specific_information",
+    }:
+        return build_tissue_specific_information_blocks(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
             section_status=section_status,
@@ -2693,6 +2709,240 @@ def build_homologues_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_tissue_specific_information_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 2a GTEx + HBT presentation blocks in golden order."""
+    from gene_dossier.section_2a import (
+        gtex_gene_url,
+        gtex_intro_text,
+        hbt_intro_text,
+        hbt_link_text,
+        hbt_pdf_url,
+    )
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (gene_symbol or "").strip()
+    item_key = str(summary.get("presentation_item_key") or f"tissue-{(gene or '').lower()}")
+
+    collection = next(
+        (r for r in records if r.fact_type == "gtex_expression_collection_summary"),
+        None,
+    )
+    all_fig_rec = next(
+        (r for r in records if r.fact_type == "gtex_all_tissues_figure"),
+        None,
+    )
+    brain_fig_rec = next(
+        (r for r in records if r.fact_type == "gtex_brain_tissues_figure"),
+        None,
+    )
+    hbt_fig_rec = next(
+        (r for r in records if r.fact_type == "hbt_whole_brain_figure"),
+        None,
+    )
+    hbt_pdf_rec = next(
+        (r for r in records if r.fact_type == "hbt_whole_brain_pdf"),
+        None,
+    )
+    gtex_ref = next(
+        (r for r in records if r.fact_type == "gtex_gene_reference"),
+        None,
+    )
+
+    gtex_url = str(summary.get("gtex_portal_url") or gtex_gene_url(gene))
+    hbt_url = str(summary.get("hbt_pdf_url") or hbt_pdf_url(gene))
+    blocks: list[ReportContentBlock] = []
+
+    # 1. GTEx intro
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=gtex_intro_text(gene),
+            presentation_role="section_2a_gtex_intro",
+            presentation_item_key=item_key,
+            source_ids=[gtex_ref.source_id]
+            if gtex_ref and gtex_ref.source_id
+            else ([collection.source_id] if collection and collection.source_id else []),
+            evidence_record_ids=[gtex_ref.id]
+            if gtex_ref and gtex_ref.id
+            else ([collection.id] if collection and collection.id else []),
+        )
+    )
+
+    # 2. All-tissues link
+    blocks.append(
+        ReportContentBlock(
+            kind="link",
+            text="",
+            links=[{"label": f"GTEx: {gene} expression in all tissues", "url": gtex_url}],
+            presentation_role="section_2a_gtex_all_tissues_link",
+            presentation_item_key=item_key,
+            source_ids=[collection.source_id]
+            if collection and collection.source_id
+            else [],
+            evidence_record_ids=[collection.id] if collection and collection.id else [],
+        )
+    )
+
+    # 3. All-tissues figure or status
+    all_fig = None
+    if all_fig_rec is not None:
+        all_fig = _figure_block_from_record(
+            all_fig_rec,
+            role="section_2a_gtex_all_tissues_figure",
+            caption="",
+            diagnostics=diagnostics,
+        )
+        if all_fig is not None:
+            all_fig = all_fig.model_copy(update={"presentation_item_key": item_key})
+            blocks.append(all_fig)
+    if all_fig is None:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="GTEx all-tissue expression plot temporarily unavailable.",
+                presentation_role="section_2a_source_status",
+                presentation_item_key=f"{item_key}-gtex-all-status",
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2a",
+                "gtex all-tissue figure unavailable",
+                "warning",
+            )
+        )
+
+    # 4. Brain link (new page)
+    blocks.append(
+        ReportContentBlock(
+            kind="link",
+            text="",
+            links=[{"label": f"GTEx: {gene} expression in brain", "url": gtex_url}],
+            presentation_role="section_2a_gtex_brain_link",
+            presentation_item_key=item_key,
+            presentation_page_break_before=True,
+            source_ids=[collection.source_id]
+            if collection and collection.source_id
+            else [],
+            evidence_record_ids=[collection.id] if collection and collection.id else [],
+        )
+    )
+
+    # 5. Brain figure or status
+    brain_fig = None
+    if brain_fig_rec is not None:
+        brain_fig = _figure_block_from_record(
+            brain_fig_rec,
+            role="section_2a_gtex_brain_figure",
+            caption="",
+            diagnostics=diagnostics,
+        )
+        if brain_fig is not None:
+            brain_fig = brain_fig.model_copy(update={"presentation_item_key": item_key})
+            blocks.append(brain_fig)
+    if brain_fig is None:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="GTEx brain-tissue expression plot temporarily unavailable.",
+                presentation_role="section_2a_source_status",
+                presentation_item_key=f"{item_key}-gtex-brain-status",
+            )
+        )
+
+    # 6. HBT intro
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=hbt_intro_text(),
+            presentation_role="section_2a_hbt_intro",
+            presentation_item_key=item_key,
+            source_ids=[hbt_pdf_rec.source_id]
+            if hbt_pdf_rec and hbt_pdf_rec.source_id
+            else [],
+            evidence_record_ids=[hbt_pdf_rec.id]
+            if hbt_pdf_rec and hbt_pdf_rec.id
+            else [],
+            links=[{"label": "HBT", "url": "https://hbatlas.org/"}],
+        )
+    )
+
+    # 7. HBT gene-expression link
+    blocks.append(
+        ReportContentBlock(
+            kind="link",
+            text=hbt_link_text(gene),
+            links=[{"label": "Link", "url": hbt_url}],
+            presentation_role="section_2a_hbt_link",
+            presentation_item_key=item_key,
+            source_ids=[hbt_pdf_rec.source_id]
+            if hbt_pdf_rec and hbt_pdf_rec.source_id
+            else [],
+            evidence_record_ids=[hbt_pdf_rec.id]
+            if hbt_pdf_rec and hbt_pdf_rec.id
+            else [],
+        )
+    )
+
+    # 8. HBT figure (new page) or status
+    hbt_fig = None
+    if hbt_fig_rec is not None:
+        hbt_fig = _figure_block_from_record(
+            hbt_fig_rec,
+            role="section_2a_hbt_figure",
+            caption="",
+            diagnostics=diagnostics,
+        )
+        if hbt_fig is not None:
+            hbt_fig = hbt_fig.model_copy(
+                update={
+                    "presentation_item_key": item_key,
+                    "presentation_page_break_before": True,
+                }
+            )
+            blocks.append(hbt_fig)
+    if hbt_fig is None:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="HBT developmental-expression figure temporarily unavailable.",
+                presentation_role="section_2a_source_status",
+                presentation_item_key=f"{item_key}-hbt-status",
+                presentation_page_break_before=True,
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2a",
+                "hbt figure unavailable",
+                "warning",
+            )
+        )
+
+    if rendering.get("overall") in {None, "empty"} and not any(
+        r.fact_type.startswith("gtex_") or r.fact_type.startswith("hbt_")
+        for r in records
+    ):
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2a",
+                "no tissue-specific evidence available",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -2709,6 +2959,7 @@ __all__ = [
     "build_homologues_blocks",
     "build_known_structure_blocks",
     "build_section_presentation",
+    "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",
     "transcript_selection_sentence",
 ]

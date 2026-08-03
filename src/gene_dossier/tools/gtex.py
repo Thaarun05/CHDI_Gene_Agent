@@ -1,12 +1,15 @@
 """GTEx Portal API v2 client.
 
-Resolves a gene to a GTEx GENCODE ID, then fetches median tissue expression and
-single-tissue eQTLs. Does **not** normalize into evidence records.
+Resolves a gene to a GTEx GENCODE ID, then fetches median tissue expression,
+sample-level expression, tissue metadata, and single-tissue eQTLs. Does **not**
+normalize into evidence records.
 
 Key endpoints (validated)::
 
     GET /reference/gene?geneId={symbol}&genomeBuild=GRCh38/hg38
+    GET /expression/geneExpression?gencodeId={id}&datasetId=gtex_v8
     GET /expression/medianGeneExpression?gencodeId={id}&datasetId=gtex_v8
+    GET /dataset/tissueSiteDetail?datasetId=gtex_v8
     GET /association/singleTissueEqtl?gencodeId={id}&datasetId=gtex_v8&itemsPerPage=...
 
 For SREBF2, the expected GTEx GENCODE ID is ``ENSG00000198911.11``.
@@ -16,7 +19,7 @@ GTEx is human-only. Never raises: all failures return :class:`~gene_dossier.mode
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlencode
 
 import httpx
@@ -30,6 +33,11 @@ GTEX_BASE = "https://gtexportal.org/api/v2"
 DEFAULT_DATASET = "gtex_v8"
 DEFAULT_GENOME_BUILD = "GRCh38/hg38"
 DEFAULT_EQTL_PAGE_SIZE = 1000  # keep MVP payloads bounded; caller can raise
+DEFAULT_ITEMS_PER_PAGE = 250
+DEFAULT_REQUEST_HEADERS = {
+    "User-Agent": "GeneDossier/0.1.0 (research; provenance-first gene dossier client)",
+    "Accept": "application/json",
+}
 
 
 def _tool_result(
@@ -72,7 +80,10 @@ def _request_json(
     # httpx encodes list values as repeated keys (needed for tissueSiteDetailId filters).
     request_url = f"{url}?{urlencode(params, doseq=True)}"
     try:
-        with httpx.Client(timeout=settings.http_timeout_seconds) as client:
+        with httpx.Client(
+            timeout=settings.http_timeout_seconds,
+            headers=DEFAULT_REQUEST_HEADERS,
+        ) as client:
             response = client.get(url, params=params)
         try:
             payload: Any = response.json()
@@ -141,6 +152,24 @@ def _data_list(payload: Any) -> list[Any]:
     return []
 
 
+def _paging_info(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        info = payload.get("paging_info") or payload.get("pagingInfo") or {}
+        if isinstance(info, dict):
+            return info
+    return {}
+
+
+def _number_of_pages(payload: Any) -> int:
+    info = _paging_info(payload)
+    raw = info.get("numberOfPages")
+    try:
+        pages = int(raw)
+    except (TypeError, ValueError):
+        pages = 1
+    return max(1, pages)
+
+
 def prefer_gencode_id(gene_rows: list[Any], gene_symbol: str) -> str | None:
     """Pick a GENCODE ID from gene lookup rows, preferring exact geneSymbol match."""
     target = gene_symbol.strip().upper()
@@ -158,8 +187,23 @@ def prefer_gencode_id(gene_rows: list[Any], gene_symbol: str) -> str | None:
         else:
             fallback.append(str(gid))
     if exact:
-        return exact[0]
+        # Prefer unambiguous exact match; first exact id when duplicates share it.
+        unique = list(dict.fromkeys(exact))
+        return unique[0]
     return fallback[0] if fallback else None
+
+
+def exact_gene_rows(gene_rows: list[Any], gene_symbol: str) -> list[dict[str, Any]]:
+    """Return rows whose geneSymbol matches ``gene_symbol`` case-insensitively."""
+    target = gene_symbol.strip().upper()
+    out: list[dict[str, Any]] = []
+    for row in gene_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("geneSymbol") or row.get("geneSymbolUpper") or "").upper()
+        if symbol == target and row.get("gencodeId"):
+            out.append(row)
+    return out
 
 
 def resolve_gene(
@@ -167,6 +211,7 @@ def resolve_gene(
     *,
     genome_build: str = DEFAULT_GENOME_BUILD,
     settings: Settings | None = None,
+    require_exact_unambiguous: bool = False,
 ) -> ToolResult:
     """Resolve ``gene_symbol`` to a GTEx GENCODE ID via ``/reference/gene``."""
     cfg = settings or get_settings()
@@ -182,19 +227,56 @@ def resolve_gene(
         return result
 
     rows = _data_list(result.data)
-    gencode_id = prefer_gencode_id(rows, gene_symbol)
-    if not gencode_id:
-        return _tool_result(
-            endpoint_name="resolve_gene",
-            gene_symbol=gene_symbol,
-            request_url=result.request_url,
-            request_params=result.request_params,
-            success=False,
-            status_code=result.status_code,
-            data=result.data,
-            error_type="no_results",
-            error_message=f"No GTEx GENCODE ID for {gene_symbol}",
+    exact_rows = exact_gene_rows(rows, gene_symbol)
+    if require_exact_unambiguous:
+        if not exact_rows:
+            return _tool_result(
+                endpoint_name="resolve_gene",
+                gene_symbol=gene_symbol,
+                request_url=result.request_url,
+                request_params=result.request_params,
+                success=False,
+                status_code=result.status_code,
+                data=result.data,
+                error_type="no_results",
+                error_message=f"No exact GTEx geneSymbol match for {gene_symbol}",
+            )
+        unique_ids = list(
+            dict.fromkeys(str(row.get("gencodeId")) for row in exact_rows if row.get("gencodeId"))
         )
+        if len(unique_ids) != 1:
+            return _tool_result(
+                endpoint_name="resolve_gene",
+                gene_symbol=gene_symbol,
+                request_url=result.request_url,
+                request_params=result.request_params,
+                success=False,
+                status_code=result.status_code,
+                data=result.data,
+                error_type="ambiguous_results",
+                error_message=(
+                    f"Ambiguous GTEx GENCODE IDs for {gene_symbol}: {', '.join(unique_ids)}"
+                ),
+            )
+        matched = exact_rows[0]
+        gencode_id = unique_ids[0]
+    else:
+        gencode_id = prefer_gencode_id(rows, gene_symbol)
+        matched = exact_rows[0] if exact_rows else (rows[0] if rows and isinstance(rows[0], dict) else {})
+        if not gencode_id:
+            return _tool_result(
+                endpoint_name="resolve_gene",
+                gene_symbol=gene_symbol,
+                request_url=result.request_url,
+                request_params=result.request_params,
+                success=False,
+                status_code=result.status_code,
+                data=result.data,
+                error_type="no_results",
+                error_message=f"No GTEx GENCODE ID for {gene_symbol}",
+            )
+
+    matched_build = str((matched or {}).get("genomeBuild") or genome_build)
     return _tool_result(
         endpoint_name="resolve_gene",
         gene_symbol=gene_symbol,
@@ -205,7 +287,16 @@ def resolve_gene(
         data={
             "gene_symbol": gene_symbol,
             "gencode_id": gencode_id,
-            "genome_build": genome_build,
+            "genome_build": matched_build,
+            "entrez_gene_id": (matched or {}).get("entrezGeneId"),
+            "chromosome": (matched or {}).get("chromosome"),
+            "start": (matched or {}).get("start"),
+            "end": (matched or {}).get("end"),
+            "strand": (matched or {}).get("strand"),
+            "gene_type": (matched or {}).get("geneType") or (matched or {}).get("geneTypeId"),
+            "description": (matched or {}).get("description"),
+            "tss": (matched or {}).get("tss"),
+            "matched_row": matched,
             "raw": result.data,
         },
     )
@@ -216,13 +307,18 @@ def median_expression(
     *,
     gene_symbol: str = "",
     dataset_id: str = DEFAULT_DATASET,
+    page: int = 0,
+    items_per_page: int = DEFAULT_ITEMS_PER_PAGE,
     settings: Settings | None = None,
 ) -> ToolResult:
-    """Fetch median gene expression across GTEx tissues."""
-    # TODO: add sample-level /expression/geneExpression fallback for box/violin plots
-    # (validated in CHDI API map §2a.3). Median endpoint remains the MVP default.
+    """Fetch one page of median gene expression across GTEx tissues."""
     cfg = settings or get_settings()
-    params = {"gencodeId": gencode_id, "datasetId": dataset_id}
+    params = {
+        "gencodeId": gencode_id,
+        "datasetId": dataset_id,
+        "page": str(int(page)),
+        "itemsPerPage": str(int(items_per_page)),
+    }
     return _request_json(
         endpoint_name="median_expression",
         gene_symbol=gene_symbol or gencode_id,
@@ -230,6 +326,74 @@ def median_expression(
         params=params,
         settings=cfg,
     )
+
+
+def gene_expression(
+    gencode_id: str,
+    *,
+    gene_symbol: str = "",
+    dataset_id: str = DEFAULT_DATASET,
+    page: int = 0,
+    items_per_page: int = DEFAULT_ITEMS_PER_PAGE,
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch one page of sample-level gene expression (TPM arrays)."""
+    cfg = settings or get_settings()
+    params = {
+        "gencodeId": gencode_id,
+        "datasetId": dataset_id,
+        "page": str(int(page)),
+        "itemsPerPage": str(int(items_per_page)),
+    }
+    return _request_json(
+        endpoint_name="gene_expression",
+        gene_symbol=gene_symbol or gencode_id,
+        path="/expression/geneExpression",
+        params=params,
+        settings=cfg,
+    )
+
+
+def tissue_site_detail(
+    *,
+    dataset_id: str = DEFAULT_DATASET,
+    page: int = 0,
+    items_per_page: int = DEFAULT_ITEMS_PER_PAGE,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch one page of GTEx tissue metadata (colors/labels)."""
+    cfg = settings or get_settings()
+    params = {
+        "datasetId": dataset_id,
+        "page": str(int(page)),
+        "itemsPerPage": str(int(items_per_page)),
+    }
+    return _request_json(
+        endpoint_name="tissue_site_detail",
+        gene_symbol=gene_symbol or dataset_id,
+        path="/dataset/tissueSiteDetail",
+        params=params,
+        settings=cfg,
+    )
+
+
+def iter_paginated(
+    fetch_page,
+    *,
+    max_pages: int = 50,
+) -> Iterator[ToolResult]:
+    """Yield one ToolResult per HTTP page. Stops on first failure or last page."""
+    page = 0
+    while page < max_pages:
+        result = fetch_page(page)
+        yield result
+        if not result.success:
+            return
+        pages = _number_of_pages(result.data)
+        page += 1
+        if page >= pages:
+            return
 
 
 def single_tissue_eqtl(
@@ -353,9 +517,14 @@ __all__ = [
     "DEFAULT_DATASET",
     "DEFAULT_GENOME_BUILD",
     "DEFAULT_EQTL_PAGE_SIZE",
+    "DEFAULT_ITEMS_PER_PAGE",
     "resolve_gene",
     "median_expression",
+    "gene_expression",
+    "tissue_site_detail",
+    "iter_paginated",
     "single_tissue_eqtl",
     "fetch_expression_and_eqtl",
     "prefer_gencode_id",
+    "exact_gene_rows",
 ]

@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "beautifulsoup4>=4.12",
     "Pillow>=10.0",
+    "matplotlib>=3.8",
     "playwright>=1.45",
     # Workflow orchestration (LangGraph) + LLM/RAG abstraction (LangChain).
     # Packages are required; OpenAI/Anthropic *API keys* are optional — retrieval and

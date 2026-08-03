@@ -97,6 +97,15 @@ PresentationRole = Literal[
     "section_1e_ortholog_capture",
     "section_1e_fallback_table",
     "section_1e_attribution",
+    "section_2a_gtex_intro",
+    "section_2a_gtex_all_tissues_link",
+    "section_2a_gtex_all_tissues_figure",
+    "section_2a_gtex_brain_link",
+    "section_2a_gtex_brain_figure",
+    "section_2a_hbt_intro",
+    "section_2a_hbt_link",
+    "section_2a_hbt_figure",
+    "section_2a_source_status",
 ]
 
 

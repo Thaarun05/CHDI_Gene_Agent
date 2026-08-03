@@ -47,6 +47,10 @@ from gene_dossier.section_1e import (
     Section1eConfig,
     node_generate_section_1e_derived_artifacts,
 )
+from gene_dossier.section_2a import (
+    Section2aConfig,
+    node_generate_section_2a_derived_artifacts,
+)
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -60,7 +64,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
@@ -69,6 +73,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1c": {"CDD", "PDBe"},
     "1d": {"AlphaFold"},
     "1e": {"NCBI Datasets", "OrthoDB"},
+    "2a": {"GTEx"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -84,6 +89,14 @@ _OPAQUE_REF_BY_ROLE = {
     ("1e", "section_1e_narrative"): "ev-1e-ortholog-summary",
     ("1e", "section_1e_fallback_table"): "ev-1e-ortholog-fallback-table",
     ("1e", "section_1e_attribution"): "ev-1e-ortholog-attribution",
+    ("2a", "section_2a_gtex_intro"): "ev-2a-gtex-introduction",
+    ("2a", "section_2a_gtex_all_tissues_link"): "ev-2a-gtex-all-tissues-summary",
+    ("2a", "section_2a_gtex_all_tissues_figure"): "ev-2a-gtex-all-tissues-figure",
+    ("2a", "section_2a_gtex_brain_link"): "ev-2a-gtex-brain-summary",
+    ("2a", "section_2a_gtex_brain_figure"): "ev-2a-gtex-brain-figure",
+    ("2a", "section_2a_hbt_intro"): "ev-2a-hbt-summary",
+    ("2a", "section_2a_hbt_link"): "ev-2a-hbt-summary",
+    ("2a", "section_2a_hbt_figure"): "ev-2a-hbt-figure",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -109,6 +122,7 @@ _SECTION_1E_REF_SUFFIX_BY_ROLE = {
 _SECTION_1D_NON_EVIDENCE_ROLES = frozenset(
     {"section_1d_species_status", "section_1d_confidence_legend"}
 )
+_SECTION_2A_NON_EVIDENCE_ROLES = frozenset({"section_2a_source_status"})
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -146,11 +160,12 @@ class SectionBundleResult:
 
 
 def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
-    """Accept only supported Section 1 keys; dedupe; canonicalize order."""
+    """Accept only supported section keys; dedupe; canonicalize order."""
     raw = [str(k).strip().lower() for k in (section_keys or [])]
     if not raw:
         raise SectionBundleError(
-            "At least one section key is required (1a, 1b, 1c, 1d, and/or 1e)."
+            "At least one section key is required "
+            f"({', '.join(SUPPORTED_SECTION_BUNDLE_KEYS)})."
         )
     normalized: list[str] = []
     for key in raw:
@@ -164,6 +179,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "1d"
         elif key in {"1.e", "e"}:
             key = "1e"
+        elif key in {"2.a"}:
+            key = "2a"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -184,6 +201,9 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     Section 1e likewise owns NCBI Datasets ortholog/taxonomy and OrthoDB
     network requests; the generic Datasets ortholog client must not run when
     1e is selected.
+
+    Section 2a owns GTEx (and HBT) network requests; the generic GTEx client
+    must not run when 2a is selected.
     """
     needed: set[str] = set()
     for key in section_keys:
@@ -193,6 +213,10 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     if "1e" in section_keys:
         needed.discard("NCBI Datasets")
         needed.discard("OrthoDB")
+    if "2a" in section_keys:
+        needed.discard("GTEx")
+        needed.discard("HBT")
+        needed.discard("Human Brain Transcriptome")
     return sorted(needed)
 
 
@@ -480,8 +504,12 @@ def finalize_section_bundle_run(
         save_dossier_run(session, existing)
 
 
+def _major_section_spec(number: int) -> Any:
+    return next(spec for spec in REPORT_SECTIONS if spec.number == number)
+
+
 def _major_section_1_spec() -> Any:
-    return next(spec for spec in REPORT_SECTIONS if spec.number == 1)
+    return _major_section_spec(1)
 
 
 def assign_opaque_refs(
@@ -499,6 +527,9 @@ def assign_opaque_refs(
     ref_map: dict[str, dict[str, list[str]]] = {}
     for index, block in enumerate(blocks):
         if block.presentation_role in _SECTION_1D_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
+        if block.presentation_role in _SECTION_2A_NON_EVIDENCE_ROLES:
             polished.append(block.model_copy(update={"evidence_ref": None}))
             continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
@@ -526,6 +557,7 @@ def serialize_presentation_block(block: ReportContentBlock) -> dict[str, Any]:
         "text": sanitize_polished_text(block.text) if block.text else None,
         "presentation_role": block.presentation_role,
         "presentation_item_key": block.presentation_item_key,
+        "presentation_page_break_before": bool(block.presentation_page_break_before),
         "evidence_ref": block.evidence_ref,
     }
     if block.table_headers:
@@ -556,10 +588,8 @@ def build_section_bundle_document(
     raw_artifacts: Sequence[Any] | None = None,
     section_status_by_key: dict[str, Any] | None = None,
 ) -> tuple[ReportDocument, dict[str, Any], dict[str, Any]]:
-    """Build a Section 1-only document plus presentation and audit payloads."""
+    """Build a section-bundle document (Major 1 and/or Major 2) plus audit."""
     keys = validate_section_keys(section_keys)
-    major_spec = _major_section_1_spec()
-    sub_by_key = {sub.key: sub for sub in major_spec.subsections}
     provenance = build_provenance_index(
         evidence_records=evidence_records,
         api_runs=api_runs,
@@ -569,88 +599,112 @@ def build_section_bundle_document(
 
     evidence_reference_map: dict[str, dict[str, list[str]]] = {}
     diagnostics: list[dict[str, Any]] = []
-    presentation_subsections: list[dict[str, Any]] = []
-    report_subsections: list[ReportSubsection] = []
     figure_notes: list[str] = []
 
+    keys_by_major: dict[int, list[str]] = {}
     for section_key in keys:
-        letter = section_key[-1]
-        sub_spec = sub_by_key[letter]
-        result = build_section_presentation(
-            section_key=section_key,
-            gene_symbol=gene_symbol,
-            evidence_records=evidence_records,
-            section_status=status_by_key.get(section_key),
-        )
-        for diag in result.diagnostics:
-            diagnostics.append(
+        major_num = int(section_key[0])
+        keys_by_major.setdefault(major_num, []).append(section_key)
+
+    report_majors: list[ReportMajorSection] = []
+    presentation_majors: list[dict[str, Any]] = []
+
+    for major_num in sorted(keys_by_major):
+        major_spec = _major_section_spec(major_num)
+        sub_by_key = {sub.key: sub for sub in major_spec.subsections}
+        presentation_subsections: list[dict[str, Any]] = []
+        report_subsections: list[ReportSubsection] = []
+
+        for section_key in keys_by_major[major_num]:
+            letter = section_key[-1]
+            sub_spec = sub_by_key[letter]
+            result = build_section_presentation(
+                section_key=section_key,
+                gene_symbol=gene_symbol,
+                evidence_records=evidence_records,
+                section_status=status_by_key.get(section_key),
+            )
+            for diag in result.diagnostics:
+                diagnostics.append(
+                    {
+                        "section_key": section_key,
+                        "field": diag.field,
+                        "reason": diag.reason,
+                        "severity": diag.severity,
+                    }
+                )
+                if diag.field == "figure_note":
+                    figure_notes.append(diag.reason)
+            polished_blocks, ref_map = assign_opaque_refs(
+                section_key=section_key,
+                blocks=result.blocks,
+                provenance=provenance,
+            )
+            evidence_reference_map.update(ref_map)
+
+            figure_meta: dict[str, Any] = {}
+            for rec in evidence_records:
+                if rec.fact_type == "ucsc_conservation_figure" and isinstance(
+                    rec.value, dict
+                ):
+                    figure_meta = dict(rec.value)
+                    break
+
+            serialized_blocks: list[dict[str, Any]] = []
+            for block in polished_blocks:
+                item = serialize_presentation_block(block)
+                if block.presentation_role == "ucsc_conservation_figure" and figure_meta:
+                    item["figure_path"] = (
+                        figure_meta.get("relative_path")
+                        or figure_meta.get("local_artifact_path")
+                        or item.get("figure_path")
+                    )
+                    item["media_type"] = figure_meta.get("media_type") or "image/png"
+                    item["width"] = figure_meta.get("width")
+                    item["height"] = figure_meta.get("height")
+                    item["sha256"] = figure_meta.get("sha256") or figure_meta.get(
+                        "content_hash"
+                    )
+                    item["byte_size"] = figure_meta.get("byte_size")
+                serialized_blocks.append(item)
+
+            presentation_subsections.append(
                 {
-                    "section_key": section_key,
-                    "field": diag.field,
-                    "reason": diag.reason,
-                    "severity": diag.severity,
+                    "key": section_key,
+                    "title": sub_spec.title,
+                    "blocks": serialized_blocks,
                 }
             )
-            if diag.field == "figure_note":
-                figure_notes.append(diag.reason)
-        polished_blocks, ref_map = assign_opaque_refs(
-            section_key=section_key,
-            blocks=result.blocks,
-            provenance=provenance,
-        )
-        evidence_reference_map.update(ref_map)
-
-        figure_meta: dict[str, Any] = {}
-        for rec in evidence_records:
-            if rec.fact_type == "ucsc_conservation_figure" and isinstance(rec.value, dict):
-                figure_meta = dict(rec.value)
-                break
-
-        serialized_blocks: list[dict[str, Any]] = []
-        for block in polished_blocks:
-            item = serialize_presentation_block(block)
-            if block.presentation_role == "ucsc_conservation_figure" and figure_meta:
-                item["figure_path"] = (
-                    figure_meta.get("relative_path")
-                    or figure_meta.get("local_artifact_path")
-                    or item.get("figure_path")
+            report_subsections.append(
+                ReportSubsection(
+                    key=letter,
+                    title=sub_spec.title,
+                    toc_title=sub_spec.toc_title,
+                    presentation_blocks=polished_blocks,
+                    status="populated" if polished_blocks else "empty",
                 )
-                item["media_type"] = figure_meta.get("media_type") or "image/png"
-                item["width"] = figure_meta.get("width")
-                item["height"] = figure_meta.get("height")
-                item["sha256"] = figure_meta.get("sha256") or figure_meta.get(
-                    "content_hash"
-                )
-                item["byte_size"] = figure_meta.get("byte_size")
-            serialized_blocks.append(item)
+            )
 
-        presentation_subsections.append(
-            {
-                "key": section_key,
-                "title": sub_spec.title,
-                "blocks": serialized_blocks,
-            }
-        )
-        report_subsections.append(
-            ReportSubsection(
-                key=letter,
-                title=sub_spec.title,
-                toc_title=sub_spec.toc_title,
-                presentation_blocks=polished_blocks,
-                status="populated" if polished_blocks else "empty",
+        report_majors.append(
+            ReportMajorSection(
+                number=major_num,
+                key=str(major_num),
+                title=major_spec.title,
+                toc_title=major_spec.toc_title,
+                subsections=report_subsections,
+                status="populated" if report_subsections else "empty",
+                narrative_markdown=None,
+                synthesis_status=None,
             )
         )
+        presentation_majors.append(
+            {
+                "number": major_num,
+                "title": major_spec.title,
+                "subsections": presentation_subsections,
+            }
+        )
 
-    major = ReportMajorSection(
-        number=1,
-        key="1",
-        title=major_spec.title,
-        toc_title=major_spec.toc_title,
-        subsections=report_subsections,
-        status="populated" if report_subsections else "empty",
-        narrative_markdown=None,
-        synthesis_status=None,
-    )
     cover = ReportCover(
         gene_symbol=gene_symbol,
         chromosome=infer_chromosome(list(evidence_records)),
@@ -660,23 +714,27 @@ def build_section_bundle_document(
         dossier_run_id=dossier_run_id,
         gene_symbol=gene_symbol,
         cover=cover,
-        sections=[major],
+        sections=report_majors,
     )
 
-    # Presentation JSON: scrub credentials and citation tokens from strings.
-    presentation_raw = {
+    # Backward-compatible presentation shape: keep ``major_section`` for single
+    # Major 1 runs; add ``major_sections`` whenever multiple majors are present.
+    presentation_raw: dict[str, Any] = {
         "document_type": "section_bundle",
         "gene_symbol": gene_symbol,
         "dossier_run_id": dossier_run_id,
         "selected_section_keys": list(keys),
-        "major_section": {
-            "number": 1,
-            "title": major_spec.title,
-            "subsections": presentation_subsections,
-        },
+        "major_sections": presentation_majors,
     }
+    if len(presentation_majors) == 1:
+        presentation_raw["major_section"] = presentation_majors[0]
+    elif presentation_majors:
+        # Prefer Major 1 for the legacy key when present.
+        major1 = next((m for m in presentation_majors if m["number"] == 1), None)
+        presentation_raw["major_section"] = major1 or presentation_majors[0]
+
     presentation = sanitize_credentials(presentation_raw)
-    # Strip citation tokens from nested presentation strings only.
+
     def _polish_strings(node: Any) -> Any:
         if isinstance(node, str):
             return sanitize_polished_text(node)
@@ -699,6 +757,7 @@ def build_section_bundle_document(
         "figure_notes": figure_notes,
         "section_1d_status": status_by_key.get("1d"),
         "section_1e_status": status_by_key.get("1e"),
+        "section_2a_status": status_by_key.get("2a"),
     }
     return document, presentation, audit
 
@@ -710,80 +769,63 @@ def render_section_bundle_html(
     include_page_chrome: bool = True,
     include_major_heading: bool = True,
 ) -> str:
-    """Render standalone Section 1 HTML (no cover/TOC/major narrative)."""
+    """Render section-bundle HTML (Major 1 and/or Major 2; no cover/TOC)."""
     if not document.sections:
         raise SectionBundleError("Section bundle document has no sections")
-    major = document.sections[0]
-    heading = f"{major.number}. {major.title}"
-    body_parts = [
-        (
-            f'<section id="section-{major.number}" '
-            f'class="report-page section-bundle-body">'
-        ),
-    ]
-    if include_major_heading:
-        body_parts.append(
-            f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
-            f"{_escape(heading)}</h2>"
-        )
-    # Section 1c pages past the first are emitted as sibling report pages so the
-    # C-terminal family block and the PDB group each start on a real new page in
-    # HTML, PDF, and the rasterized PNGs alike.
-    # When Section 1d is also selected, append its subsection HTML to the *last*
-    # 1c segment (PDB page) via structured parts — never before continuation pages.
-    # Section 1e always starts on its own Letter page (never merged onto 1c/1d).
-    continuation_segments: list[str] = []
-    subsection_d = next((s for s in major.subsections if s.key == "d"), None)
-    subsection_c = next((s for s in major.subsections if s.key == "c"), None)
-    merge_1d_onto_pdb = bool(
-        subsection_c
-        and subsection_c.presentation_blocks
-        and subsection_d
-        and subsection_d.presentation_blocks
-    )
-    has_prior_to_1e = any(s.key != "e" for s in major.subsections)
 
-    for sub in major.subsections:
-        if sub.key == "d" and merge_1d_onto_pdb:
+    from gene_dossier.rancho_report import (
+        render_section_2a_subsection_segments,
+    )
+
+    body_parts: list[str] = []
+    page_break = SECTION_1C_PDF_PAGE_BREAK
+
+    for major_index, major in enumerate(document.sections):
+        if major_index > 0:
+            body_parts.append(page_break)
+
+        if major.number == 1:
+            body_parts.extend(
+                _render_major_section_1_pages(
+                    major, include_major_heading=include_major_heading
+                )
+            )
             continue
-        if sub.key == "e":
-            e_html = _render_subsection(sub)
-            if has_prior_to_1e:
-                continuation_segments.append(e_html)
+
+        # Major 2 (and future majors): heading + subsection page segments.
+        heading = f"{major.number}. {major.title}"
+        first_page_parts = [
+            (
+                f'<section id="section-{major.number}" '
+                f'class="report-page section-bundle-body section-{major.number}-page">'
+            ),
+        ]
+        if include_major_heading:
+            first_page_parts.append(
+                f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
+                f"{_escape(heading)}</h2>"
+            )
+        continuation: list[str] = []
+        for sub in major.subsections:
+            if sub.key == "a" and any(
+                str(b.presentation_role or "").startswith("section_2a_")
+                for b in (sub.presentation_blocks or [])
+            ):
+                segments = render_section_2a_subsection_segments(sub)
+                first_page_parts.append(segments[0])
+                continuation.extend(segments[1:])
             else:
-                body_parts.append(e_html)
-            continue
-        if sub.key == "c" and sub.presentation_blocks:
-            segments = render_section_1c_subsection_segments(sub)
-            body_parts.extend(segments[:1])
-            rest = list(segments[1:])
-            if merge_1d_onto_pdb and subsection_d is not None:
-                d_html = _render_subsection(subsection_d)
-                if rest:
-                    last_1c_segment_parts = [rest[-1], d_html]
-                    rest[-1] = "\n".join(last_1c_segment_parts)
-                else:
-                    # Focused-ish path: only one 1c segment — append 1d there.
-                    if body_parts:
-                        # Last emitted piece is the first (only) 1c segment.
-                        body_parts[-1] = "\n".join([body_parts[-1], d_html])
-            continuation_segments.extend(rest)
-        else:
-            body_parts.append(_render_subsection(sub))
-    body_parts.append("</section>")
-    for index, segment in enumerate(continuation_segments):
-        body_parts.append(SECTION_1C_PDF_PAGE_BREAK)
-        is_1e_page = 'class="report-subsection subsection-e"' in segment
-        page_class = (
-            "report-page section-bundle-body section-1e-page"
-            if is_1e_page
-            else "report-page section-bundle-body section-1c-continuation"
-        )
-        body_parts.append(
-            f'<section id="section-{major.number}-cont-{index + 2}" '
-            f'class="{page_class}">'
-            f"{segment}</section>"
-        )
+                first_page_parts.append(_render_subsection(sub))
+        first_page_parts.append("</section>")
+        body_parts.extend(first_page_parts)
+        for index, segment in enumerate(continuation):
+            body_parts.append(page_break)
+            body_parts.append(
+                f'<section id="section-{major.number}-cont-{index + 2}" '
+                f'class="report-page section-bundle-body section-2a-continuation">'
+                f"{segment}</section>"
+            )
+
     body = "\n".join(body_parts)
 
     from gene_dossier.rancho_report import _asset_data_uri, _img_tag
@@ -817,7 +859,14 @@ def render_section_bundle_html(
         header = f'<div class="report-page report-chrome">{header_inner}</div>'
         footer = f'<div class="report-page report-chrome">{footer_inner}</div>'
 
-    title = _escape(f"{document.gene_symbol} — Section 1")
+    major_nums = [sec.number for sec in document.sections]
+    if major_nums == [1]:
+        title_suffix = "Section 1"
+    elif major_nums == [2]:
+        title_suffix = "Section 2"
+    else:
+        title_suffix = "Section Bundle"
+    title = _escape(f"{document.gene_symbol} — {title_suffix}")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -835,6 +884,78 @@ def render_section_bundle_html(
 </body>
 </html>
 """
+
+
+def _render_major_section_1_pages(
+    major: ReportMajorSection,
+    *,
+    include_major_heading: bool,
+) -> list[str]:
+    """Preserve existing Section 1 segmentation (1c/1d/1e) exactly."""
+    heading = f"{major.number}. {major.title}"
+    body_parts = [
+        (
+            f'<section id="section-{major.number}" '
+            f'class="report-page section-bundle-body">'
+        ),
+    ]
+    if include_major_heading:
+        body_parts.append(
+            f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
+            f"{_escape(heading)}</h2>"
+        )
+    continuation_segments: list[str] = []
+    subsection_d = next((s for s in major.subsections if s.key == "d"), None)
+    subsection_c = next((s for s in major.subsections if s.key == "c"), None)
+    merge_1d_onto_pdb = bool(
+        subsection_c
+        and subsection_c.presentation_blocks
+        and subsection_d
+        and subsection_d.presentation_blocks
+    )
+    has_prior_to_1e = any(s.key != "e" for s in major.subsections)
+
+    for sub in major.subsections:
+        if sub.key == "d" and merge_1d_onto_pdb:
+            continue
+        if sub.key == "e":
+            e_html = _render_subsection(sub)
+            if has_prior_to_1e:
+                continuation_segments.append(e_html)
+            else:
+                body_parts.append(e_html)
+            continue
+        if sub.key == "c" and sub.presentation_blocks:
+            segments = render_section_1c_subsection_segments(sub)
+            body_parts.extend(segments[:1])
+            rest = list(segments[1:])
+            if merge_1d_onto_pdb and subsection_d is not None:
+                d_html = _render_subsection(subsection_d)
+                if rest:
+                    last_1c_segment_parts = [rest[-1], d_html]
+                    rest[-1] = "\n".join(last_1c_segment_parts)
+                else:
+                    if body_parts:
+                        body_parts[-1] = "\n".join([body_parts[-1], d_html])
+            continuation_segments.extend(rest)
+        else:
+            body_parts.append(_render_subsection(sub))
+    body_parts.append("</section>")
+    out = list(body_parts)
+    for index, segment in enumerate(continuation_segments):
+        out.append(SECTION_1C_PDF_PAGE_BREAK)
+        is_1e_page = 'class="report-subsection subsection-e"' in segment
+        page_class = (
+            "report-page section-bundle-body section-1e-page"
+            if is_1e_page
+            else "report-page section-bundle-body section-1c-continuation"
+        )
+        out.append(
+            f'<section id="section-{major.number}-cont-{index + 2}" '
+            f'class="{page_class}">'
+            f"{segment}</section>"
+        )
+    return out
 
 
 _BUNDLE_OUTPUT_NAMES = (
@@ -1014,8 +1135,9 @@ def run_section_bundle(
     preloaded_state: DossierState | None = None,
     acceptance_profile: str | None = None,
     section_1e_config: Section1eConfig | None = None,
+    section_2a_config: Section2aConfig | None = None,
 ) -> SectionBundleResult:
-    """Execute identity (+ UCSC when 1b) and write a standalone Section 1 bundle."""
+    """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
     keys = validate_section_keys(section_keys or DEFAULT_SECTION_BUNDLE_KEYS)
     gene = gene_symbol.strip()
@@ -1037,6 +1159,7 @@ def run_section_bundle(
             "errors",
             "section_1d_status",
             "section_1e_status",
+            "section_2a_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1051,6 +1174,8 @@ def run_section_bundle(
     focused_1c = keys == ["1c"]
     focused_1d = keys == ["1d"]
     focused_1e = keys == ["1e"]
+    focused_2a = keys == ["2a"]
+    include_major_heading = not (focused_1c or focused_1d or focused_1e)
 
     try:
         if call_network:
@@ -1111,6 +1236,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_1e_config or Section1eConfig(),
                 )
+            if "2a" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_2a_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_2a_config or Section2aConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1118,6 +1257,8 @@ def run_section_bundle(
             section_status_by_key["1d"] = state["section_1d_status"]
         if state.get("section_1e_status"):
             section_status_by_key["1e"] = state["section_1e_status"]
+        if state.get("section_2a_status"):
+            section_status_by_key["2a"] = state["section_2a_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1135,6 +1276,8 @@ def run_section_bundle(
                 "NCBI Datasets",
                 "OrthoDB",
                 "NCBI Gene",
+                "GTEx",
+                "Human Brain Transcriptome",
             }:
                 coverage.append(row)
         audit["coverage"] = [
@@ -1212,6 +1355,11 @@ def run_section_bundle(
                 (state.get("section_1e_status") or {}).get("audit")
                 or state.get("section_1e_status")
             )
+        if "2a" in keys and state.get("section_2a_status"):
+            audit["section_2a"] = sanitize_credentials(
+                (state.get("section_2a_status") or {}).get("audit")
+                or state.get("section_2a_status")
+            )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
             audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
@@ -1225,7 +1373,7 @@ def run_section_bundle(
             write_pdf=write_pdf,
             dpi=dpi,
             allow_rerender=allow_rerender,
-            include_major_heading=not (focused_1c or focused_1d or focused_1e),
+            include_major_heading=include_major_heading,
         )
 
         if "1d" in keys and acceptance_profile == "section_1d_reference_genes":

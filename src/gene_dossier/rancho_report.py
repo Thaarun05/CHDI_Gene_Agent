@@ -777,6 +777,63 @@ table.section-1e-fallback-table td {{
   color: {REPORT_STYLE.orange_link};
   text-decoration: underline;
 }}
+.section-bundle-body .section-2a-narrative {{
+  margin: 0 0 10pt 0;
+  font-size: 11pt;
+  line-height: 1.35;
+}}
+.section-bundle-body .section-2a-link-line {{
+  margin: 6pt 0 8pt 0;
+  font-size: 11pt;
+}}
+.section-bundle-body .section-2a-link-line a {{
+  color: {REPORT_STYLE.orange_link};
+  text-decoration: underline;
+}}
+.section-bundle-body .section-2a-status-line {{
+  margin: 4pt 0 8pt 0;
+  font-size: 10pt;
+  color: #5a4a3a;
+  font-style: italic;
+}}
+.section-bundle-body figure.rancho-figure.section-2a-gtex-all-tissues-figure,
+.section-bundle-body figure.rancho-figure.section-2a-gtex-brain-figure {{
+  margin: 4pt auto 12pt auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2a-gtex-all-tissues-figure img,
+.section-bundle-body figure.rancho-figure.section-2a-gtex-brain-figure img {{
+  width: 7.2in;
+  max-width: 98%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+.section-bundle-body figure.rancho-figure.section-2a-hbt-figure {{
+  margin: 4pt auto 12pt auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2a-hbt-figure img {{
+  width: 6.8in;
+  max-width: 96%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+.section-bundle-body.section-2a-continuation .report-subsection {{
+  margin-top: 0;
+}}
+@media print {{
+  .section-bundle-body.section-2-page,
+  .section-bundle-body.section-2a-continuation {{
+    break-before: page;
+    page-break-before: always;
+  }}
+}}
 .section-bundle-body .section-1d-link-line {{
   margin: 4pt 0 6pt 0;
   font-size: 13pt;
@@ -994,6 +1051,7 @@ def _render_block(block: ReportContentBlock) -> str:
                 and block.presentation_role != "ucsc_conservation_figure"
                 and not str(block.presentation_role or "").startswith("section_1d_")
                 and not str(block.presentation_role or "").startswith("section_1e_")
+                and not str(block.presentation_role or "").startswith("section_2a_")
                 and (
                     not str(block.presentation_role or "").startswith("section_1c_")
                     or block.presentation_role == "section_1c_pdb_official_image"
@@ -1356,6 +1414,130 @@ def _render_section_1e_blocks(blocks: list[ReportContentBlock]) -> str:
         else:
             parts.append(_render_block(block))
     return "\n".join(parts)
+
+
+def _render_section_2a_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 2a GTEx/HBT blocks with role-aware link and status lines."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_2a_gtex_intro":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-2a-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+        elif role == "section_2a_hbt_intro":
+            text = (block.text or "").strip()
+            # Replace first bare "HBT" with a link when a home URL is provided.
+            hbt_url = None
+            for link in block.links or []:
+                if str(link.get("label") or "").upper() == "HBT":
+                    hbt_url = link.get("url")
+                    break
+            if hbt_url and "HBT" in text:
+                pre, _, post = text.partition("HBT")
+                html = (
+                    f"{_escape(pre)}"
+                    f'<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{_escape(hbt_url)}">HBT</a>'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = _escape(text)
+            parts.append(
+                f'<div class="section-2a-narrative" {_evidence_attr(block)}>'
+                f"<p>{html}</p></div>"
+            )
+        elif role in {
+            "section_2a_gtex_all_tissues_link",
+            "section_2a_gtex_brain_link",
+        }:
+            link = (block.links or [{}])[0]
+            label = _escape(link.get("label") or block.text or "GTEx")
+            url = _escape(link.get("url") or "#")
+            parts.append(
+                f'<p class="section-2a-link-line" {_evidence_attr(block)}>'
+                f'<a style="color:{REPORT_STYLE.orange_link};" '
+                f'href="{url}">{label}</a></p>'
+            )
+        elif role == "section_2a_hbt_link":
+            text = (block.text or "").strip()
+            link = (block.links or [{}])[0]
+            url = _escape(link.get("url") or "#")
+            label = _escape(link.get("label") or "Link")
+            if "(Link)" in text:
+                pre, _, post = text.partition("(Link)")
+                html = (
+                    f"{_escape(pre)}"
+                    f'(<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>)'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = (
+                    f"{_escape(text)} "
+                    f'(<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>)'
+                )
+            parts.append(
+                f'<div class="section-2a-narrative" {_evidence_attr(block)}>'
+                f"<p>{html}</p></div>"
+            )
+        elif role == "section_2a_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-2a-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        else:
+            parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_2a_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 2a blocks into pages at presentation_page_break_before."""
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_2a_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 2a as one subsection HTML string per page segment."""
+    segments = split_section_2a_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2a">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_2a_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
 
 
 def _render_subsection(sub: ReportSubsection) -> str:
@@ -2224,4 +2406,8 @@ __all__ = [
     "render_rancho_section_fragment",
     "write_rancho_report",
     "build_and_write_rancho_report",
+    "render_section_1c_subsection_segments",
+    "render_section_2a_subsection_segments",
+    "split_section_2a_page_segments",
+    "SECTION_1C_PDF_PAGE_BREAK",
 ]
