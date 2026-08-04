@@ -106,6 +106,13 @@ PresentationRole = Literal[
     "section_2a_hbt_link",
     "section_2a_hbt_figure",
     "section_2a_source_status",
+    "section_2b_intro",
+    "section_2b_summary_table",
+    "section_2b_category_status",
+    "section_2b_celltype_intro",
+    "section_2b_source_link",
+    "section_2b_celltype_figure",
+    "section_2b_source_status",
 ]
 
 

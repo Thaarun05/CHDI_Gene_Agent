@@ -51,6 +51,10 @@ from gene_dossier.section_2a import (
     Section2aConfig,
     node_generate_section_2a_derived_artifacts,
 )
+from gene_dossier.section_2b import (
+    Section2bConfig,
+    node_generate_section_2b_derived_artifacts,
+)
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -64,7 +68,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
@@ -74,6 +78,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1d": {"AlphaFold"},
     "1e": {"NCBI Datasets", "OrthoDB"},
     "2a": {"GTEx"},
+    "2b": {"Allen Brain Atlas", "BrainRNASeq"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -97,6 +102,12 @@ _OPAQUE_REF_BY_ROLE = {
     ("2a", "section_2a_hbt_intro"): "ev-2a-hbt-summary",
     ("2a", "section_2a_hbt_link"): "ev-2a-hbt-summary",
     ("2a", "section_2a_hbt_figure"): "ev-2a-hbt-figure",
+    ("2b", "section_2b_intro"): "ev-2b-introduction",
+    ("2b", "section_2b_summary_table"): "ev-2b-summary-table",
+    ("2b", "section_2b_category_status"): "ev-2b-category-status",
+    ("2b", "section_2b_celltype_intro"): "ev-2b-celltype-introduction",
+    ("2b", "section_2b_source_link"): "ev-2b-source-link",
+    ("2b", "section_2b_celltype_figure"): "ev-2b-celltype-figure",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -123,6 +134,7 @@ _SECTION_1D_NON_EVIDENCE_ROLES = frozenset(
     {"section_1d_species_status", "section_1d_confidence_legend"}
 )
 _SECTION_2A_NON_EVIDENCE_ROLES = frozenset({"section_2a_source_status"})
+_SECTION_2B_NON_EVIDENCE_ROLES = frozenset({"section_2b_source_status"})
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -181,6 +193,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "1e"
         elif key in {"2.a"}:
             key = "2a"
+        elif key in {"2.b"}:
+            key = "2b"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -204,6 +218,9 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
 
     Section 2a owns GTEx (and HBT) network requests; the generic GTEx client
     must not run when 2a is selected.
+
+    Section 2b owns Allen Brain Atlas and BrainRNASeq network requests; the
+    generic clients must not run when 2b is selected.
     """
     needed: set[str] = set()
     for key in section_keys:
@@ -217,6 +234,11 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
         needed.discard("GTEx")
         needed.discard("HBT")
         needed.discard("Human Brain Transcriptome")
+    if "2b" in section_keys:
+        needed.discard("Allen Brain Atlas")
+        needed.discard("BrainRNASeq")
+        needed.discard("Allen Brain")
+        needed.discard("Barres Lab")
     return sorted(needed)
 
 
@@ -532,6 +554,9 @@ def assign_opaque_refs(
         if block.presentation_role in _SECTION_2A_NON_EVIDENCE_ROLES:
             polished.append(block.model_copy(update={"evidence_ref": None}))
             continue
+        if block.presentation_role in _SECTION_2B_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
         # One item can carry several official images (e.g. two Cadherin_C
         # structure thumbnails), so repeats take a deterministic ordinal rather
@@ -758,6 +783,7 @@ def build_section_bundle_document(
         "section_1d_status": status_by_key.get("1d"),
         "section_1e_status": status_by_key.get("1e"),
         "section_2a_status": status_by_key.get("2a"),
+        "section_2b_status": status_by_key.get("2b"),
     }
     return document, presentation, audit
 
@@ -775,6 +801,7 @@ def render_section_bundle_html(
 
     from gene_dossier.rancho_report import (
         render_section_2a_subsection_segments,
+        render_section_2b_subsection_segments,
     )
 
     body_parts: list[str] = []
@@ -792,9 +819,11 @@ def render_section_bundle_html(
             )
             continue
 
-        # Major 2 (and future majors): heading + subsection page segments.
+        # Major 2: 2a segments first (unchanged three-page split), then 2b on a
+        # clean page after all 2a pages. Assembled 2a+2b does not repeat Major 2
+        # heading on 2b pages. Focused 2b still gets the Major 2 heading.
         heading = f"{major.number}. {major.title}"
-        first_page_parts = [
+        first_page_parts: list[str] = [
             (
                 f'<section id="section-{major.number}" '
                 f'class="report-page section-bundle-body section-{major.number}-page">'
@@ -805,26 +834,70 @@ def render_section_bundle_html(
                 f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
                 f"{_escape(heading)}</h2>"
             )
-        continuation: list[str] = []
+        continuation_2a: list[str] = []
+        segments_2b: list[str] = []
+        other_subs: list[str] = []
+        has_2a = False
+        has_2b = False
         for sub in major.subsections:
             if sub.key == "a" and any(
                 str(b.presentation_role or "").startswith("section_2a_")
                 for b in (sub.presentation_blocks or [])
             ):
+                has_2a = True
                 segments = render_section_2a_subsection_segments(sub)
                 first_page_parts.append(segments[0])
-                continuation.extend(segments[1:])
+                continuation_2a.extend(segments[1:])
+            elif sub.key == "b" and any(
+                str(b.presentation_role or "").startswith("section_2b_")
+                for b in (sub.presentation_blocks or [])
+            ):
+                has_2b = True
+                segments_2b = render_section_2b_subsection_segments(sub)
             else:
-                first_page_parts.append(_render_subsection(sub))
+                other_subs.append(_render_subsection(sub))
+
+        # Legacy non-2a/2b Major 2 content stays on page 1 (should be empty today).
+        first_page_parts.extend(other_subs)
         first_page_parts.append("</section>")
-        body_parts.extend(first_page_parts)
-        for index, segment in enumerate(continuation):
-            body_parts.append(page_break)
-            body_parts.append(
-                f'<section id="section-{major.number}-cont-{index + 2}" '
-                f'class="report-page section-bundle-body section-2a-continuation">'
-                f"{segment}</section>"
-            )
+
+        if has_2a:
+            body_parts.extend(first_page_parts)
+            for index, segment in enumerate(continuation_2a):
+                body_parts.append(page_break)
+                body_parts.append(
+                    f'<section id="section-{major.number}-cont-{index + 2}" '
+                    f'class="report-page section-bundle-body section-2a-continuation">'
+                    f"{segment}</section>"
+                )
+            if has_2b and segments_2b:
+                # Page break after all 2a pages, then 2b segment 0 (h3 once).
+                body_parts.append(page_break)
+                body_parts.append(
+                    f'<section id="section-{major.number}-2b" '
+                    f'class="report-page section-bundle-body section-2b-page">'
+                    f"{segments_2b[0]}</section>"
+                )
+                for index, segment in enumerate(segments_2b[1:]):
+                    body_parts.append(page_break)
+                    body_parts.append(
+                        f'<section id="section-{major.number}-2b-cont-{index + 2}" '
+                        f'class="report-page section-bundle-body section-2b-continuation">'
+                        f"{segment}</section>"
+                    )
+        elif has_2b and segments_2b:
+            # Focused 2b (or Major 2 without 2a): heading already on first page.
+            first_page_parts.insert(-1, segments_2b[0])
+            body_parts.extend(first_page_parts)
+            for index, segment in enumerate(segments_2b[1:]):
+                body_parts.append(page_break)
+                body_parts.append(
+                    f'<section id="section-{major.number}-2b-cont-{index + 2}" '
+                    f'class="report-page section-bundle-body section-2b-continuation">'
+                    f"{segment}</section>"
+                )
+        else:
+            body_parts.extend(first_page_parts)
 
     body = "\n".join(body_parts)
 
@@ -1136,6 +1209,7 @@ def run_section_bundle(
     acceptance_profile: str | None = None,
     section_1e_config: Section1eConfig | None = None,
     section_2a_config: Section2aConfig | None = None,
+    section_2b_config: Section2bConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
@@ -1160,6 +1234,7 @@ def run_section_bundle(
             "section_1d_status",
             "section_1e_status",
             "section_2a_status",
+            "section_2b_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1250,6 +1325,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_2a_config or Section2aConfig(),
                 )
+            if "2b" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_2b_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_2b_config or Section2bConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1259,6 +1348,8 @@ def run_section_bundle(
             section_status_by_key["1e"] = state["section_1e_status"]
         if state.get("section_2a_status"):
             section_status_by_key["2a"] = state["section_2a_status"]
+        if state.get("section_2b_status"):
+            section_status_by_key["2b"] = state["section_2b_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1278,6 +1369,8 @@ def run_section_bundle(
                 "NCBI Gene",
                 "GTEx",
                 "Human Brain Transcriptome",
+                "Allen Brain Atlas",
+                "BrainRNASeq",
             }:
                 coverage.append(row)
         audit["coverage"] = [
@@ -1359,6 +1452,11 @@ def run_section_bundle(
             audit["section_2a"] = sanitize_credentials(
                 (state.get("section_2a_status") or {}).get("audit")
                 or state.get("section_2a_status")
+            )
+        if "2b" in keys and state.get("section_2b_status"):
+            audit["section_2b"] = sanitize_credentials(
+                (state.get("section_2b_status") or {}).get("audit")
+                or state.get("section_2b_status")
             )
         audit["errors"] = list(state.get("errors") or [])
         if errors:

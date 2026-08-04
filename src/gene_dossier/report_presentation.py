@@ -169,6 +169,19 @@ def build_section_presentation(
             evidence_records=evidence_records,
             section_status=section_status,
         )
+    if key in {
+        "2b",
+        "2.b",
+        "barres",
+        "barres_lab",
+        "barres_lab_rna_seq",
+        "barres_lab_rna-seq_brain_specific_expression_data",
+    }:
+        return build_barres_brain_expression_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -2943,6 +2956,232 @@ def build_tissue_specific_information_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_barres_brain_expression_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 2b Allen/Barres presentation blocks in golden order."""
+    from gene_dossier.section_2b import (
+        BRAINRNASEQ_HOME_URL,
+        BRAINRNASEQ_SOURCE_LINK_LABEL,
+        CATEGORY_NOTE,
+        NOT_DETERMINED,
+        format_numeric_cell,
+        section_2b_celltype_intro_text,
+        section_2b_intro_text,
+    )
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (gene_symbol or "").strip()
+    item_key = str(summary.get("presentation_item_key") or f"barres-{(gene or '').lower()}")
+
+    summary_rec = next(
+        (r for r in records if r.fact_type == "section_2b_summary_table"),
+        None,
+    )
+    category_rec = next(
+        (r for r in records if r.fact_type == "section_2b_category_status"),
+        None,
+    )
+    figure_rec = next(
+        (r for r in records if r.fact_type == "brainrnaseq_celltype_figure"),
+        None,
+    )
+    selection_rec = next(
+        (r for r in records if r.fact_type == "allen_human_microarray_selection_summary"),
+        None,
+    )
+    pooled_rec = next(
+        (r for r in records if r.fact_type == "allen_human_rnaseq_pooled_summary"),
+        None,
+    )
+    mouse_tpm_rec = next(
+        (r for r in records if r.fact_type == "brainrnaseq_mouse_average_tpm"),
+        None,
+    )
+
+    summary_val = (
+        summary_rec.value
+        if summary_rec is not None and isinstance(summary_rec.value, dict)
+        else {}
+    )
+    agilent = summary.get("average_human_brain_agilent_expression")
+    if agilent is None:
+        agilent = summary_val.get("average_human_brain_agilent_expression")
+    human_tpm = summary.get("average_human_brain_rnaseq_expression_tpm")
+    if human_tpm is None:
+        human_tpm = summary_val.get("average_human_brain_rnaseq_expression_tpm")
+        if human_tpm is None and pooled_rec is not None and isinstance(pooled_rec.value, dict):
+            human_tpm = pooled_rec.value.get("mean_tpm")
+    mouse_tpm = summary.get("average_mouse_brain_rnaseq_expression_tpm")
+    if mouse_tpm is None:
+        mouse_tpm = summary_val.get("average_mouse_brain_rnaseq_expression_tpm")
+        if (
+            mouse_tpm is None
+            and mouse_tpm_rec is not None
+            and isinstance(mouse_tpm_rec.value, dict)
+        ):
+            mouse_tpm = mouse_tpm_rec.value.get("mean_tpm")
+
+    brs_url = str(summary.get("brainrnaseq_url") or BRAINRNASEQ_HOME_URL)
+    blocks: list[ReportContentBlock] = []
+
+    # 1. Intro
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=section_2b_intro_text(gene),
+            presentation_role="section_2b_intro",
+            presentation_item_key=item_key,
+            source_ids=[summary_rec.source_id]
+            if summary_rec and summary_rec.source_id
+            else ([selection_rec.source_id] if selection_rec and selection_rec.source_id else []),
+            evidence_record_ids=[summary_rec.id]
+            if summary_rec and summary_rec.id
+            else ([selection_rec.id] if selection_rec and selection_rec.id else []),
+        )
+    )
+
+    # 2. Summary table (5 columns, Rancho green header via CSS)
+    headers = [
+        "Average Human Brain Agilent Expression",
+        "Average Human Brain RNA-Seq Expression (TPM)",
+        "Average Mouse Brain RNA-Seq Expression (TPM)",
+        "Human Brain Expression Category",
+        "Mouse Brain Expression Category",
+    ]
+    row = [
+        format_numeric_cell(agilent if isinstance(agilent, (int, float)) else None),
+        format_numeric_cell(human_tpm if isinstance(human_tpm, (int, float)) else None),
+        format_numeric_cell(mouse_tpm if isinstance(mouse_tpm, (int, float)) else None),
+        NOT_DETERMINED,
+        NOT_DETERMINED,
+    ]
+    blocks.append(
+        ReportContentBlock(
+            kind="table",
+            text="",
+            table_headers=headers,
+            table_rows=[row],
+            presentation_role="section_2b_summary_table",
+            presentation_item_key=item_key,
+            source_ids=[summary_rec.source_id]
+            if summary_rec and summary_rec.source_id
+            else [],
+            evidence_record_ids=[summary_rec.id] if summary_rec and summary_rec.id else [],
+        )
+    )
+
+    # 3. Category note (only while unresolved)
+    category_policy = "threshold_policy_unresolved"
+    if summary.get("category_policy"):
+        category_policy = str(summary.get("category_policy"))
+    elif category_rec is not None and isinstance(category_rec.value, dict):
+        category_policy = str(
+            category_rec.value.get("policy") or "threshold_policy_unresolved"
+        )
+    if category_policy == "threshold_policy_unresolved":
+        note = CATEGORY_NOTE
+        if category_rec is not None and isinstance(category_rec.value, dict):
+            note = str(category_rec.value.get("note") or CATEGORY_NOTE)
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=note,
+                presentation_role="section_2b_category_status",
+                presentation_item_key=item_key,
+                source_ids=[category_rec.source_id]
+                if category_rec and category_rec.source_id
+                else [],
+                evidence_record_ids=[category_rec.id]
+                if category_rec and category_rec.id
+                else [],
+            )
+        )
+
+    # 4. Cell-type intro (new page)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=section_2b_celltype_intro_text(gene),
+            presentation_role="section_2b_celltype_intro",
+            presentation_item_key=item_key,
+            presentation_page_break_before=True,
+            links=[{"label": "brainrnaseq.org", "url": brs_url}],
+        )
+    )
+
+    # 5. Source link
+    blocks.append(
+        ReportContentBlock(
+            kind="link",
+            text=BRAINRNASEQ_SOURCE_LINK_LABEL,
+            links=[{"label": BRAINRNASEQ_SOURCE_LINK_LABEL, "url": brs_url}],
+            presentation_role="section_2b_source_link",
+            presentation_item_key=item_key,
+            source_ids=[figure_rec.source_id]
+            if figure_rec and figure_rec.source_id
+            else [],
+            evidence_record_ids=[figure_rec.id] if figure_rec and figure_rec.id else [],
+        )
+    )
+
+    # 6. Combined cell-type figure or status
+    cell_fig = None
+    if figure_rec is not None:
+        cell_fig = _figure_block_from_record(
+            figure_rec,
+            role="section_2b_celltype_figure",
+            caption="",
+            diagnostics=diagnostics,
+        )
+        if cell_fig is not None:
+            cell_fig = cell_fig.model_copy(update={"presentation_item_key": item_key})
+            blocks.append(cell_fig)
+    if cell_fig is None:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="Barres Lab cell-type expression figure temporarily unavailable.",
+                presentation_role="section_2b_source_status",
+                presentation_item_key=f"{item_key}-figure-status",
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2b",
+                "cell-type figure unavailable",
+                "warning",
+            )
+        )
+
+    if rendering.get("overall") in {None, "empty"} and not any(
+        r.fact_type.startswith(
+            (
+                "allen_",
+                "brainrnaseq_",
+                "section_2b_",
+            )
+        )
+        for r in records
+    ):
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2b",
+                "no Barres/Allen brain-expression evidence available",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -2954,6 +3193,7 @@ __all__ = [
     "PresentationDiagnostic",
     "SectionPresentationResult",
     "build_alphafold_blocks",
+    "build_barres_brain_expression_blocks",
     "build_conservation_blocks",
     "build_gene_aliases_blocks",
     "build_homologues_blocks",

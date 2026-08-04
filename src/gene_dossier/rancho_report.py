@@ -829,10 +829,54 @@ table.section-1e-fallback-table td {{
 }}
 @media print {{
   .section-bundle-body.section-2-page,
-  .section-bundle-body.section-2a-continuation {{
+  .section-bundle-body.section-2a-continuation,
+  .section-bundle-body.section-2b-continuation {{
     break-before: page;
     page-break-before: always;
   }}
+}}
+.section-bundle-body .section-2b-narrative {{
+  margin: 4pt 0 6pt 0;
+  line-height: 1.3;
+}}
+.section-bundle-body .section-2b-link-line {{
+  margin: 2pt 0 6pt 0;
+}}
+.section-bundle-body .section-2b-link-line a {{
+  color: {s.orange_link};
+}}
+.section-bundle-body .section-2b-status-line {{
+  margin: 4pt 0;
+  font-style: italic;
+  color: {s.brown_body};
+}}
+.section-bundle-body .section-2b-category-note {{
+  margin: 2pt 0 8pt 0;
+  font-size: 9.5pt;
+  color: {s.brown_body};
+}}
+.section-bundle-body table.rancho.section-2b-summary-table {{
+  table-layout: fixed;
+  font-size: 9.5pt;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2b-celltype-figure {{
+  margin: 4pt auto 6pt auto;
+  max-width: 7.1in;
+  max-height: 6.0in;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2b-celltype-figure img {{
+  width: 100%;
+  max-width: 7.1in;
+  max-height: 6.0in;
+  height: auto;
+  object-fit: contain;
+}}
+.section-bundle-body.section-2b-continuation .report-subsection {{
+  margin-top: 0;
 }}
 .section-bundle-body .section-1d-link-line {{
   margin: 4pt 0 6pt 0;
@@ -977,6 +1021,8 @@ def _render_block(block: ReportContentBlock) -> str:
             classes.append("section-1c-pdb-table")
         elif block.presentation_role == "section_1e_fallback_table":
             classes.append("section-1e-fallback-table")
+        elif block.presentation_role == "section_2b_summary_table":
+            classes.append("section-2b-summary-table")
         class_attr = " ".join(classes)
         parts.append(f'<table class="{class_attr}">')
         if block.presentation_role == "gene_aliases_table":
@@ -1534,6 +1580,94 @@ def render_section_2a_subsection_segments(sub: ReportSubsection) -> list[str]:
         (
             f'<section class="report-subsection subsection-{_escape(subsection_class)} '
             f'subsection-2a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
+def _render_section_2b_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 2b intro/table/category/figure blocks."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_2b_intro":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-2b-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+        elif role == "section_2b_category_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-2b-category-note" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        elif role == "section_2b_celltype_intro":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-2b-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+        elif role == "section_2b_source_link":
+            link = (block.links or [{}])[0]
+            label = _escape(link.get("label") or block.text or "brainrnaseq.org")
+            url = _escape(link.get("url") or "https://brainrnaseq.org/")
+            parts.append(
+                f'<p class="section-2b-link-line" {_evidence_attr(block)}>'
+                f'<a style="color:{REPORT_STYLE.orange_link};" '
+                f'href="{url}">{label}</a></p>'
+            )
+        elif role == "section_2b_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-2b-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        else:
+            parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_2b_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 2b blocks into pages at presentation_page_break_before."""
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_2b_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 2b as one subsection HTML string per page segment."""
+    segments = split_section_2b_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2b">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_2b_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2b">'
             f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
             f"{_escape(heading)}</h3></section>"
         )
@@ -2409,5 +2543,7 @@ __all__ = [
     "render_section_1c_subsection_segments",
     "render_section_2a_subsection_segments",
     "split_section_2a_page_segments",
+    "render_section_2b_subsection_segments",
+    "split_section_2b_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

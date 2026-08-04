@@ -145,7 +145,7 @@ def _ucsc_records(tmp_path: Path, gene: str = "SREBF2") -> list[EvidenceRecord]:
 def test_validate_section_keys_order_and_reject():
     assert validate_section_keys(["1c", "1b", "1a", "1a"]) == ["1a", "1b", "1c"]
     assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == ["1a", "1b"]
-    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
     with pytest.raises(SectionBundleError):
         validate_section_keys([])
 
@@ -1684,7 +1684,7 @@ def test_section_1c_pdf_page_break_sentinel_is_bundle_only():
 
 def test_section_1c_opt_in_defaults_unchanged():
     assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
-    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
     assert "1e" not in DEFAULT_SECTION_BUNDLE_KEYS
 
 
