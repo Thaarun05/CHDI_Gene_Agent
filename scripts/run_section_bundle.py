@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Section-scoped dossier generation for Sections 1a–1e and opt-in 2a/2b.
+"""Section-scoped dossier generation for Sections 1a–1e and opt-in 2a/2b/2c.
 
 Example::
 
@@ -27,6 +27,7 @@ from gene_dossier.section_1e import (  # noqa: E402
 )
 from gene_dossier.section_2a import Section2aConfig  # noqa: E402
 from gene_dossier.section_2b import Section2bConfig  # noqa: E402
+from gene_dossier.section_2c import Section2cConfig  # noqa: E402
 from gene_dossier.section_bundle import (  # noqa: E402
     DEFAULT_SECTION_BUNDLE_KEYS,
     SectionBundleError,
@@ -43,8 +44,9 @@ def main(argv: list[str] | None = None) -> int:
             "Generate a standalone section bundle (1a Gene Aliases / "
             "1b UCSC conservation / opt-in 1c Known structure / opt-in 1d "
             "AlphaFold / opt-in 1e Homologues / opt-in 2a Tissue-specific "
-            "information / opt-in 2b Barres Lab RNA-Seq) without LLM "
-            "synthesis or full-report rendering."
+            "information / opt-in 2b Barres Lab RNA-Seq / opt-in 2c snRNA-Seq "
+            "cell type database) without LLM synthesis or full-report "
+            "rendering."
         )
     )
     parser.add_argument("--gene", required=True, help="Gene symbol (e.g. SREBF2)")
@@ -53,8 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
         help=(
-            "Section keys to include (1a, 1b, and/or opt-in 1c/1d/1e/2a/2b). "
-            "Default: 1a 1b"
+            "Section keys to include (1a, 1b, and/or opt-in "
+            "1c/1d/1e/2a/2b/2c). Default: 1a 1b"
         ),
     )
     parser.add_argument(
@@ -107,12 +109,37 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--no-allen-celltype-figures",
+        action="store_true",
+        help=(
+            "Skip the optional Allen Cell Types Explorer browser captures for "
+            "Section 2c (ignored unless 2c is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--refresh-section-2c-sources",
+        action="store_true",
+        help=(
+            "Re-download Section 2c dataset-level sources instead of reusing "
+            "accepted artifacts (ignored unless 2c is selected)"
+        ),
+    )
+    parser.add_argument(
         "--acceptance-profile",
         default=None,
         choices=["section_1c_reference_genes", "section_1d_reference_genes"],
         help=(
             "Optional acceptance-validation profile. When it fails, outputs are "
             "preserved but the CLI exits nonzero."
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-2c-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing accepted visual-complete Section 2c gene pointer only "
+            "when the newly rendered report also passes the complete scientific, visual, "
+            "figure-role, and PDF acceptance checks."
         ),
     )
     parser.add_argument(
@@ -155,6 +182,17 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("%s", exc)
             return 2
 
+    section_2c_config = None
+    if "2c" in keys:
+        try:
+            section_2c_config = Section2cConfig(
+                attempt_allen_figures=not args.no_allen_celltype_figures,
+                force_refresh=args.refresh_section_2c_sources,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 2
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -164,9 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         write_pdf=not args.no_pdf,
         dpi=args.dpi,
         acceptance_profile=args.acceptance_profile,
+        promote_section_2c_accepted=args.promote_section_2c_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
+        section_2c_config=section_2c_config,
     )
 
     print(f"status={result.status}")

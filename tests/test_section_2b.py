@@ -54,6 +54,7 @@ def test_supported_keys_include_2b_default_unchanged():
         "1e",
         "2a",
         "2b",
+        "2c",
     )
     assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
     assert validate_section_keys(["2b", "2a", "1a"]) == ["1a", "2a", "2b"]

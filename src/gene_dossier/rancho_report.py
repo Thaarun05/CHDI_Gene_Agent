@@ -878,6 +878,61 @@ table.section-1e-fallback-table td {{
 .section-bundle-body.section-2b-continuation .report-subsection {{
   margin-top: 0;
 }}
+.section-bundle-body .section-2c-narrative {{
+  margin: 4pt 0 6pt 0;
+  line-height: 1.3;
+}}
+.section-bundle-body .section-2c-link-line {{
+  margin: 2pt 0 6pt 0;
+}}
+.section-bundle-body .section-2c-link-line a {{
+  color: {s.orange_link};
+}}
+.section-bundle-body .section-2c-status-line {{
+  margin: 4pt 0;
+  font-style: italic;
+  color: {s.brown_body};
+}}
+.section-bundle-body .section-2c-geo-attribution {{
+  margin: 2pt 0 8pt 0;
+  font-size: 10.5pt;
+  color: {s.brown_body};
+}}
+.section-bundle-body figure.rancho-figure.section-2c-human-scatter-figure,
+.section-bundle-body figure.rancho-figure.section-2c-human-heatmap-figure,
+.section-bundle-body figure.rancho-figure.section-2c-mouse-scatter-figure,
+.section-bundle-body figure.rancho-figure.section-2c-mouse-heatmap-figure {{
+  margin: 4pt auto 8pt auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2c-dropviz-rank-figure {{
+  margin: 4pt auto 8pt auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-2c-human-scatter-figure img,
+.section-bundle-body figure.rancho-figure.section-2c-human-heatmap-figure img,
+.section-bundle-body figure.rancho-figure.section-2c-mouse-scatter-figure img,
+.section-bundle-body figure.rancho-figure.section-2c-mouse-heatmap-figure img {{
+  width: 6.7in;
+  max-width: 98%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+.section-bundle-body figure.rancho-figure.section-2c-dropviz-rank-figure img {{
+  width: 6.2in;
+  max-width: 98%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}}
+.section-bundle-body.section-2c-continuation .report-subsection {{
+  margin-top: 0;
+}}
 .section-bundle-body .section-1d-link-line {{
   margin: 4pt 0 6pt 0;
   font-size: 13pt;
@@ -1674,7 +1729,116 @@ def render_section_2b_subsection_segments(sub: ReportSubsection) -> list[str]:
     ]
 
 
-def _render_subsection(sub: ReportSubsection) -> str:
+_SECTION_2C_NARRATIVE_ROLES = frozenset(
+    {
+        "section_2c_intro",
+        "section_2c_human_narrative",
+        "section_2c_human_scatter_narrative",
+        "section_2c_human_heatmap_narrative",
+        "section_2c_mouse_narrative",
+        "section_2c_mouse_scatter_narrative",
+        "section_2c_mouse_heatmap_narrative",
+        "section_2c_dropviz_narrative",
+        "section_2c_geo_attribution",
+        "section_2c_therapeutic_narrative",
+    }
+)
+
+
+def _render_section_2c_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 2c narrative/table/link/figure/status blocks."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role in _SECTION_2C_NARRATIVE_ROLES:
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-2c-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+        elif role == "section_2c_source_link":
+            link = (block.links or [{}])[0]
+            label = _escape(link.get("label") or block.text or "")
+            url = _escape(link.get("url") or "#")
+            parts.append(
+                f'<p class="section-2c-link-line" {_evidence_attr(block)}>'
+                f'<a style="color:{REPORT_STYLE.orange_link};" '
+                f'href="{url}">{label}</a></p>'
+            )
+        elif role == "section_2c_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-2c-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        elif role == "section_2c_geo_attribution":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-2c-geo-attribution" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+        else:
+            parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_2c_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 2c blocks into pages at presentation_page_break_before."""
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_2c_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 2c as one subsection HTML string per page segment."""
+    segments = split_section_2c_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2c">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_2c_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-2c">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
+def _infer_major_number(blocks: list[ReportContentBlock]) -> int | None:
+    """Infer the owning major section from presentation roles (``None`` if unclear)."""
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role.startswith("section_2c_"):
+            return 2
+        if role.startswith("section_1c_"):
+            return 1
+    return None
+
+
+def _render_subsection(sub: ReportSubsection, *, major_number: int | None = None) -> str:
     heading = f"{sub.key}. {sub.title}"
     subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
     parts = [
@@ -1686,11 +1850,21 @@ def _render_subsection(sub: ReportSubsection) -> str:
     ]
     # Polished presentation_blocks are the complete human-facing subsection body.
     if sub.presentation_blocks:
+        effective_major = (
+            major_number
+            if major_number is not None
+            else _infer_major_number(list(sub.presentation_blocks))
+        )
         if sub.key == "c":
-            parts.append(_render_section_1c_grouped_blocks(list(sub.presentation_blocks)))
-        elif sub.key == "d":
+            if effective_major == 2:
+                parts.append(_render_section_2c_blocks(list(sub.presentation_blocks)))
+            else:
+                parts.append(
+                    _render_section_1c_grouped_blocks(list(sub.presentation_blocks))
+                )
+        elif sub.key == "d" and effective_major != 2:
             parts.append(_render_section_1d_blocks(list(sub.presentation_blocks)))
-        elif sub.key == "e":
+        elif sub.key == "e" and effective_major != 2:
             parts.append(_render_section_1e_blocks(list(sub.presentation_blocks)))
         else:
             for block in sub.presentation_blocks:
@@ -1742,7 +1916,7 @@ def _render_major(section: ReportMajorSection) -> str:
                 parts.append(_render_block(block))
     if section.subsections:
         for sub in section.subsections:
-            parts.append(_render_subsection(sub))
+            parts.append(_render_subsection(sub, major_number=section.number))
     elif not narrative_html and not section.blocks:
         parts.append(
             '<p class="empty-note">No evidence available for this section in the '
@@ -2048,7 +2222,7 @@ def render_rancho_section_fragment(
             f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
             f"{_escape(heading)}</h2>"
         ),
-        _render_subsection(sub),
+        _render_subsection(sub, major_number=major.number),
         "</section>",
     ]
     body = "\n".join(body_parts)
@@ -2545,5 +2719,7 @@ __all__ = [
     "split_section_2a_page_segments",
     "render_section_2b_subsection_segments",
     "split_section_2b_page_segments",
+    "render_section_2c_subsection_segments",
+    "split_section_2c_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

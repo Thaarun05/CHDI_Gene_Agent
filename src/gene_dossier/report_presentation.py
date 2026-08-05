@@ -46,6 +46,12 @@ ALLOWED_LINK_HOSTS = frozenset(
         "gtexportal.org",
         "hbatlas.org",
         "www.hbatlas.org",
+        "brain-map.org",
+        "www.brain-map.org",
+        "celltypes.brain-map.org",
+        "transcriptomics.brain-map.org",
+        "knowledge.brain-map.org",
+        "portal.brain-map.org",
     }
 )
 
@@ -178,6 +184,19 @@ def build_section_presentation(
         "barres_lab_rna-seq_brain_specific_expression_data",
     }:
         return build_barres_brain_expression_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
+    if key in {
+        "2c",
+        "2.c",
+        "snrna_seq",
+        "snrna-seq",
+        "cell_type_database",
+        "snrna_seq_gene_expression_in_cell_type_database",
+    }:
+        return build_section_2c_blocks(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
             section_status=section_status,
@@ -3182,6 +3201,508 @@ def build_barres_brain_expression_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+@dataclass(frozen=True)
+class _Section2cFigureSlot:
+    """One optional Section 2c figure slot and its evidence record."""
+
+    role: str
+    item_key: str
+    record: EvidenceRecord | None
+    fallback_note: str
+
+
+def build_section_2c_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 2c snRNA-Seq cell-type presentation blocks in golden order."""
+    from gene_dossier.tools.allen_celltypes import (
+        DATASET_HUMAN_M1,
+        DATASET_MOUSE_CTX_HPF,
+        VISUALIZATION_HEATMAP,
+        VISUALIZATION_SCATTER,
+    )
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    item_key = str(
+        summary.get("presentation_item_key")
+        or f"celltype-{(gene_symbol or '').strip().lower()}"
+    )
+
+    human = dict(summary.get("human") or {})
+    mouse = dict(summary.get("mouse") or {})
+    dropviz = dict(summary.get("dropviz") or {})
+
+    def _record(fact_type: str) -> EvidenceRecord | None:
+        return next((r for r in records if r.fact_type == fact_type), None)
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    def _explorer_figure_record(
+        dataset: str,
+        visualization: str,
+    ) -> EvidenceRecord | None:
+        for rec in records:
+            if rec.fact_type != "allen_celltype_explorer_figure":
+                continue
+            value = rec.value if isinstance(rec.value, dict) else {}
+            if (
+                str(value.get("dataset") or "") == dataset
+                and str(value.get("visualization") or "") == visualization
+            ):
+                return rec
+        return None
+
+    def _value_cell(entry: dict[str, Any], value_key: str) -> str:
+        display = entry.get("value_display")
+        if display is not None and str(display) != "":
+            return str(display)
+        value = entry.get(value_key)
+        return "" if value is None else str(value)
+
+    blocks: list[ReportContentBlock] = []
+
+    def _append_link(url: Any, link_label: Any, *, item_suffix: str, source_ids, evidence_ids) -> None:
+        if not url:
+            return
+        label = str(link_label or url)
+        blocks.append(
+            ReportContentBlock(
+                kind="link",
+                text=label,
+                links=[{"label": label, "url": str(url)}],
+                presentation_role="section_2c_source_link",
+                presentation_item_key=f"{item_key}-{item_suffix}",
+                source_ids=source_ids,
+                evidence_record_ids=evidence_ids,
+            )
+        )
+
+    def _append_narrative(
+        text: str,
+        *,
+        role: str,
+        source_ids,
+        evidence_ids,
+        page_break_before: bool = False,
+        item_suffix: str | None = None,
+    ) -> None:
+        if not str(text or "").strip():
+            return
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=str(text),
+                presentation_role=role,  # type: ignore[arg-type]
+                presentation_item_key=(
+                    f"{item_key}-{item_suffix}" if item_suffix else item_key
+                ),
+                presentation_page_break_before=page_break_before,
+                source_ids=source_ids,
+                evidence_record_ids=evidence_ids,
+            )
+        )
+
+    def _append_status_notes(branch: dict[str, Any], *, item_suffix: str) -> None:
+        notes = [
+            str(note)
+            for note in (branch.get("figure_status_notes") or [])
+            if str(note).strip()
+        ]
+        status_texts: list[str] = []
+        status_note = branch.get("status_note")
+        if status_note and str(status_note).strip():
+            status_texts.append(str(status_note))
+        status_texts.extend(notes)
+        for text_value in status_texts:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=text_value,
+                    presentation_role="section_2c_source_status",
+                    presentation_item_key=f"{item_key}-{item_suffix}-status",
+                )
+            )
+
+    def _append_figure_slots(
+        figures: Sequence[_Section2cFigureSlot],
+        *,
+        page_break_first: bool = False,
+    ) -> tuple[bool, list[_Section2cFigureSlot]]:
+        missing: list[_Section2cFigureSlot] = []
+        rendered = False
+        for slot in figures:
+            figure_block = None
+            if slot.record is not None:
+                figure_block = _figure_block_from_record(
+                    slot.record,
+                    role=slot.role,
+                    caption="",
+                    diagnostics=diagnostics,
+                )
+            if figure_block is None:
+                missing.append(slot)
+                continue
+            update: dict[str, Any] = {"presentation_item_key": slot.item_key}
+            if page_break_first and not rendered:
+                update["presentation_page_break_before"] = True
+            blocks.append(figure_block.model_copy(update=update))
+            rendered = True
+        return rendered, missing
+
+    def _append_allen_branch(
+        branch: dict[str, Any],
+        *,
+        record: EvidenceRecord | None,
+        narrative_role: str,
+        scatter_narrative_role: str,
+        heatmap_narrative_role: str,
+        table_role: str,
+        item_suffix: str,
+        figures: Sequence[_Section2cFigureSlot],
+        page_break_before: bool,
+    ) -> None:
+        source_ids, evidence_ids = _ids(record)
+        figures_complete = bool(branch.get("figures_complete"))
+        _append_narrative(
+            str(branch.get("narrative") or ""),
+            role=narrative_role,
+            source_ids=source_ids,
+            evidence_ids=evidence_ids,
+            page_break_before=page_break_before,
+        )
+        # Primary: dataset-specific source page. Secondary: gene explorer deep link.
+        _append_link(
+            branch.get("source_page_url") or branch.get("database_url"),
+            branch.get("source_link_label") or branch.get("database_link_label"),
+            item_suffix=f"{item_suffix}-source",
+            source_ids=source_ids,
+            evidence_ids=evidence_ids,
+        )
+        _append_link(
+            branch.get("explorer_url"),
+            branch.get("explorer_link_label"),
+            item_suffix=f"{item_suffix}-explorer",
+            source_ids=source_ids,
+            evidence_ids=evidence_ids,
+        )
+
+        if figures_complete:
+            scatter_slots = [slot for slot in figures if "scatter" in slot.role]
+            heatmap_slots = [slot for slot in figures if "heatmap" in slot.role]
+            _append_narrative(
+                str(branch.get("scatter_interpretation") or ""),
+                role=scatter_narrative_role,
+                source_ids=source_ids,
+                evidence_ids=evidence_ids,
+                item_suffix=f"{item_suffix}-scatter-note",
+            )
+            _append_figure_slots(scatter_slots)
+            _append_narrative(
+                str(branch.get("heatmap_interpretation") or ""),
+                role=heatmap_narrative_role,
+                source_ids=source_ids,
+                evidence_ids=evidence_ids,
+                item_suffix=f"{item_suffix}-heatmap-note",
+            )
+            _append_figure_slots(heatmap_slots)
+            _append_status_notes(branch, item_suffix=item_suffix)
+            return
+
+        # Figure failure path: structured narrative already above; top-five table;
+        # then unavailable notes for missing figures.
+        entries = [e for e in (branch.get("top") or []) if isinstance(e, dict)]
+        if str(branch.get("analysis_status") or "") == "success" and entries:
+            blocks.append(
+                ReportContentBlock(
+                    kind="table",
+                    text="",
+                    table_headers=[
+                        str(branch.get("label_column_header") or ""),
+                        str(branch.get("value_label") or ""),
+                    ],
+                    table_rows=[
+                        [str(e.get("label") or ""), _value_cell(e, "value")]
+                        for e in entries
+                    ],
+                    presentation_role=table_role,  # type: ignore[arg-type]
+                    presentation_item_key=item_key,
+                    source_ids=source_ids,
+                    evidence_record_ids=evidence_ids,
+                )
+            )
+        _, missing = _append_figure_slots(figures)
+        _append_status_notes(branch, item_suffix=item_suffix)
+        notes = [
+            str(note)
+            for note in (branch.get("figure_status_notes") or [])
+            if str(note).strip()
+        ]
+        for index, slot in enumerate(missing):
+            reason = notes[index] if index < len(notes) else slot.fallback_note
+            diagnostics.append(PresentationDiagnostic("figure_note", reason, "info"))
+
+    def _append_dropviz_branch(
+        branch: dict[str, Any],
+        *,
+        record: EvidenceRecord | None,
+        figures: Sequence[_Section2cFigureSlot],
+        page_break_before: bool,
+        figure_page_break_before: bool,
+    ) -> bool:
+        source_ids, evidence_ids = _ids(record)
+        _append_narrative(
+            str(branch.get("narrative") or ""),
+            role="section_2c_dropviz_narrative",
+            source_ids=source_ids,
+            evidence_ids=evidence_ids,
+            page_break_before=page_break_before,
+        )
+        population_note = str(branch.get("population_identifier_note") or "").strip()
+        if population_note:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=population_note,
+                    presentation_role="section_2c_source_status",
+                    presentation_item_key=f"{item_key}-dropviz-population-note",
+                    source_ids=source_ids,
+                    evidence_record_ids=evidence_ids,
+                )
+            )
+        entries = [
+            e for e in (branch.get("top_populations") or []) if isinstance(e, dict)
+        ]
+        # Compact top-ten optional when ranking succeeded; keep for evidence fidelity.
+        if str(branch.get("analysis_status") or "") == "success" and entries:
+            blocks.append(
+                ReportContentBlock(
+                    kind="table",
+                    text="",
+                    table_headers=[
+                        str(branch.get("label_column_header") or ""),
+                        str(branch.get("value_label") or ""),
+                    ],
+                    table_rows=[
+                        [
+                            str(e.get("population_label") or ""),
+                            _value_cell(e, "ranking_value"),
+                        ]
+                        for e in entries[:10]
+                    ],
+                    presentation_role="section_2c_dropviz_table",
+                    presentation_item_key=item_key,
+                    source_ids=source_ids,
+                    evidence_record_ids=evidence_ids,
+                )
+            )
+        rendered, missing = _append_figure_slots(
+            figures, page_break_first=figure_page_break_before
+        )
+        attribution = str(branch.get("geo_attribution") or "").strip()
+        if attribution:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=attribution,
+                    presentation_role="section_2c_geo_attribution",
+                    presentation_item_key=f"{item_key}-dropviz-geo",
+                    source_ids=source_ids,
+                    evidence_record_ids=evidence_ids,
+                )
+            )
+        # Do not render DropViz homepage or saved-state links. GEO series is the
+        # only polished quantitative source attribution (via geo_attribution).
+        _append_status_notes(branch, item_suffix="dropviz")
+        notes = [
+            str(note)
+            for note in (branch.get("figure_status_notes") or [])
+            if str(note).strip()
+        ]
+        for index, slot in enumerate(missing):
+            reason = notes[index] if index < len(notes) else slot.fallback_note
+            diagnostics.append(PresentationDiagnostic("figure_note", reason, "info"))
+        tsne_note = str(branch.get("regional_tsne_limitation_note") or "").strip()
+        if tsne_note:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=tsne_note,
+                    presentation_role="section_2c_source_status",
+                    presentation_item_key=f"{item_key}-dropviz-tsne-limitation",
+                    source_ids=source_ids,
+                    evidence_record_ids=evidence_ids,
+                )
+            )
+        return rendered
+
+    def _figure_note(branch: dict[str, Any], visualization: str) -> str:
+        label = str(branch.get("dataset_label") or branch.get("dataset") or "").strip()
+        prefix = f"{label} " if label else ""
+        figure_status = str(
+            (branch.get("figure_statuses") or {}).get(visualization) or ""
+        )
+        if figure_status == "not_attempted_optional":
+            return f"{prefix}{visualization} figure not attempted"
+        return f"{prefix}{visualization} figure unavailable"
+
+    summary_rec = _record("section_2c_summary")
+    summary_sources, summary_evidence = _ids(summary_rec)
+    human_rec = _record("allen_human_celltype_summary")
+    mouse_rec = _record("allen_mouse_celltype_summary")
+    dropviz_rec = _record("dropviz_top_populations")
+
+    # 1. Section intro
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=str(summary.get("intro_text") or ""),
+            presentation_role="section_2c_intro",
+            presentation_item_key=item_key,
+            source_ids=summary_sources,
+            evidence_record_ids=summary_evidence,
+        )
+    )
+
+    _append_allen_branch(
+        human,
+        record=human_rec,
+        narrative_role="section_2c_human_narrative",
+        scatter_narrative_role="section_2c_human_scatter_narrative",
+        heatmap_narrative_role="section_2c_human_heatmap_narrative",
+        table_role="section_2c_human_table",
+        item_suffix="human",
+        figures=(
+            _Section2cFigureSlot(
+                role="section_2c_human_scatter_figure",
+                item_key=f"{item_key}-human-scatter",
+                record=_explorer_figure_record(DATASET_HUMAN_M1, VISUALIZATION_SCATTER),
+                fallback_note=_figure_note(human, VISUALIZATION_SCATTER),
+            ),
+            _Section2cFigureSlot(
+                role="section_2c_human_heatmap_figure",
+                item_key=f"{item_key}-human-heatmap",
+                record=_explorer_figure_record(DATASET_HUMAN_M1, VISUALIZATION_HEATMAP),
+                fallback_note=_figure_note(human, VISUALIZATION_HEATMAP),
+            ),
+        ),
+        page_break_before=False,
+    )
+
+    _append_allen_branch(
+        mouse,
+        record=mouse_rec,
+        narrative_role="section_2c_mouse_narrative",
+        scatter_narrative_role="section_2c_mouse_scatter_narrative",
+        heatmap_narrative_role="section_2c_mouse_heatmap_narrative",
+        table_role="section_2c_mouse_table",
+        item_suffix="mouse",
+        figures=(
+            _Section2cFigureSlot(
+                role="section_2c_mouse_scatter_figure",
+                item_key=f"{item_key}-mouse-scatter",
+                record=_explorer_figure_record(
+                    DATASET_MOUSE_CTX_HPF, VISUALIZATION_SCATTER
+                ),
+                fallback_note=_figure_note(mouse, VISUALIZATION_SCATTER),
+            ),
+            _Section2cFigureSlot(
+                role="section_2c_mouse_heatmap_figure",
+                item_key=f"{item_key}-mouse-heatmap",
+                record=_explorer_figure_record(
+                    DATASET_MOUSE_CTX_HPF, VISUALIZATION_HEATMAP
+                ),
+                fallback_note=_figure_note(mouse, VISUALIZATION_HEATMAP),
+            ),
+        ),
+        page_break_before=True,
+    )
+
+    dropviz_figure_rendered = _append_dropviz_branch(
+        dropviz,
+        record=dropviz_rec,
+        figures=(
+            _Section2cFigureSlot(
+                role="section_2c_dropviz_rank_figure",
+                item_key=f"{item_key}-dropviz-rank",
+                record=_record("dropviz_top_populations_figure"),
+                fallback_note="DropViz population ranking figure unavailable",
+            ),
+        ),
+        page_break_before=True,
+        figure_page_break_before=True,
+    )
+
+    # Therapeutic implications; shares the ranking figure's page when there
+    # is one, otherwise starts its own.
+    therapeutic = str(summary.get("therapeutic_narrative") or "").strip()
+    if therapeutic:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=therapeutic,
+                presentation_role="section_2c_therapeutic_narrative",
+                presentation_item_key=item_key,
+                presentation_page_break_before=not dropviz_figure_rendered,
+                source_ids=summary_sources,
+                evidence_record_ids=summary_evidence,
+            )
+        )
+
+    for branch, reason in (
+        (human, "Allen Human M1 structured analysis unavailable"),
+        (mouse, "Allen mouse cortex and hippocampus structured analysis unavailable"),
+        (dropviz, "DropViz GSE116470 population ranking unavailable"),
+    ):
+        if str(branch.get("analysis_status") or "") != "success":
+            diagnostics.append(PresentationDiagnostic("section_2c", reason, "warning"))
+
+    for issue in summary.get("unresolved_issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2c",
+                f"{issue.get('field', '')}: {issue.get('reason', '')}",
+                "warning",
+            )
+        )
+
+    if rendering.get("overall") in {None, "empty"} and not any(
+        r.fact_type.startswith(
+            (
+                "allen_celltype_",
+                "allen_human_celltype",
+                "allen_mouse_celltype",
+                "dropviz_",
+                "section_2c_",
+            )
+        )
+        for r in records
+    ):
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_2c",
+                "no single-cell / single-nucleus cell-type evidence available",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -3198,6 +3719,7 @@ __all__ = [
     "build_gene_aliases_blocks",
     "build_homologues_blocks",
     "build_known_structure_blocks",
+    "build_section_2c_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",

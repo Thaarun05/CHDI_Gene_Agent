@@ -55,6 +55,13 @@ from gene_dossier.section_2b import (
     Section2bConfig,
     node_generate_section_2b_derived_artifacts,
 )
+from gene_dossier.section_2c import (
+    Section2cConfig,
+    accept_visual_complete_gene_report,
+    evaluate_section_2c_visual_complete,
+    node_generate_section_2c_derived_artifacts,
+)
+from gene_dossier.section_2c_sources import paths_for as section_2c_paths_for
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -68,7 +75,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
@@ -79,6 +86,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1e": {"NCBI Datasets", "OrthoDB"},
     "2a": {"GTEx"},
     "2b": {"Allen Brain Atlas", "BrainRNASeq"},
+    "2c": {"Allen Brain Atlas", "GEO"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -108,6 +116,25 @@ _OPAQUE_REF_BY_ROLE = {
     ("2b", "section_2b_celltype_intro"): "ev-2b-celltype-introduction",
     ("2b", "section_2b_source_link"): "ev-2b-source-link",
     ("2b", "section_2b_celltype_figure"): "ev-2b-celltype-figure",
+    ("2c", "section_2c_intro"): "ev-2c-introduction",
+    ("2c", "section_2c_human_narrative"): "ev-2c-human-m1-summary",
+    ("2c", "section_2c_human_scatter_narrative"): "ev-2c-human-m1-scatter-summary",
+    ("2c", "section_2c_human_heatmap_narrative"): "ev-2c-human-m1-heatmap-summary",
+    ("2c", "section_2c_human_table"): "ev-2c-human-m1-table",
+    ("2c", "section_2c_human_scatter_figure"): "ev-2c-human-m1-scatter-figure",
+    ("2c", "section_2c_human_heatmap_figure"): "ev-2c-human-m1-heatmap-figure",
+    ("2c", "section_2c_mouse_narrative"): "ev-2c-mouse-ctx-hpf-summary",
+    ("2c", "section_2c_mouse_scatter_narrative"): "ev-2c-mouse-ctx-hpf-scatter-summary",
+    ("2c", "section_2c_mouse_heatmap_narrative"): "ev-2c-mouse-ctx-hpf-heatmap-summary",
+    ("2c", "section_2c_mouse_table"): "ev-2c-mouse-ctx-hpf-table",
+    ("2c", "section_2c_mouse_scatter_figure"): "ev-2c-mouse-ctx-hpf-scatter-figure",
+    ("2c", "section_2c_mouse_heatmap_figure"): "ev-2c-mouse-ctx-hpf-heatmap-figure",
+    ("2c", "section_2c_dropviz_narrative"): "ev-2c-dropviz-population-summary",
+    ("2c", "section_2c_dropviz_table"): "ev-2c-dropviz-population-table",
+    ("2c", "section_2c_dropviz_rank_figure"): "ev-2c-dropviz-rank-figure",
+    ("2c", "section_2c_geo_attribution"): "ev-2c-dropviz-geo-attribution",
+    ("2c", "section_2c_therapeutic_narrative"): "ev-2c-therapeutic-context",
+    ("2c", "section_2c_source_link"): "ev-2c-source-link",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -135,6 +162,7 @@ _SECTION_1D_NON_EVIDENCE_ROLES = frozenset(
 )
 _SECTION_2A_NON_EVIDENCE_ROLES = frozenset({"section_2a_source_status"})
 _SECTION_2B_NON_EVIDENCE_ROLES = frozenset({"section_2b_source_status"})
+_SECTION_2C_NON_EVIDENCE_ROLES = frozenset({"section_2c_source_status"})
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -195,6 +223,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "2a"
         elif key in {"2.b"}:
             key = "2b"
+        elif key in {"2.c"}:
+            key = "2c"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -221,6 +251,10 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
 
     Section 2b owns Allen Brain Atlas and BrainRNASeq network requests; the
     generic clients must not run when 2b is selected.
+
+    Section 2c owns its Allen Brain Atlas cell-type and GEO series requests
+    (served from accepted dataset-level sources); the generic clients must not
+    run when 2c is selected.
     """
     needed: set[str] = set()
     for key in section_keys:
@@ -237,6 +271,9 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     if "2b" in section_keys:
         needed.discard("Allen Brain Atlas")
         needed.discard("BrainRNASeq")
+    if "2c" in section_keys:
+        needed.discard("Allen Brain Atlas")
+        needed.discard("GEO")
         needed.discard("Allen Brain")
         needed.discard("Barres Lab")
     return sorted(needed)
@@ -557,6 +594,9 @@ def assign_opaque_refs(
         if block.presentation_role in _SECTION_2B_NON_EVIDENCE_ROLES:
             polished.append(block.model_copy(update={"evidence_ref": None}))
             continue
+        if block.presentation_role in _SECTION_2C_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
         # One item can carry several official images (e.g. two Cadherin_C
         # structure thumbnails), so repeats take a deterministic ordinal rather
@@ -784,6 +824,7 @@ def build_section_bundle_document(
         "section_1e_status": status_by_key.get("1e"),
         "section_2a_status": status_by_key.get("2a"),
         "section_2b_status": status_by_key.get("2b"),
+        "section_2c_status": status_by_key.get("2c"),
     }
     return document, presentation, audit
 
@@ -802,7 +843,14 @@ def render_section_bundle_html(
     from gene_dossier.rancho_report import (
         render_section_2a_subsection_segments,
         render_section_2b_subsection_segments,
+        render_section_2c_subsection_segments,
     )
+
+    segment_renderers = {
+        "a": render_section_2a_subsection_segments,
+        "b": render_section_2b_subsection_segments,
+        "c": render_section_2c_subsection_segments,
+    }
 
     body_parts: list[str] = []
     page_break = SECTION_1C_PDF_PAGE_BREAK
@@ -819,9 +867,9 @@ def render_section_bundle_html(
             )
             continue
 
-        # Major 2: 2a segments first (unchanged three-page split), then 2b on a
-        # clean page after all 2a pages. Assembled 2a+2b does not repeat Major 2
-        # heading on 2b pages. Focused 2b still gets the Major 2 heading.
+        # Major 2: lettered subsections render in order (2a, 2b, 2c). The first
+        # selected subsection shares the Major 2 heading page; every later one
+        # starts on a clean page and the Major 2 heading is never repeated.
         heading = f"{major.number}. {major.title}"
         first_page_parts: list[str] = [
             (
@@ -834,70 +882,58 @@ def render_section_bundle_html(
                 f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
                 f"{_escape(heading)}</h2>"
             )
-        continuation_2a: list[str] = []
-        segments_2b: list[str] = []
+        segments_by_letter: dict[str, list[str]] = {}
         other_subs: list[str] = []
-        has_2a = False
-        has_2b = False
         for sub in major.subsections:
-            if sub.key == "a" and any(
-                str(b.presentation_role or "").startswith("section_2a_")
+            renderer = segment_renderers.get(sub.key)
+            if renderer is not None and any(
+                str(b.presentation_role or "").startswith(f"section_2{sub.key}_")
                 for b in (sub.presentation_blocks or [])
             ):
-                has_2a = True
-                segments = render_section_2a_subsection_segments(sub)
-                first_page_parts.append(segments[0])
-                continuation_2a.extend(segments[1:])
-            elif sub.key == "b" and any(
-                str(b.presentation_role or "").startswith("section_2b_")
-                for b in (sub.presentation_blocks or [])
-            ):
-                has_2b = True
-                segments_2b = render_section_2b_subsection_segments(sub)
+                segments_by_letter[sub.key] = renderer(sub)
             else:
-                other_subs.append(_render_subsection(sub))
+                other_subs.append(_render_subsection(sub, major_number=major.number))
 
-        # Legacy non-2a/2b Major 2 content stays on page 1 (should be empty today).
+        ordered = [ltr for ltr in ("a", "b", "c") if segments_by_letter.get(ltr)]
+        lead = ordered[0] if ordered else None
+        if lead is not None:
+            first_page_parts.append(segments_by_letter[lead][0])
+
+        # Legacy non-lettered Major 2 content stays on page 1 (empty today).
         first_page_parts.extend(other_subs)
         first_page_parts.append("</section>")
+        body_parts.extend(first_page_parts)
 
-        if has_2a:
-            body_parts.extend(first_page_parts)
-            for index, segment in enumerate(continuation_2a):
-                body_parts.append(page_break)
-                body_parts.append(
-                    f'<section id="section-{major.number}-cont-{index + 2}" '
-                    f'class="report-page section-bundle-body section-2a-continuation">'
-                    f"{segment}</section>"
-                )
-            if has_2b and segments_2b:
-                # Page break after all 2a pages, then 2b segment 0 (h3 once).
-                body_parts.append(page_break)
-                body_parts.append(
-                    f'<section id="section-{major.number}-2b" '
-                    f'class="report-page section-bundle-body section-2b-page">'
-                    f"{segments_2b[0]}</section>"
-                )
-                for index, segment in enumerate(segments_2b[1:]):
-                    body_parts.append(page_break)
-                    body_parts.append(
-                        f'<section id="section-{major.number}-2b-cont-{index + 2}" '
-                        f'class="report-page section-bundle-body section-2b-continuation">'
-                        f"{segment}</section>"
-                    )
-        elif has_2b and segments_2b:
-            # Focused 2b (or Major 2 without 2a): heading already on first page.
-            first_page_parts.insert(-1, segments_2b[0])
-            body_parts.extend(first_page_parts)
-            for index, segment in enumerate(segments_2b[1:]):
-                body_parts.append(page_break)
-                body_parts.append(
-                    f'<section id="section-{major.number}-2b-cont-{index + 2}" '
-                    f'class="report-page section-bundle-body section-2b-continuation">'
-                    f"{segment}</section>"
-                )
-        else:
-            body_parts.extend(first_page_parts)
+        if lead is None:
+            continue
+
+        def _continuation_page(letter: str, index: int, segment: str) -> None:
+            # 2a keeps its historical continuation id/class for layout parity.
+            if letter == "a":
+                page_id = f"section-{major.number}-cont-{index + 2}"
+            else:
+                page_id = f"section-{major.number}-2{letter}-cont-{index + 2}"
+            body_parts.append(page_break)
+            body_parts.append(
+                f'<section id="{page_id}" '
+                f'class="report-page section-bundle-body '
+                f'section-2{letter}-continuation">'
+                f"{segment}</section>"
+            )
+
+        for index, segment in enumerate(segments_by_letter[lead][1:]):
+            _continuation_page(lead, index, segment)
+
+        for letter in ordered[1:]:
+            segments = segments_by_letter[letter]
+            body_parts.append(page_break)
+            body_parts.append(
+                f'<section id="section-{major.number}-2{letter}" '
+                f'class="report-page section-bundle-body section-2{letter}-page">'
+                f"{segments[0]}</section>"
+            )
+            for index, segment in enumerate(segments[1:]):
+                _continuation_page(letter, index, segment)
 
     body = "\n".join(body_parts)
 
@@ -1207,9 +1243,11 @@ def run_section_bundle(
     allow_rerender: bool = False,
     preloaded_state: DossierState | None = None,
     acceptance_profile: str | None = None,
+    promote_section_2c_accepted: bool = False,
     section_1e_config: Section1eConfig | None = None,
     section_2a_config: Section2aConfig | None = None,
     section_2b_config: Section2bConfig | None = None,
+    section_2c_config: Section2cConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
@@ -1235,6 +1273,7 @@ def run_section_bundle(
             "section_1e_status",
             "section_2a_status",
             "section_2b_status",
+            "section_2c_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1339,6 +1378,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_2b_config or Section2bConfig(),
                 )
+            if "2c" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_2c_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_2c_config or Section2cConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1350,6 +1403,8 @@ def run_section_bundle(
             section_status_by_key["2a"] = state["section_2a_status"]
         if state.get("section_2b_status"):
             section_status_by_key["2b"] = state["section_2b_status"]
+        if state.get("section_2c_status"):
+            section_status_by_key["2c"] = state["section_2c_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1458,6 +1513,11 @@ def run_section_bundle(
                 (state.get("section_2b_status") or {}).get("audit")
                 or state.get("section_2b_status")
             )
+        if "2c" in keys and state.get("section_2c_status"):
+            audit["section_2c"] = sanitize_credentials(
+                (state.get("section_2c_status") or {}).get("audit")
+                or state.get("section_2c_status")
+            )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
             audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
@@ -1507,6 +1567,83 @@ def run_section_bundle(
                     dict.fromkeys([*(audit.get("errors") or []), *errors])
                 )
             audit_path = created_outputs.get("section_1_audit_json")
+            if audit_path:
+                Path(audit_path).write_text(
+                    json.dumps(
+                        sanitize_credentials(audit),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+        if "2c" in keys and state.get("section_2c_status"):
+            section_2c_status = dict(state.get("section_2c_status") or {})
+            rendering = dict(section_2c_status.get("rendering_status") or {})
+            c_blocks: list[ReportContentBlock] = []
+            for sec in document.sections:
+                for sub in sec.subsections:
+                    if sub.key == "c":
+                        c_blocks = list(sub.presentation_blocks or [])
+            embedded_roles = {
+                str(block.presentation_role)
+                for block in c_blocks
+                if block.kind == "figure"
+                and block.presentation_role
+                and block.figure_path
+            }
+            pdf_path = created_outputs.get("section_1_pdf") or created_outputs.get(
+                "section_2_pdf"
+            )
+            # Bundle writers may use different keys depending on selected sections.
+            if not pdf_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_pdf") and value:
+                        pdf_path = value
+                        break
+            pdf_ok = bool(pdf_path and Path(str(pdf_path)).is_file())
+            evaluation = evaluate_section_2c_visual_complete(
+                rendering=rendering,
+                embedded_figure_roles=embedded_roles,
+                pdf_render_status="success" if pdf_ok else "source_unavailable",
+            )
+            section_2c_audit = dict(audit.get("section_2c") or {})
+            section_2c_audit["visual_complete_acceptance"] = evaluation
+            attempt_dir = Path(
+                str(
+                    (section_2c_status.get("audit") or {}).get("gene_attempt_dir")
+                    or section_2c_audit.get("gene_attempt_dir")
+                    or ""
+                )
+            )
+            accepted_pointer = None
+            if evaluation.get("visual_complete") and attempt_dir.is_dir():
+                cfg_2c = section_2c_config or Section2cConfig()
+                paths = section_2c_paths_for(cfg_2c.output_root or cfg.output_path)
+                accepted_pointer = accept_visual_complete_gene_report(
+                    paths,
+                    gene_symbol=gene,
+                    attempt_dir=attempt_dir,
+                    rendering=rendering,
+                    artifacts=dict(
+                        (section_2c_status.get("audit") or {}).get("artifacts") or {}
+                    ),
+                    evaluation=evaluation,
+                    promote_existing=promote_section_2c_accepted,
+                )
+            if accepted_pointer is not None:
+                section_2c_audit["accepted_gene_pointer"] = str(accepted_pointer)
+            audit["section_2c"] = sanitize_credentials(section_2c_audit)
+            audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
+                "section_2_audit_json"
+            )
+            if not audit_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_audit_json") and value:
+                        audit_path = value
+                        break
             if audit_path:
                 Path(audit_path).write_text(
                     json.dumps(

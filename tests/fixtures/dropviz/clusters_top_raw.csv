@@ -1,0 +1,4 @@
+cx.disp,gene,region.disp,target.sum.per.100k,target.sum.L.per.100k,target.sum.R.per.100k
+Cluster B,Genex,Hippocampus,5.0,4.0,6.0
+Cluster A,Genex,Cortex,12.5,10.0,15.0
+Cluster C,Genex,Striatum,2.0,1.0,3.0

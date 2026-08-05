@@ -258,7 +258,16 @@ def test_build_alphafold_blocks_status_lines_have_no_evidence_refs():
 def test_sources_for_sections_excludes_generic_alphafold_when_1d_selected():
     assert sources_for_sections(["1d"]) == []
     assert "AlphaFold" not in sources_for_sections(["1a", "1b", "1c", "1d"])
-    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+    )
     assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
     assert validate_section_keys(["1d", "1a"]) == ["1a", "1d"]
     assert validate_section_keys(["1e", "1a"]) == ["1a", "1e"]
@@ -813,6 +822,15 @@ def test_no_custom_coordinate_rendering_helpers_and_defaults():
     assert not hasattr(s1d, "render_pymol_png")
     assert not hasattr(s1d, "render_mmcif_projection_png")
     assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
-    assert SUPPORTED_SECTION_BUNDLE_KEYS == ("1a", "1b", "1c", "1d", "1e", "2a", "2b")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+    )
     assert "1d" not in DEFAULT_SECTION_BUNDLE_KEYS
     assert "1e" not in DEFAULT_SECTION_BUNDLE_KEYS
