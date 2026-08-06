@@ -1,0 +1,897 @@
+{
+  "symbol": "GENEX",
+  "name": "Gene X",
+  "synonyms": [
+    "GX"
+  ],
+  "associations": [
+    {
+      "geneSet": {
+        "name": "TEAD4_HepG2_hg19_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TEAD4_HepG2_hg19_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "FOXA1_K562_hg19_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/FOXA1_K562_hg19_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "BAD_NO_BUILD/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/BAD_NO_BUILD/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CTCF/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CTCF/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MYC/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MYC/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "FOXP2-12345-Frontal-Cortex-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/FOXP2-12345-Frontal-Cortex-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "STAT3-999-Liver-Mouse/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/STAT3-999-Liver-Mouse/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TP53/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TP53/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "SP1/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/SP1/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "ELK1/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/ELK1/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "REST/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/REST/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "X/JASPAR Predicted Transcription Factor Targets 2025",
+        "href": "/api/1.0/gene_set/X/JASPAR+Predicted+Transcription+Factor+Targets+2025"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "Y/Some Random Dataset",
+        "href": "/api/1.0/gene_set/Y/Some+Random+Dataset"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF0_Cell0_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF0_Cell0_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF1_Cell1_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF1_Cell1_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF2_Cell2_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF2_Cell2_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF3_Cell3_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF3_Cell3_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF4_Cell4_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF4_Cell4_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF5_Cell5_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF5_Cell5_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF6_Cell6_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF6_Cell6_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF7_Cell7_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF7_Cell7_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF8_Cell8_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF8_Cell8_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF9_Cell9_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF9_Cell9_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF10_Cell10_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF10_Cell10_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF11_Cell11_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF11_Cell11_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF12_Cell12_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF12_Cell12_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF13_Cell13_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF13_Cell13_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF14_Cell14_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF14_Cell14_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF15_Cell15_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF15_Cell15_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF16_Cell16_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF16_Cell16_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF17_Cell17_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF17_Cell17_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF18_Cell18_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF18_Cell18_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TF19_Cell19_hg38_1/ENCODE Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/TF19_Cell19_hg38_1/ENCODE+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT0/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT0/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT1/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT1/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT2/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT2/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT3/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT3/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT4/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT4/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "TGT5/ENCODE Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/TGT5/ENCODE+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF0-1000-Ctx0-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF0-1000-Ctx0-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF1-1001-Ctx1-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF1-1001-Ctx1-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF2-1002-Ctx2-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF2-1002-Ctx2-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF3-1003-Ctx3-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF3-1003-Ctx3-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF4-1004-Ctx4-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF4-1004-Ctx4-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATF5-1005-Ctx5-Human/ChEA Transcription Factor Binding Site Profiles",
+        "href": "/api/1.0/gene_set/CHEATF5-1005-Ctx5-Human/ChEA+Transcription+Factor+Binding+Site+Profiles"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG0/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG0/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG1/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG1/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG2/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG2/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG3/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG3/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG4/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG4/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "CHEATG5/ChEA Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/CHEATG5/ChEA+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF0/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF0/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF1/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF1/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF2/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF2/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF3/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF3/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF4/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF4/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF5/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF5/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF6/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF6/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF7/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF7/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF8/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF8/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF9/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF9/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF10/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF10/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF11/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF11/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF12/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF12/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF13/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF13/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF14/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF14/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF15/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF15/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF16/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF16/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF17/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF17/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF18/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF18/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF19/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF19/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF20/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF20/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF21/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF21/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF22/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF22/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF23/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF23/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF24/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF24/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF25/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF25/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF26/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF26/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF27/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF27/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF28/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF28/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "JTF29/JASPAR Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/JTF29/JASPAR+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF0/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF0/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF1/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF1/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF2/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF2/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF3/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF3/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF4/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF4/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF5/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF5/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF6/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF6/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF7/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF7/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF8/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF8/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF9/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF9/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF10/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF10/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF11/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF11/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF12/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF12/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF13/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF13/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF14/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF14/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF15/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF15/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF16/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF16/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF17/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF17/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF18/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF18/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF19/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF19/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF20/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF20/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF21/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF21/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF22/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF22/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF23/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF23/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF24/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF24/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF25/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF25/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF26/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF26/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF27/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF27/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF28/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF28/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    },
+    {
+      "geneSet": {
+        "name": "MTF29/MotifMap Predicted Transcription Factor Targets",
+        "href": "/api/1.0/gene_set/MTF29/MotifMap+Predicted+Transcription+Factor+Targets"
+      },
+      "thresholdValue": 1,
+      "standardizedValue": 0.5
+    }
+  ]
+}

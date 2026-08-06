@@ -81,7 +81,18 @@ def _sample_tissues() -> list[dict]:
 
 def test_supported_keys_include_2a_default_unchanged():
     assert "2a" in SUPPORTED_SECTION_BUNDLE_KEYS
-    assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
+    assert DEFAULT_SECTION_BUNDLE_KEYS == (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "4a",
+    )
     assert validate_section_keys(["2a", "1a"]) == ["1a", "2a"]
     assert sources_for_sections(["2a"]) == []
     assert "GTEx" not in sources_for_sections(["1a", "2a"])

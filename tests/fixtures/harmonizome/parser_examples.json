@@ -1,0 +1,7 @@
+{
+  "encode_complete": "TEAD4_HepG2_hg19_1",
+  "encode_underscore_tissue": "EP300_CD14-positive_monocyte_hg19_1",
+  "chea_hyphenated": "FOXP2-12345-Frontal-Cortex-Human",
+  "chea_simple": "STAT3-999-Liver-Mouse",
+  "target_only": "CTCF"
+}

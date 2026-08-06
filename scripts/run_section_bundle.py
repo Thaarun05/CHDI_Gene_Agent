@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Section-scoped dossier generation for Sections 1a–1e and opt-in 2a/2b/2c/3a.
+"""Section-scoped dossier generation for Sections 1a–4a.
 
 Example::
 
     PYTHONPATH=src .venv/bin/python scripts/run_section_bundle.py \\
-      --gene SREBF2 --sections 1a 1b \\
+      --gene SREBF2 \\
       --output-dir data/outputs/section_validation/SREBF2 -v
+
+Omit ``--sections`` to run the default bundle (1a through 4a). Pass
+``--sections`` explicitly to override (e.g. ``--sections 4a``).
 """
 
 from __future__ import annotations
@@ -42,12 +45,12 @@ LOGGER = logging.getLogger("run_section_bundle")
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate a standalone section bundle (1a Gene Aliases / "
-            "1b UCSC conservation / opt-in 1c Known structure / opt-in 1d "
-            "AlphaFold / opt-in 1e Homologues / opt-in 2a Tissue-specific "
-            "information / opt-in 2b Barres Lab RNA-Seq / opt-in 2c snRNA-Seq "
-            "cell type database / opt-in 3a GEO Profiles) without LLM "
-            "synthesis or full-report rendering."
+            "Generate a standalone section bundle for deterministic sections "
+            "1a–4a (Gene Aliases, UCSC conservation, Known structure, "
+            "AlphaFold, Homologues, Tissue-specific expression, Barres Lab "
+            "RNA-Seq, snRNA-Seq cell type, GEO Profiles, Harmonizome TF "
+            "associations) without LLM synthesis or full-report rendering. "
+            "Default sections: 1a 1b 1c 1d 1e 2a 2b 2c 3a 4a."
         )
     )
     parser.add_argument("--gene", required=True, help="Gene symbol (e.g. SREBF2)")
@@ -56,8 +59,9 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
         help=(
-            "Section keys to include (1a, 1b, and/or opt-in "
-            "1c/1d/1e/2a/2b/2c/3a). Default: 1a 1b"
+            "Section keys to include (1a, 1b, 1c, 1d, 1e, 2a, 2b, 2c, 3a, 4a). "
+            "Default: 1a 1b 1c 1d 1e 2a 2b 2c 3a 4a. Explicit --sections "
+            "overrides the default."
         ),
     )
     parser.add_argument(
@@ -185,6 +189,32 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--harmonizome-max-curated-display",
+        type=int,
+        default=14,
+        help=(
+            "Max curated Harmonizome associations to display for Section 4a "
+            "(default: 14; ignored unless 4a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--harmonizome-max-predicted-display",
+        type=int,
+        default=25,
+        help=(
+            "Max predicted Harmonizome associations to display for Section 4a "
+            "(default: 25; ignored unless 4a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-4a-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing successful Section 4a accepted pointer when the new "
+            "attempt is also complete (default: keep prior successful pointer)."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -248,6 +278,19 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("%s", exc)
             return 2
 
+    section_4a_config = None
+    if "4a" in keys:
+        try:
+            from gene_dossier.section_4a import Section4aConfig
+
+            section_4a_config = Section4aConfig(
+                max_displayed_curated_associations=args.harmonizome_max_curated_display,
+                max_displayed_predicted_associations=args.harmonizome_max_predicted_display,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 2
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -259,11 +302,13 @@ def main(argv: list[str] | None = None) -> int:
         acceptance_profile=args.acceptance_profile,
         promote_section_2c_accepted=args.promote_section_2c_accepted,
         promote_section_3a_visual_accepted=args.promote_section_3a_visual_accepted,
+        promote_section_4a_accepted=args.promote_section_4a_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
         section_2c_config=section_2c_config,
         section_3a_config=section_3a_config,
+        section_4a_config=section_4a_config,
     )
 
     print(f"status={result.status}")

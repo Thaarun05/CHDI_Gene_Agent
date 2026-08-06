@@ -230,8 +230,19 @@ def _evidence_payload(status: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 def test_section_key_is_2c_and_opt_in():
     assert "2c" in SUPPORTED_SECTION_BUNDLE_KEYS
-    assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
-    assert "2c" not in DEFAULT_SECTION_BUNDLE_KEYS
+    assert DEFAULT_SECTION_BUNDLE_KEYS == (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "4a",
+    )
+    assert "2c" in DEFAULT_SECTION_BUNDLE_KEYS
     assert validate_section_keys(["2.c"]) == ["2c"]
     assert validate_section_keys(["2c"]) == ["2c"]
 

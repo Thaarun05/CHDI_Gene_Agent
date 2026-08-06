@@ -71,6 +71,13 @@ from gene_dossier.section_3a import (
     node_generate_section_3a_derived_artifacts,
 )
 from gene_dossier.section_3a_sources import paths_for as section_3a_paths_for
+from gene_dossier.section_4a import (
+    Section4aConfig,
+    accept_section_4a_report,
+    evaluate_section_4a_complete,
+    node_generate_section_4a_derived_artifacts,
+)
+from gene_dossier.section_4a_sources import paths_for as section_4a_paths_for
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -84,8 +91,19 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "3a")
-DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "3a", "4a")
+DEFAULT_SECTION_BUNDLE_KEYS = (
+    "1a",
+    "1b",
+    "1c",
+    "1d",
+    "1e",
+    "2a",
+    "2b",
+    "2c",
+    "3a",
+    "4a",
+)
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "1a": set(),
@@ -97,6 +115,10 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "2b": {"Allen Brain Atlas", "BrainRNASeq"},
     "2c": {"Allen Brain Atlas", "GEO"},
     "3a": {"GEO"},
+    # Section 4a owns its Harmonizome gene-associations request in the section
+    # node; do not declare a generic Harmonizome dependency that would be
+    # globally discarded by source name.
+    "4a": set(),
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -150,6 +172,14 @@ _OPAQUE_REF_BY_ROLE = {
     ("3a", "section_3a_profile_metadata"): "ev-3a-profile-metadata",
     ("3a", "section_3a_profile_figure"): "ev-3a-profile-figure",
     ("3a", "section_3a_caveat"): "ev-3a-caveat",
+    ("4a", "section_4a_intro"): "ev-4a-introduction",
+    ("4a", "section_4a_source_description"): "ev-4a-source-description",
+    ("4a", "section_4a_scientific_caveat"): "ev-4a-scientific-caveat",
+    ("4a", "section_4a_curated_count"): "ev-4a-curated-count",
+    ("4a", "section_4a_curated_table"): "ev-4a-curated-table",
+    ("4a", "section_4a_predicted_count"): "ev-4a-predicted-count",
+    ("4a", "section_4a_predicted_table"): "ev-4a-predicted-table",
+    ("4a", "section_4a_supplementary_note"): "ev-4a-supplementary-note",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -181,6 +211,7 @@ _SECTION_2C_NON_EVIDENCE_ROLES = frozenset({"section_2c_source_status"})
 _SECTION_3A_NON_EVIDENCE_ROLES = frozenset(
     {"section_3a_source_status", "section_3a_profile_figure_status"}
 )
+_SECTION_4A_NON_EVIDENCE_ROLES = frozenset({"section_4a_source_status"})
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -245,6 +276,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "2c"
         elif key in {"3.a"}:
             key = "3a"
+        elif key in {"4.a"}:
+            key = "4a"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -275,6 +308,15 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
     Section 2c owns its Allen Brain Atlas cell-type and GEO series requests
     (served from accepted dataset-level sources); the generic clients must not
     run when 2c is selected.
+
+    Section 3a owns GEO Profiles network requests; the generic GEO client must
+    not run when 3a is selected.
+
+    Section 4a owns the Harmonizome gene-associations request identity
+    (GET /api/1.0/gene/{GENE}?showAssociations=true) inside its section node.
+    Harmonizome is never globally discarded by source name; identical requests
+    from other sections share ToolResult/ApiRun/raw artifacts via the workflow
+    request cache.
     """
     needed: set[str] = set()
     for key in section_keys:
@@ -622,6 +664,9 @@ def assign_opaque_refs(
         if block.presentation_role in _SECTION_3A_NON_EVIDENCE_ROLES:
             polished.append(block.model_copy(update={"evidence_ref": None}))
             continue
+        if block.presentation_role in _SECTION_4A_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
         # One item can carry several official images (e.g. two Cadherin_C
         # structure thumbnails), so repeats take a deterministic ordinal rather
@@ -851,6 +896,7 @@ def build_section_bundle_document(
         "section_2b_status": status_by_key.get("2b"),
         "section_2c_status": status_by_key.get("2c"),
         "section_3a_status": status_by_key.get("3a"),
+        "section_4a_status": status_by_key.get("4a"),
     }
     return document, presentation, audit
 
@@ -871,6 +917,7 @@ def render_section_bundle_html(
         render_section_2b_subsection_segments,
         render_section_2c_subsection_segments,
         render_section_3a_subsection_segments,
+        render_section_4a_subsection_segments,
     )
 
     segment_renderers = {
@@ -900,6 +947,16 @@ def render_section_bundle_html(
                     major,
                     include_major_heading=include_major_heading,
                     renderer=render_section_3a_subsection_segments,
+                )
+            )
+            continue
+
+        if major.number == 4:
+            body_parts.extend(
+                _render_major_section_4_pages(
+                    major,
+                    include_major_heading=include_major_heading,
+                    renderer=render_section_4a_subsection_segments,
                 )
             )
             continue
@@ -1153,6 +1210,53 @@ def _render_major_section_3_pages(
     return out
 
 
+def _render_major_section_4_pages(
+    major: ReportMajorSection,
+    *,
+    include_major_heading: bool,
+    renderer,
+) -> list[str]:
+    """Render Major 4 (4a Harmonizome) with heading once and page continuations."""
+    heading = f"{major.number}. {major.title}"
+    page_break = SECTION_1C_PDF_PAGE_BREAK
+    out: list[str] = []
+    first_parts: list[str] = [
+        (
+            f'<section id="section-{major.number}" '
+            f'class="report-page section-bundle-body section-{major.number}-page">'
+        )
+    ]
+    if include_major_heading:
+        first_parts.append(
+            f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
+            f"{_escape(heading)}</h2>"
+        )
+
+    subsection_a = next((s for s in major.subsections if s.key == "a"), None)
+    segments: list[str] = []
+    if subsection_a is not None and any(
+        str(b.presentation_role or "").startswith("section_4a_")
+        for b in (subsection_a.presentation_blocks or [])
+    ):
+        segments = renderer(subsection_a)
+    elif subsection_a is not None:
+        segments = [_render_subsection(subsection_a, major_number=4)]
+
+    if segments:
+        first_parts.append(segments[0])
+    first_parts.append("</section>")
+    out.extend(first_parts)
+
+    for index, segment in enumerate(segments[1:]):
+        out.append(page_break)
+        out.append(
+            f'<section id="section-{major.number}-4a-cont-{index + 2}" '
+            f'class="report-page section-bundle-body section-4a-continuation">'
+            f"{segment}</section>"
+        )
+    return out
+
+
 _BUNDLE_OUTPUT_NAMES = (
     "section_1.json",
     "section_1_audit.json",
@@ -1331,11 +1435,13 @@ def run_section_bundle(
     acceptance_profile: str | None = None,
     promote_section_2c_accepted: bool = False,
     promote_section_3a_visual_accepted: bool = False,
+    promote_section_4a_accepted: bool = False,
     section_1e_config: Section1eConfig | None = None,
     section_2a_config: Section2aConfig | None = None,
     section_2b_config: Section2bConfig | None = None,
     section_2c_config: Section2cConfig | None = None,
     section_3a_config: Section3aConfig | None = None,
+    section_4a_config: Section4aConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
@@ -1363,6 +1469,7 @@ def run_section_bundle(
             "section_2b_status",
             "section_2c_status",
             "section_3a_status",
+            "section_4a_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1495,6 +1602,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_3a_config or Section3aConfig(),
                 )
+            if "4a" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_4a_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_4a_config or Section4aConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1510,6 +1631,8 @@ def run_section_bundle(
             section_status_by_key["2c"] = state["section_2c_status"]
         if state.get("section_3a_status"):
             section_status_by_key["3a"] = state["section_3a_status"]
+        if state.get("section_4a_status"):
+            section_status_by_key["4a"] = state["section_4a_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1532,6 +1655,7 @@ def run_section_bundle(
                 "Allen Brain Atlas",
                 "BrainRNASeq",
                 "GEO Profiles",
+                "Harmonizome",
             }:
                 coverage.append(row)
         audit["coverage"] = [
@@ -1628,6 +1752,11 @@ def run_section_bundle(
             audit["section_3a"] = sanitize_credentials(
                 (state.get("section_3a_status") or {}).get("audit")
                 or state.get("section_3a_status")
+            )
+        if "4a" in keys and state.get("section_4a_status"):
+            audit["section_4a"] = sanitize_credentials(
+                (state.get("section_4a_status") or {}).get("audit")
+                or state.get("section_4a_status")
             )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
@@ -1875,6 +2004,115 @@ def run_section_bundle(
             if accepted_pointer is not None:
                 section_3a_audit["accepted_gene_pointer"] = str(accepted_pointer)
             audit["section_3a"] = sanitize_credentials(section_3a_audit)
+            audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
+                "section_2_audit_json"
+            )
+            if not audit_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_audit_json") and value:
+                        audit_path = value
+                        break
+            if audit_path:
+                Path(audit_path).write_text(
+                    json.dumps(
+                        sanitize_credentials(audit),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+        if "4a" in keys and state.get("section_4a_status"):
+            section_4a_status = dict(state.get("section_4a_status") or {})
+            pdf_path = created_outputs.get("section_1_pdf") or created_outputs.get(
+                "section_2_pdf"
+            )
+            html_path = created_outputs.get("section_1_html") or created_outputs.get(
+                "section_2_html"
+            )
+            if not pdf_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_pdf") and value:
+                        pdf_path = value
+                        break
+            if not html_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_html") and value:
+                        html_path = value
+                        break
+            a_blocks: list[ReportContentBlock] = []
+            for sec in document.sections:
+                for sub in sec.subsections:
+                    if sec.number == 4 and sub.key == "a":
+                        a_blocks = list(sub.presentation_blocks or [])
+            attempt_dir = Path(
+                str(
+                    (section_4a_status.get("audit") or {}).get("gene_attempt_dir")
+                    or ""
+                )
+            )
+            complete_eval = evaluate_section_4a_complete(
+                status=section_4a_status,
+                attempt_dir=attempt_dir if attempt_dir.is_dir() else None,
+                html_path=Path(str(html_path)) if html_path else None,
+                pdf_path=Path(str(pdf_path)) if pdf_path else None,
+                presentation_blocks=a_blocks,
+            )
+            section_4a_audit = dict(audit.get("section_4a") or {})
+            section_4a_audit["complete_acceptance"] = complete_eval
+            cfg_4a = section_4a_config or Section4aConfig()
+            paths = section_4a_paths_for(cfg_4a.output_root or cfg.output_path)
+            artifacts = dict((section_4a_status.get("audit") or {}).get("artifacts") or {})
+            summary = dict(section_4a_status.get("summary") or {})
+            accepted_pointer = None
+            scientific = str(
+                (section_4a_status.get("rendering_status") or {}).get("scientific_status")
+                or ""
+            )
+            presentation_st = str(
+                (section_4a_status.get("rendering_status") or {}).get(
+                    "presentation_status"
+                )
+                or ""
+            )
+            # failed/partial/no_associations/gene_mismatch → never replace
+            if (
+                complete_eval.get("complete")
+                and scientific == "success"
+                and presentation_st == "success"
+                and attempt_dir.is_dir()
+            ):
+                accepted_pointer = accept_section_4a_report(
+                    paths,
+                    gene_symbol=gene,
+                    attempt_dir=attempt_dir,
+                    acceptance={
+                        "section_4a_complete": True,
+                        "scientific_status": scientific,
+                        "presentation_status": presentation_st,
+                        "evaluation": complete_eval,
+                        "supplementary_xlsx_sha256": summary.get(
+                            "supplementary_xlsx_sha256"
+                        ),
+                        "promotion_requested": bool(promote_section_4a_accepted),
+                    },
+                    artifacts={
+                        **artifacts,
+                        "supplementary_xlsx_sha256": summary.get(
+                            "supplementary_xlsx_sha256"
+                        ),
+                        "raw_response_sha256": summary.get("raw_response_sha256"),
+                    },
+                    promote_existing=promote_section_4a_accepted,
+                )
+            if accepted_pointer is not None:
+                section_4a_audit["accepted_gene_pointer"] = str(accepted_pointer)
+                section_4a_audit["supplementary_xlsx_sha256"] = summary.get(
+                    "supplementary_xlsx_sha256"
+                )
+            audit["section_4a"] = sanitize_credentials(section_4a_audit)
             audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
                 "section_2_audit_json"
             )

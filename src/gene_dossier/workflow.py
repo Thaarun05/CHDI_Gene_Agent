@@ -22,6 +22,7 @@ Rules:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -81,6 +82,7 @@ class WorkflowTransientContext:
     """
 
     live_figures: dict[str, Any] = field(default_factory=dict)
+    request_cache: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def put_figure(self, token: str, payload: Any) -> None:
@@ -104,6 +106,14 @@ class WorkflowTransientContext:
         with self.lock:
             return self.live_figures.pop(key, None)
 
+    def get_cached_request(self, identity_key: str) -> Any | None:
+        with self.lock:
+            return self.request_cache.get(identity_key)
+
+    def put_cached_request(self, identity_key: str, payload: Any) -> None:
+        with self.lock:
+            self.request_cache[identity_key] = payload
+
     def clear_run(self, dossier_run_id: str) -> None:
         """Drop any remaining payloads keyed for ``dossier_run_id``."""
         prefix = f"{dossier_run_id}:"
@@ -111,6 +121,28 @@ class WorkflowTransientContext:
             stale = [k for k in self.live_figures if k.startswith(prefix)]
             for key in stale:
                 self.live_figures.pop(key, None)
+
+
+_ACTIVE_TRANSIENT: contextvars.ContextVar[WorkflowTransientContext | None] = (
+    contextvars.ContextVar("gene_dossier_active_transient", default=None)
+)
+
+
+def bind_workflow_transient(
+    transient: WorkflowTransientContext | None,
+) -> contextvars.Token[WorkflowTransientContext | None]:
+    """Bind ``transient`` for nested client calls in this context."""
+    return _ACTIVE_TRANSIENT.set(transient)
+
+
+def reset_workflow_transient(
+    token: contextvars.Token[WorkflowTransientContext | None],
+) -> None:
+    _ACTIVE_TRANSIENT.reset(token)
+
+
+def get_active_workflow_transient() -> WorkflowTransientContext | None:
+    return _ACTIVE_TRANSIENT.get()
 
 
 class DossierState(TypedDict, total=False):
@@ -374,7 +406,11 @@ def _client_harmonizome(
 ) -> ToolResult:
     from gene_dossier.tools import harmonizome
 
-    return harmonizome.fetch_tf_associations(gene_symbol, settings=settings)
+    return harmonizome.fetch_tf_associations(
+        gene_symbol,
+        settings=settings,
+        transient=get_active_workflow_transient(),
+    )
 
 
 def _client_biogrid(
@@ -958,24 +994,28 @@ def node_call_source_clients(
             )
             continue
 
-        if name == "UCSC":
-            from gene_dossier.tools import ucsc as ucsc_client
+        bind_token = bind_workflow_transient(transient)
+        try:
+            if name == "UCSC":
+                from gene_dossier.tools import ucsc as ucsc_client
 
-            execution = ucsc_client.fetch_gene_region_execution(
-                gene_symbol,
-                settings=settings,
-            )
-            result = execution.tool_result
-            if transient is not None and execution.live_figure is not None:
-                data = dict(result.data) if isinstance(result.data, dict) else {}
-                token = f"{state['dossier_run_id']}:{uuid4().hex}"
-                data[_UCSC_TRANSIENT_TOKEN_KEY] = token
-                result.data = data
-                transient.put_figure(token, execution.live_figure)
-        else:
-            result = _safe_call_client(
-                name, fn, gene_symbol=gene_symbol, gene_ids=gene_ids, settings=settings
-            )
+                execution = ucsc_client.fetch_gene_region_execution(
+                    gene_symbol,
+                    settings=settings,
+                )
+                result = execution.tool_result
+                if transient is not None and execution.live_figure is not None:
+                    data = dict(result.data) if isinstance(result.data, dict) else {}
+                    token = f"{state['dossier_run_id']}:{uuid4().hex}"
+                    data[_UCSC_TRANSIENT_TOKEN_KEY] = token
+                    result.data = data
+                    transient.put_figure(token, execution.live_figure)
+            else:
+                result = _safe_call_client(
+                    name, fn, gene_symbol=gene_symbol, gene_ids=gene_ids, settings=settings
+                )
+        finally:
+            reset_workflow_transient(bind_token)
         tool_results.append(result)
         gene_ids = extract_gene_ids_from_tool_result(result, gene_ids)
         if not result.success:
@@ -1733,6 +1773,9 @@ __all__ = [
     "node_verify_claims",
     "node_render_outputs",
     "WorkflowTransientContext",
+    "bind_workflow_transient",
+    "get_active_workflow_transient",
+    "reset_workflow_transient",
     "coverage_updates_from_state",
 ]
 

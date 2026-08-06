@@ -144,7 +144,9 @@ def _ucsc_records(tmp_path: Path, gene: str = "SREBF2") -> list[EvidenceRecord]:
 
 def test_validate_section_keys_order_and_reject():
     assert validate_section_keys(["1c", "1b", "1a", "1a"]) == ["1a", "1b", "1c"]
-    assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == ["1a", "1b"]
+    assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == list(
+        DEFAULT_SECTION_BUNDLE_KEYS
+    )
     assert SUPPORTED_SECTION_BUNDLE_KEYS == (
         "1a",
         "1b",
@@ -155,6 +157,7 @@ def test_validate_section_keys_order_and_reject():
         "2b",
         "2c",
         "3a",
+        "4a",
     )
     with pytest.raises(SectionBundleError):
         validate_section_keys([])
@@ -1692,8 +1695,100 @@ def test_section_1c_pdf_page_break_sentinel_is_bundle_only():
     assert _split_pdf_page_segments(plain) == [plain]
 
 
-def test_section_1c_opt_in_defaults_unchanged():
-    assert DEFAULT_SECTION_BUNDLE_KEYS == ("1a", "1b")
+def test_default_section_bundle_keys_full_ordered_1a_through_4a(tmp_path, monkeypatch):
+    """Default bundle is 1a–4a; explicit section_keys / --sections still override."""
+    from gene_dossier import section_bundle as sb
+
+    expected = (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "4a",
+    )
+    assert DEFAULT_SECTION_BUNDLE_KEYS == expected
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == expected
+    assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == list(expected)
+    assert len(DEFAULT_SECTION_BUNDLE_KEYS) == len(set(DEFAULT_SECTION_BUNDLE_KEYS))
+    assert validate_section_keys(["4a", "1a", "4a", "2b"]) == ["1a", "2b", "4a"]
+    assert validate_section_keys(["1a", "2c", "3a"]) == ["1a", "2c", "3a"]
+
+    captured: dict[str, list[str]] = {}
+
+    class _StopAfterCreate(Exception):
+        pass
+
+    def _fake_create(**kwargs):
+        captured["keys"] = list(kwargs["selected_section_keys"])
+        raise _StopAfterCreate()
+
+    monkeypatch.setattr(sb, "create_section_bundle_run", _fake_create)
+
+    with pytest.raises(_StopAfterCreate):
+        run_section_bundle(
+            "GENEX",
+            section_keys=None,
+            output_dir=tmp_path / "default",
+            persist_db=False,
+            write_pdf=False,
+        )
+    assert captured["keys"] == list(expected)
+
+    with pytest.raises(_StopAfterCreate):
+        run_section_bundle(
+            "GENEX",
+            section_keys=["4a"],
+            output_dir=tmp_path / "only4a",
+            persist_db=False,
+            write_pdf=False,
+        )
+    assert captured["keys"] == ["4a"]
+
+    with pytest.raises(_StopAfterCreate):
+        run_section_bundle(
+            "GENEX",
+            section_keys=["1a", "3a"],
+            output_dir=tmp_path / "subset",
+            persist_db=False,
+            write_pdf=False,
+        )
+    assert captured["keys"] == ["1a", "3a"]
+
+    # CLI argparse default matches DEFAULT_SECTION_BUNDLE_KEYS; --sections overrides.
+    import argparse
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_section_bundle.py"
+    text = script.read_text(encoding="utf-8")
+    assert "Default: 1a 1b 1c 1d 1e 2a 2b 2c 3a 4a" in text
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--sections",
+        nargs="+",
+        default=list(DEFAULT_SECTION_BUNDLE_KEYS),
+    )
+    assert parser.parse_args([]).sections == list(expected)
+    assert parser.parse_args(["--sections", "4a"]).sections == ["4a"]
+    assert parser.parse_args(["--sections", "1a", "2b"]).sections == ["1a", "2b"]
+
+
+def test_section_defaults_include_completed_sections():
+    assert DEFAULT_SECTION_BUNDLE_KEYS == (
+        "1a",
+        "1b",
+        "1c",
+        "1d",
+        "1e",
+        "2a",
+        "2b",
+        "2c",
+        "3a",
+        "4a",
+    )
     assert SUPPORTED_SECTION_BUNDLE_KEYS == (
         "1a",
         "1b",
@@ -1704,8 +1799,10 @@ def test_section_1c_opt_in_defaults_unchanged():
         "2b",
         "2c",
         "3a",
+        "4a",
     )
-    assert "1e" not in DEFAULT_SECTION_BUNDLE_KEYS
+    assert "1e" in DEFAULT_SECTION_BUNDLE_KEYS
+    assert "4a" in DEFAULT_SECTION_BUNDLE_KEYS
 
 
 def test_render_section_bundle_html_can_suppress_major_heading_for_focused_1c():

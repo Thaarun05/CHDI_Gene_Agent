@@ -1989,10 +1989,135 @@ def render_section_3a_subsection_segments(sub: ReportSubsection) -> list[str]:
     ]
 
 
+_SECTION_4A_NARRATIVE_ROLES = frozenset(
+    {
+        "section_4a_intro",
+        "section_4a_source_description",
+        "section_4a_scientific_caveat",
+        "section_4a_curated_count",
+        "section_4a_predicted_count",
+        "section_4a_supplementary_note",
+    }
+)
+
+
+def _render_section_4a_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 4a narrative/table/status blocks."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_4a_intro":
+            text = (block.text or "").strip()
+            link = (block.links or [{}])[0] if block.links else {}
+            url = _escape(link.get("url") or "#")
+            label = _escape(link.get("label") or "Harmonizome")
+            if "Harmonizome" in text:
+                pre, _, post = text.partition("Harmonizome")
+                html = (
+                    f"{_escape(pre)}"
+                    f'<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = (
+                    f"{_escape(text)} "
+                    f'(<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>)'
+                )
+            parts.append(
+                f'<div class="section-4a-narrative" {_evidence_attr(block)}>'
+                f"<p>{html}</p></div>"
+            )
+            continue
+        if role in _SECTION_4A_NARRATIVE_ROLES:
+            css = (
+                "section-4a-caveat"
+                if role == "section_4a_scientific_caveat"
+                else (
+                    "section-4a-supplementary"
+                    if role == "section_4a_supplementary_note"
+                    else "section-4a-narrative"
+                )
+            )
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="{css}" {_evidence_attr(block)}><p>{text}</p></div>'
+            )
+            continue
+        if role == "section_4a_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-4a-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+            continue
+        if role in {"section_4a_curated_table", "section_4a_predicted_table"}:
+            parts.append(_render_block(block))
+            continue
+        parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_4a_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 4a blocks into pages at presentation_page_break_before.
+
+    Supplementary note stays with the final predicted segment (no mid-note split).
+    """
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if (
+            block.presentation_page_break_before
+            and current
+            and role != "section_4a_supplementary_note"
+        ):
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_4a_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 4a as one subsection HTML string per page segment."""
+    segments = split_section_4a_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-4a">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_4a_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-4a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
 def _infer_major_number(blocks: list[ReportContentBlock]) -> int | None:
     """Infer the owning major section from presentation roles (``None`` if unclear)."""
     for block in blocks:
         role = str(block.presentation_role or "")
+        if role.startswith("section_4a_"):
+            return 4
         if role.startswith("section_3a_"):
             return 3
         if role.startswith("section_2c_"):
@@ -2026,6 +2151,8 @@ def _render_subsection(sub: ReportSubsection, *, major_number: int | None = None
                 parts.append(
                     _render_section_1c_grouped_blocks(list(sub.presentation_blocks))
                 )
+        elif sub.key == "a" and effective_major == 4:
+            parts.append(_render_section_4a_blocks(list(sub.presentation_blocks)))
         elif sub.key == "a" and effective_major == 3:
             parts.append(_render_section_3a_blocks(list(sub.presentation_blocks)))
         elif sub.key == "d" and effective_major != 2:
@@ -2889,5 +3016,7 @@ __all__ = [
     "split_section_2c_page_segments",
     "render_section_3a_subsection_segments",
     "split_section_3a_page_segments",
+    "render_section_4a_subsection_segments",
+    "split_section_4a_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

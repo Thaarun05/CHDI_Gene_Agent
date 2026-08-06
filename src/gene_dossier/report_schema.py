@@ -140,6 +140,15 @@ PresentationRole = Literal[
     "section_3a_profile_figure",
     "section_3a_profile_figure_status",
     "section_3a_caveat",
+    "section_4a_intro",
+    "section_4a_source_description",
+    "section_4a_scientific_caveat",
+    "section_4a_curated_count",
+    "section_4a_curated_table",
+    "section_4a_predicted_count",
+    "section_4a_predicted_table",
+    "section_4a_supplementary_note",
+    "section_4a_source_status",
 ]
 
 
@@ -238,7 +247,7 @@ REPORT_SECTIONS: tuple[MajorSectionSpec, ...] = (
         subsections=(
             _sub(
                 "a",
-                "Harmonizome integrated knowledge about genes & proteins",
+                "Harmonizome Integrated Knowledge About Genes & Proteins",
                 "HARMONIZOME INTEGRATED KNOWLEDGE ABOUT GENES & PROTEINS",
             ),
         ),

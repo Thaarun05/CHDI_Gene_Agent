@@ -215,6 +215,18 @@ def build_section_presentation(
             evidence_records=evidence_records,
             section_status=section_status,
         )
+    if key in {
+        "4a",
+        "4.a",
+        "harmonizome",
+        "transcription_factors",
+        "harmonizome_integrated_knowledge_about_genes_and_proteins",
+    }:
+        return build_section_4a_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -3961,6 +3973,259 @@ def build_section_3a_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_section_4a_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 4a Harmonizome TF association presentation blocks."""
+    from gene_dossier.section_4a import (
+        CHEA_BLURB,
+        ENCODE_BLURB,
+        JASPAR_BLURB,
+        MOTIFMAP_BLURB,
+        SCIENTIFIC_CAVEAT,
+        STATUS_SOURCE_UNAVAILABLE,
+        STATUS_SUCCESS,
+    )
+    from gene_dossier.tools.harmonizome_section4a import gene_page_url
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (
+        str(summary.get("official_symbol") or gene_symbol or "").strip() or "this gene"
+    )
+    item_key = str(
+        summary.get("presentation_item_key")
+        or f"harmonizome-{gene.lower()}"
+    )
+    summary_rec = next((r for r in records if r.fact_type == "section_4a_summary"), None)
+    supp_rec = next(
+        (r for r in records if r.fact_type == "section_4a_supplementary_workbook"),
+        None,
+    )
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    src_ids, ev_ids = _ids(summary_rec)
+    blocks: list[ReportContentBlock] = []
+    scientific = str(
+        rendering.get("scientific_status") or summary.get("scientific_status") or ""
+    )
+    gene_url = str(summary.get("gene_page_url") or gene_page_url(gene))
+
+    blurbs = dict(summary.get("source_blurbs") or {})
+    source_text = " ".join(
+        [
+            str(blurbs.get("encode") or ENCODE_BLURB),
+            str(blurbs.get("chea") or CHEA_BLURB),
+            str(blurbs.get("motifmap") or MOTIFMAP_BLURB),
+            str(blurbs.get("jaspar") or JASPAR_BLURB),
+        ]
+    )
+
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=(
+                "Transcription factors (TFs) modulate transcription of target genes. "
+                "Associations curated in Harmonizome for this gene are summarized below."
+            ),
+            presentation_role="section_4a_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+            links=[{"label": "Harmonizome", "url": gene_url}],
+        )
+    )
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=source_text,
+            presentation_role="section_4a_source_description",
+            presentation_item_key=f"{item_key}-sources",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=str(summary.get("scientific_caveat") or SCIENTIFIC_CAVEAT),
+            presentation_role="section_4a_scientific_caveat",
+            presentation_item_key=f"{item_key}-caveat",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+
+    if scientific == STATUS_SOURCE_UNAVAILABLE:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="Harmonizome gene associations were unavailable for this run.",
+                presentation_role="section_4a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic("section_4a", "source unavailable", "warning")
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific in {"gene_mismatch", "no_associations"}:
+        msg = (
+            "Harmonizome returned a gene symbol that did not match the query."
+            if scientific == "gene_mismatch"
+            else "No allowlisted transcription-factor associations were found for this gene."
+        )
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=msg,
+                presentation_role="section_4a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    curated_total = int(summary.get("curated_total") or 0)
+    predicted_total = int(summary.get("predicted_total") or 0)
+    curated_display = list(summary.get("curated_display") or [])
+    predicted_display = list(summary.get("predicted_display") or [])
+
+    curated_count_text = (
+        f"{gene} has {curated_total} transcription factor associations."
+    )
+    if curated_display:
+        curated_count_text += " Selected associations are listed below."
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=curated_count_text,
+            presentation_role="section_4a_curated_count",
+            presentation_item_key=f"{item_key}-curated-count",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+
+    curated_headers = [
+        "Association",
+        "Dataset",
+        "Tissue/Cells",
+        "Organism",
+        "Genome Build",
+    ]
+    # Safe mid-table page splits with repeated headers (never split supplementary).
+    chunk_size = 8
+    for chunk_index, start in enumerate(range(0, max(len(curated_display), 0) or 0, chunk_size)):
+        chunk = curated_display[start : start + chunk_size]
+        if not chunk:
+            break
+        rows = [
+            [
+                str(r.get("association") or ""),
+                str(r.get("dataset") or ""),
+                str(r.get("tissue_cells") or ""),
+                str(r.get("organism") or ""),
+                str(r.get("genome_build") or ""),
+            ]
+            for r in chunk
+        ]
+        blocks.append(
+            ReportContentBlock(
+                kind="table",
+                table_headers=curated_headers,
+                table_rows=rows,
+                presentation_role="section_4a_curated_table",
+                presentation_item_key=f"{item_key}-curated-table-{chunk_index}",
+                presentation_page_break_before=chunk_index > 0,
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+
+    predicted_count_text = (
+        f"{gene} has {predicted_total} predicted transcription factor associations."
+    )
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=predicted_count_text,
+            presentation_role="section_4a_predicted_count",
+            presentation_item_key=f"{item_key}-predicted-count",
+            presentation_page_break_before=bool(curated_display),
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+
+    predicted_headers = ["Predicted Association", "Dataset"]
+    for chunk_index, start in enumerate(
+        range(0, max(len(predicted_display), 0) or 0, chunk_size)
+    ):
+        chunk = predicted_display[start : start + chunk_size]
+        if not chunk:
+            break
+        rows = [
+            [
+                str(r.get("predicted_association") or ""),
+                str(r.get("dataset") or ""),
+            ]
+            for r in chunk
+        ]
+        blocks.append(
+            ReportContentBlock(
+                kind="table",
+                table_headers=predicted_headers,
+                table_rows=rows,
+                presentation_role="section_4a_predicted_table",
+                presentation_item_key=f"{item_key}-predicted-table-{chunk_index}",
+                presentation_page_break_before=chunk_index > 0,
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+
+    xlsx_name = summary.get("supplementary_xlsx") or f"{gene}_Harmonizome.xlsx"
+    supp_ids, supp_ev = _ids(supp_rec or summary_rec)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=(
+                "The download of all transcription factor associations is available "
+                f"as Supplementary Material ({xlsx_name})."
+            ),
+            presentation_role="section_4a_supplementary_note",
+            presentation_item_key=f"{item_key}-supplementary",
+            source_ids=supp_ids,
+            evidence_record_ids=supp_ev,
+        )
+    )
+
+    if scientific == STATUS_SUCCESS and curated_total == 0 and predicted_total == 0:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_4a",
+                "scientific success with zero allowlisted associations",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -3979,6 +4244,7 @@ __all__ = [
     "build_known_structure_blocks",
     "build_section_2c_blocks",
     "build_section_3a_blocks",
+    "build_section_4a_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",
