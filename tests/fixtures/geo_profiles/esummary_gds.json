@@ -1,0 +1,60 @@
+{
+  "result": {
+    "uids": [
+      "4524"
+    ],
+    "4524": {
+      "uid": "4524",
+      "accession": "GDS4524",
+      "title": "Prenatal stress ...",
+      "summary": "control vs prenatal stress wild type and 5-HTT",
+      "taxon": "Mus musculus",
+      "gdstype": "Expression profiling by array",
+      "valtype": "transformed count",
+      "n_samples": 12,
+      "samples": [
+        {
+          "accession": "GSM0"
+        },
+        {
+          "accession": "GSM1"
+        },
+        {
+          "accession": "GSM2"
+        },
+        {
+          "accession": "GSM3"
+        },
+        {
+          "accession": "GSM4"
+        },
+        {
+          "accession": "GSM5"
+        },
+        {
+          "accession": "GSM6"
+        },
+        {
+          "accession": "GSM7"
+        },
+        {
+          "accession": "GSM8"
+        },
+        {
+          "accession": "GSM9"
+        },
+        {
+          "accession": "GSM10"
+        },
+        {
+          "accession": "GSM11"
+        }
+      ],
+      "pubmedids": [
+        "123"
+      ],
+      "gse": "GSE123",
+      "gpl": "GPL1261"
+    }
+  }
+}

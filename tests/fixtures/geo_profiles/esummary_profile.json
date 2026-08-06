@@ -1,0 +1,21 @@
+{
+  "result": {
+    "uids": [
+      "97740750"
+    ],
+    "97740750": {
+      "uid": "97740750",
+      "gds": "4524",
+      "gpl": "GPL1261",
+      "title": "Prenatal stress effect on serotonin transporter-deficient, female offspring: left hippocampus",
+      "taxon": "Mus musculus",
+      "gdstype": "Expression profiling by array",
+      "valtype": "transformed count",
+      "idref": "1426744_at",
+      "genename": "Srebf2",
+      "genedesc": "sterol regulatory element binding factor 2",
+      "geneid": "20788",
+      "gbacc": "BM123132"
+    }
+  }
+}

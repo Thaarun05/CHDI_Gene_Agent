@@ -133,6 +133,13 @@ PresentationRole = Literal[
     "section_2c_therapeutic_narrative",
     "section_2c_source_link",
     "section_2c_source_status",
+    "section_3a_intro",
+    "section_3a_source_status",
+    "section_3a_profile_title",
+    "section_3a_profile_metadata",
+    "section_3a_profile_figure",
+    "section_3a_profile_figure_status",
+    "section_3a_caveat",
 ]
 
 

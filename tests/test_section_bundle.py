@@ -154,6 +154,7 @@ def test_validate_section_keys_order_and_reject():
         "2a",
         "2b",
         "2c",
+        "3a",
     )
     with pytest.raises(SectionBundleError):
         validate_section_keys([])
@@ -1702,6 +1703,7 @@ def test_section_1c_opt_in_defaults_unchanged():
         "2a",
         "2b",
         "2c",
+        "3a",
     )
     assert "1e" not in DEFAULT_SECTION_BUNDLE_KEYS
 
@@ -2030,3 +2032,45 @@ def test_promote_flag_has_no_effect_when_2c_absent(tmp_path, monkeypatch):
     # Without selecting 2c, the accept helper must not be invoked by a 1a/1b-only
     # offline run that never builds section_2c_status.
     assert called["accept"] == 0
+
+
+def test_section_3a_visual_complete_fails_when_selected_chart_blocked():
+    """Blocked/missing charts must not pass post-render visual-complete acceptance."""
+    from gene_dossier.section_3a import (
+        STATUS_SUCCESS,
+        STATUS_UNAVAILABLE,
+        evaluate_section_3a_visual_complete,
+    )
+
+    status = {
+        "summary": {
+            "selected_profile_count": 2,
+            "selected_profiles": [
+                {"graph_status": "failed", "graph_ok": False},
+                {"graph_status": "failed", "graph_ok": False},
+            ],
+        },
+        "rendering_status": {
+            "scientific_status": STATUS_SUCCESS,
+            "visual_status": STATUS_UNAVAILABLE,
+        },
+    }
+    evaluation = evaluate_section_3a_visual_complete(
+        status=status,
+        embedded_figure_count=0,
+        selected_count=2,
+        pdf_render_status=STATUS_SUCCESS,
+    )
+    assert evaluation["scientific_complete"] is True
+    assert evaluation["visual_complete"] is False
+    assert evaluation["visual_status"] == STATUS_UNAVAILABLE
+
+    # Partial visual status also fails visual-complete.
+    status["rendering_status"]["visual_status"] = "partial"
+    partial = evaluate_section_3a_visual_complete(
+        status=status,
+        embedded_figure_count=1,
+        selected_count=2,
+        pdf_render_status=STATUS_SUCCESS,
+    )
+    assert partial["visual_complete"] is False

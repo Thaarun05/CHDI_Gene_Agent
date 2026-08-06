@@ -933,6 +933,45 @@ table.section-1e-fallback-table td {{
 .section-bundle-body.section-2c-continuation .report-subsection {{
   margin-top: 0;
 }}
+.section-bundle-body .section-3a-narrative,
+.section-bundle-body .section-3a-metadata,
+.section-bundle-body .section-3a-caveat {{
+  margin: 4pt 0 8pt 0;
+  font-size: 11pt;
+  line-height: 1.25;
+}}
+.section-bundle-body .section-3a-profile-group {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 6pt 0 10pt 0;
+}}
+.section-bundle-body .section-3a-link-line {{
+  margin: 4pt 0 4pt 0;
+  font-size: 12pt;
+}}
+.section-bundle-body .section-3a-status-line {{
+  margin: 4pt 0 6pt 0;
+  font-size: 11pt;
+  color: #8a7a6a;
+}}
+.section-bundle-body figure.rancho-figure.section-3a-profile-figure {{
+  margin: 4pt auto 8pt auto;
+  text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}}
+.section-bundle-body figure.rancho-figure.section-3a-profile-figure img {{
+  width: 6.6in;
+  max-width: 98%;
+  max-height: 6.8in;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+  object-fit: contain;
+}}
+.section-bundle-body.section-3a-continuation .report-subsection {{
+  margin-top: 0;
+}}
 .section-bundle-body .section-1d-link-line {{
   margin: 4pt 0 6pt 0;
   font-size: 13pt;
@@ -1827,10 +1866,135 @@ def render_section_2c_subsection_segments(sub: ReportSubsection) -> list[str]:
     ]
 
 
+_SECTION_3A_NARRATIVE_ROLES = frozenset(
+    {
+        "section_3a_intro",
+        "section_3a_profile_metadata",
+        "section_3a_caveat",
+    }
+)
+
+
+def _render_section_3a_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 3a narrative/link/figure/status blocks with profile grouping."""
+    parts: list[str] = []
+    open_group = False
+
+    def _close_group() -> None:
+        nonlocal open_group
+        if open_group:
+            parts.append("</div>")
+            open_group = False
+
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_3a_profile_title":
+            _close_group()
+            parts.append('<div class="section-3a-profile-group">')
+            open_group = True
+            if block.kind == "link":
+                link = (block.links or [{}])[0]
+                label = _escape(link.get("label") or block.text or "")
+                url = _escape(link.get("url") or "#")
+                parts.append(
+                    f'<p class="section-3a-link-line" {_evidence_attr(block)}>'
+                    f'<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a></p>'
+                )
+            else:
+                text = _escape((block.text or "").strip())
+                parts.append(
+                    f'<div class="section-3a-narrative" {_evidence_attr(block)}>'
+                    f"<p>{text}</p></div>"
+                )
+            continue
+        if role in _SECTION_3A_NARRATIVE_ROLES:
+            if role == "section_3a_caveat":
+                _close_group()
+            text = _escape((block.text or "").strip()).replace("\n", "<br/>")
+            css = (
+                "section-3a-caveat"
+                if role == "section_3a_caveat"
+                else (
+                    "section-3a-metadata"
+                    if role == "section_3a_profile_metadata"
+                    else "section-3a-narrative"
+                )
+            )
+            parts.append(
+                f'<div class="{css}" {_evidence_attr(block)}><p>{text}</p></div>'
+            )
+            continue
+        if role == "section_3a_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-3a-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+            continue
+        if role == "section_3a_profile_figure_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-3a-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+            continue
+        parts.append(_render_block(block))
+    _close_group()
+    return "\n".join(parts)
+
+
+def split_section_3a_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 3a blocks into pages at presentation_page_break_before."""
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_3a_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 3a as one subsection HTML string per page segment."""
+    segments = split_section_3a_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-3a">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_3a_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-3a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
 def _infer_major_number(blocks: list[ReportContentBlock]) -> int | None:
     """Infer the owning major section from presentation roles (``None`` if unclear)."""
     for block in blocks:
         role = str(block.presentation_role or "")
+        if role.startswith("section_3a_"):
+            return 3
         if role.startswith("section_2c_"):
             return 2
         if role.startswith("section_1c_"):
@@ -1862,6 +2026,8 @@ def _render_subsection(sub: ReportSubsection, *, major_number: int | None = None
                 parts.append(
                     _render_section_1c_grouped_blocks(list(sub.presentation_blocks))
                 )
+        elif sub.key == "a" and effective_major == 3:
+            parts.append(_render_section_3a_blocks(list(sub.presentation_blocks)))
         elif sub.key == "d" and effective_major != 2:
             parts.append(_render_section_1d_blocks(list(sub.presentation_blocks)))
         elif sub.key == "e" and effective_major != 2:
@@ -2721,5 +2887,7 @@ __all__ = [
     "split_section_2b_page_segments",
     "render_section_2c_subsection_segments",
     "split_section_2c_page_segments",
+    "render_section_3a_subsection_segments",
+    "split_section_3a_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

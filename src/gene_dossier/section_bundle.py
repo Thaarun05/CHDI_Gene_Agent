@@ -62,6 +62,15 @@ from gene_dossier.section_2c import (
     node_generate_section_2c_derived_artifacts,
 )
 from gene_dossier.section_2c_sources import paths_for as section_2c_paths_for
+from gene_dossier.section_3a import (
+    Section3aConfig,
+    accept_scientific_complete_gene_report,
+    accept_visual_complete_gene_report as accept_section_3a_visual_complete_gene_report,
+    evaluate_section_3a_scientific_complete,
+    evaluate_section_3a_visual_complete,
+    node_generate_section_3a_derived_artifacts,
+)
+from gene_dossier.section_3a_sources import paths_for as section_3a_paths_for
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -75,7 +84,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "3a")
 DEFAULT_SECTION_BUNDLE_KEYS = ("1a", "1b")
 
 SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
@@ -87,6 +96,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     "2a": {"GTEx"},
     "2b": {"Allen Brain Atlas", "BrainRNASeq"},
     "2c": {"Allen Brain Atlas", "GEO"},
+    "3a": {"GEO"},
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -135,6 +145,11 @@ _OPAQUE_REF_BY_ROLE = {
     ("2c", "section_2c_geo_attribution"): "ev-2c-dropviz-geo-attribution",
     ("2c", "section_2c_therapeutic_narrative"): "ev-2c-therapeutic-context",
     ("2c", "section_2c_source_link"): "ev-2c-source-link",
+    ("3a", "section_3a_intro"): "ev-3a-introduction",
+    ("3a", "section_3a_profile_title"): "ev-3a-profile-title",
+    ("3a", "section_3a_profile_metadata"): "ev-3a-profile-metadata",
+    ("3a", "section_3a_profile_figure"): "ev-3a-profile-figure",
+    ("3a", "section_3a_caveat"): "ev-3a-caveat",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -163,6 +178,9 @@ _SECTION_1D_NON_EVIDENCE_ROLES = frozenset(
 _SECTION_2A_NON_EVIDENCE_ROLES = frozenset({"section_2a_source_status"})
 _SECTION_2B_NON_EVIDENCE_ROLES = frozenset({"section_2b_source_status"})
 _SECTION_2C_NON_EVIDENCE_ROLES = frozenset({"section_2c_source_status"})
+_SECTION_3A_NON_EVIDENCE_ROLES = frozenset(
+    {"section_3a_source_status", "section_3a_profile_figure_status"}
+)
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -225,6 +243,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "2b"
         elif key in {"2.c"}:
             key = "2c"
+        elif key in {"3.a"}:
+            key = "3a"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -276,6 +296,8 @@ def sources_for_sections(section_keys: Sequence[str]) -> list[str]:
         needed.discard("GEO")
         needed.discard("Allen Brain")
         needed.discard("Barres Lab")
+    if "3a" in section_keys:
+        needed.discard("GEO")
     return sorted(needed)
 
 
@@ -597,6 +619,9 @@ def assign_opaque_refs(
         if block.presentation_role in _SECTION_2C_NON_EVIDENCE_ROLES:
             polished.append(block.model_copy(update={"evidence_ref": None}))
             continue
+        if block.presentation_role in _SECTION_3A_NON_EVIDENCE_ROLES:
+            polished.append(block.model_copy(update={"evidence_ref": None}))
+            continue
         base_ref = opaque_evidence_ref(section_key, block, index=index)
         # One item can carry several official images (e.g. two Cadherin_C
         # structure thumbnails), so repeats take a deterministic ordinal rather
@@ -825,6 +850,7 @@ def build_section_bundle_document(
         "section_2a_status": status_by_key.get("2a"),
         "section_2b_status": status_by_key.get("2b"),
         "section_2c_status": status_by_key.get("2c"),
+        "section_3a_status": status_by_key.get("3a"),
     }
     return document, presentation, audit
 
@@ -844,6 +870,7 @@ def render_section_bundle_html(
         render_section_2a_subsection_segments,
         render_section_2b_subsection_segments,
         render_section_2c_subsection_segments,
+        render_section_3a_subsection_segments,
     )
 
     segment_renderers = {
@@ -863,6 +890,16 @@ def render_section_bundle_html(
             body_parts.extend(
                 _render_major_section_1_pages(
                     major, include_major_heading=include_major_heading
+                )
+            )
+            continue
+
+        if major.number == 3:
+            body_parts.extend(
+                _render_major_section_3_pages(
+                    major,
+                    include_major_heading=include_major_heading,
+                    renderer=render_section_3a_subsection_segments,
                 )
             )
             continue
@@ -973,6 +1010,8 @@ def render_section_bundle_html(
         title_suffix = "Section 1"
     elif major_nums == [2]:
         title_suffix = "Section 2"
+    elif major_nums == [3]:
+        title_suffix = "Section 3"
     else:
         title_suffix = "Section Bundle"
     title = _escape(f"{document.gene_symbol} — {title_suffix}")
@@ -1062,6 +1101,53 @@ def _render_major_section_1_pages(
         out.append(
             f'<section id="section-{major.number}-cont-{index + 2}" '
             f'class="{page_class}">'
+            f"{segment}</section>"
+        )
+    return out
+
+
+def _render_major_section_3_pages(
+    major: ReportMajorSection,
+    *,
+    include_major_heading: bool,
+    renderer,
+) -> list[str]:
+    """Render Major 3 (3a GEO Profiles) with heading once and page continuations."""
+    heading = f"{major.number}. {major.title}"
+    page_break = SECTION_1C_PDF_PAGE_BREAK
+    out: list[str] = []
+    first_parts: list[str] = [
+        (
+            f'<section id="section-{major.number}" '
+            f'class="report-page section-bundle-body section-{major.number}-page">'
+        )
+    ]
+    if include_major_heading:
+        first_parts.append(
+            f'<h2 class="major-heading" style="color:{REPORT_STYLE.green_major};">'
+            f"{_escape(heading)}</h2>"
+        )
+
+    subsection_a = next((s for s in major.subsections if s.key == "a"), None)
+    segments: list[str] = []
+    if subsection_a is not None and any(
+        str(b.presentation_role or "").startswith("section_3a_")
+        for b in (subsection_a.presentation_blocks or [])
+    ):
+        segments = renderer(subsection_a)
+    elif subsection_a is not None:
+        segments = [_render_subsection(subsection_a, major_number=3)]
+
+    if segments:
+        first_parts.append(segments[0])
+    first_parts.append("</section>")
+    out.extend(first_parts)
+
+    for index, segment in enumerate(segments[1:]):
+        out.append(page_break)
+        out.append(
+            f'<section id="section-{major.number}-3a-cont-{index + 2}" '
+            f'class="report-page section-bundle-body section-3a-continuation">'
             f"{segment}</section>"
         )
     return out
@@ -1244,10 +1330,12 @@ def run_section_bundle(
     preloaded_state: DossierState | None = None,
     acceptance_profile: str | None = None,
     promote_section_2c_accepted: bool = False,
+    promote_section_3a_visual_accepted: bool = False,
     section_1e_config: Section1eConfig | None = None,
     section_2a_config: Section2aConfig | None = None,
     section_2b_config: Section2bConfig | None = None,
     section_2c_config: Section2cConfig | None = None,
+    section_3a_config: Section3aConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
@@ -1274,6 +1362,7 @@ def run_section_bundle(
             "section_2a_status",
             "section_2b_status",
             "section_2c_status",
+            "section_3a_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1392,6 +1481,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_2c_config or Section2cConfig(),
                 )
+            if "3a" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_3a_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_3a_config or Section3aConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1405,6 +1508,8 @@ def run_section_bundle(
             section_status_by_key["2b"] = state["section_2b_status"]
         if state.get("section_2c_status"):
             section_status_by_key["2c"] = state["section_2c_status"]
+        if state.get("section_3a_status"):
+            section_status_by_key["3a"] = state["section_3a_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1426,6 +1531,7 @@ def run_section_bundle(
                 "Human Brain Transcriptome",
                 "Allen Brain Atlas",
                 "BrainRNASeq",
+                "GEO Profiles",
             }:
                 coverage.append(row)
         audit["coverage"] = [
@@ -1517,6 +1623,11 @@ def run_section_bundle(
             audit["section_2c"] = sanitize_credentials(
                 (state.get("section_2c_status") or {}).get("audit")
                 or state.get("section_2c_status")
+            )
+        if "3a" in keys and state.get("section_3a_status"):
+            audit["section_3a"] = sanitize_credentials(
+                (state.get("section_3a_status") or {}).get("audit")
+                or state.get("section_3a_status")
             )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
@@ -1636,6 +1747,134 @@ def run_section_bundle(
             if accepted_pointer is not None:
                 section_2c_audit["accepted_gene_pointer"] = str(accepted_pointer)
             audit["section_2c"] = sanitize_credentials(section_2c_audit)
+            audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
+                "section_2_audit_json"
+            )
+            if not audit_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_audit_json") and value:
+                        audit_path = value
+                        break
+            if audit_path:
+                Path(audit_path).write_text(
+                    json.dumps(
+                        sanitize_credentials(audit),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+        if "3a" in keys and state.get("section_3a_status"):
+            section_3a_status = dict(state.get("section_3a_status") or {})
+            summary = dict(section_3a_status.get("summary") or {})
+            a_blocks: list[ReportContentBlock] = []
+            for sec in document.sections:
+                for sub in sec.subsections:
+                    if sec.number == 3 and sub.key == "a":
+                        a_blocks = list(sub.presentation_blocks or [])
+            embedded_figure_count = sum(
+                1
+                for block in a_blocks
+                if block.kind == "figure"
+                and block.presentation_role == "section_3a_profile_figure"
+                and block.figure_path
+            )
+            selected_count = int(
+                summary.get("selected_profile_count")
+                or len(summary.get("selected_profiles") or [])
+                or 0
+            )
+            pdf_path = created_outputs.get("section_1_pdf") or created_outputs.get(
+                "section_2_pdf"
+            )
+            if not pdf_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_pdf") and value:
+                        pdf_path = value
+                        break
+            pdf_ok = bool(pdf_path and Path(str(pdf_path)).is_file())
+            pdf_status = "success" if pdf_ok else "source_unavailable"
+            scientific_eval = evaluate_section_3a_scientific_complete(
+                status=section_3a_status,
+                pdf_render_status=pdf_status,
+            )
+            visual_eval = evaluate_section_3a_visual_complete(
+                status=section_3a_status,
+                embedded_figure_count=embedded_figure_count,
+                selected_count=selected_count,
+                pdf_render_status=pdf_status,
+            )
+            section_3a_audit = dict(audit.get("section_3a") or {})
+            section_3a_audit["scientific_complete_acceptance"] = scientific_eval
+            section_3a_audit["visual_complete_acceptance"] = visual_eval
+            attempt_dir = Path(
+                str(
+                    (section_3a_status.get("audit") or {}).get("gene_attempt_dir")
+                    or section_3a_audit.get("gene_attempt_dir")
+                    or ""
+                )
+            )
+            cfg_3a = section_3a_config or Section3aConfig()
+            paths = section_3a_paths_for(cfg_3a.output_root or cfg.output_path)
+            artifacts = dict((section_3a_status.get("audit") or {}).get("artifacts") or {})
+            accepted_pointer = None
+            if scientific_eval.get("scientific_complete") and attempt_dir.is_dir():
+                accepted_pointer = accept_scientific_complete_gene_report(
+                    paths,
+                    gene_symbol=gene,
+                    attempt_dir=attempt_dir,
+                    acceptance={
+                        "section_3a_scientific_complete": True,
+                        "scientific_status": (
+                            (section_3a_status.get("rendering_status") or {}).get(
+                                "scientific_status"
+                            )
+                        ),
+                        "visual_status": (
+                            (section_3a_status.get("rendering_status") or {}).get(
+                                "visual_status"
+                            )
+                        ),
+                        "evaluation": scientific_eval,
+                    },
+                    artifacts=artifacts,
+                )
+            if (
+                promote_section_3a_visual_accepted
+                and visual_eval.get("visual_complete")
+                and attempt_dir.is_dir()
+            ):
+                visual_pointer = accept_section_3a_visual_complete_gene_report(
+                    paths,
+                    gene_symbol=gene,
+                    attempt_dir=attempt_dir,
+                    acceptance={
+                        "section_3a_scientific_complete": True,
+                        "section_3a_visual_complete": True,
+                        "scientific_status": (
+                            (section_3a_status.get("rendering_status") or {}).get(
+                                "scientific_status"
+                            )
+                        ),
+                        "visual_status": (
+                            (section_3a_status.get("rendering_status") or {}).get(
+                                "visual_status"
+                            )
+                        ),
+                        "evaluation": visual_eval,
+                        "promotion_requested": True,
+                    },
+                    artifacts=artifacts,
+                    promote_existing=True,
+                )
+                if visual_pointer is not None:
+                    accepted_pointer = visual_pointer
+            if accepted_pointer is not None:
+                section_3a_audit["accepted_gene_pointer"] = str(accepted_pointer)
+            audit["section_3a"] = sanitize_credentials(section_3a_audit)
             audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
                 "section_2_audit_json"
             )

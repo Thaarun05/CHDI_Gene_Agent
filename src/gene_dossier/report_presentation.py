@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from gene_dossier.models import AssertionType, EvidenceRecord
@@ -197,6 +198,19 @@ def build_section_presentation(
         "snrna_seq_gene_expression_in_cell_type_database",
     }:
         return build_section_2c_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
+    if key in {
+        "3a",
+        "3.a",
+        "geo_profiles",
+        "geo-profiles",
+        "geo_profiles_search",
+        "geo_profiles_search_focusing_on_brain_and_or_neurons",
+    }:
+        return build_section_3a_blocks(
             gene_symbol=gene_symbol,
             evidence_records=evidence_records,
             section_status=section_status,
@@ -3703,6 +3717,250 @@ def build_section_2c_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_section_3a_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 3a GEO Profiles presentation blocks."""
+    from gene_dossier.section_3a import (
+        COMPARABILITY_NOTE,
+        SCREENING_CAVEAT,
+        SELECTION_POLICY,
+        STATUS_NOT_ATTEMPTED,
+        STATUS_SOURCE_UNAVAILABLE,
+        STATUS_SUCCESS,
+        build_intro_text,
+    )
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    item_key = str(
+        summary.get("presentation_item_key")
+        or f"geo-profiles-{(gene_symbol or '').strip().lower()}"
+    )
+
+    summary_rec = next((r for r in records if r.fact_type == "section_3a_summary"), None)
+    profile_recs = [r for r in records if r.fact_type == "section_3a_profile"]
+    profile_by_uid = {
+        str((r.value or {}).get("profile_uid") or ""): r for r in profile_recs
+    }
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    blocks: list[ReportContentBlock] = []
+    scientific = str(rendering.get("scientific_status") or summary.get("scientific_status") or "")
+    visual = str(rendering.get("visual_status") or summary.get("visual_status") or "")
+
+    intro = str(
+        summary.get("intro_text")
+        or build_intro_text(
+            gene_symbol,
+            exact_count=summary.get("exact_profile_count"),
+            neural_count=summary.get("neural_profile_count"),
+            subset_count=summary.get("subset_effect_profile_count"),
+        )
+    )
+    src_ids, ev_ids = _ids(summary_rec)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=intro,
+            presentation_role="section_3a_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+
+    if scientific == STATUS_SOURCE_UNAVAILABLE:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="GEO Profiles discovery or metadata enrichment was unavailable for this run.",
+                presentation_role="section_3a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic("section_3a", "source unavailable", "warning")
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    selected = list(summary.get("selected_profiles") or [])
+    if not selected and scientific != STATUS_SUCCESS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="No potentially relevant GEO Profiles met the neural/perturbation screening criteria.",
+                presentation_role="section_3a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+    elif selected:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="The following GEO Profiles were selected as potentially relevant:",
+                presentation_role="section_3a_intro",
+                presentation_item_key=f"{item_key}-selected-lead",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+
+    for index, profile in enumerate(selected):
+        uid = str(profile.get("profile_uid") or "")
+        rec = profile_by_uid.get(uid)
+        p_src, p_ev = _ids(rec or summary_rec)
+        title = str(profile.get("title") or f"GEO Profile {uid}")
+        url = profile.get("profile_url")
+        page_break = index > 0
+        if url:
+            blocks.append(
+                ReportContentBlock(
+                    kind="link",
+                    text=title,
+                    links=[{"label": title, "url": str(url)}],
+                    presentation_role="section_3a_profile_title",
+                    presentation_item_key=f"{item_key}-{uid}-title",
+                    presentation_page_break_before=page_break,
+                    source_ids=p_src,
+                    evidence_record_ids=p_ev,
+                )
+            )
+        else:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=title,
+                    presentation_role="section_3a_profile_title",
+                    presentation_item_key=f"{item_key}-{uid}-title",
+                    presentation_page_break_before=page_break,
+                    source_ids=p_src,
+                    evidence_record_ids=p_ev,
+                )
+            )
+
+        meta_lines: list[str] = []
+        organism = profile.get("organism") or profile.get("taxon")
+        if organism:
+            meta_lines.append(f"Organism: {organism}")
+        reporter = profile.get("reporter_line")
+        if reporter:
+            meta_lines.append(f"Reporter: {reporter}")
+        samples = profile.get("sample_count")
+        if samples is not None:
+            meta_lines.append(f"Samples: {samples}")
+        gse = profile.get("gse")
+        if gse:
+            meta_lines.append(f"Series: {gse}")
+        if profile.get("subset_effect_flag"):
+            meta_lines.append("Value subset effect: flagged (ranking signal only)")
+        if meta_lines:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text="\n".join(meta_lines),
+                    presentation_role="section_3a_profile_metadata",
+                    presentation_item_key=f"{item_key}-{uid}-metadata",
+                    source_ids=p_src,
+                    evidence_record_ids=p_ev,
+                )
+            )
+
+        fig_path = None
+        fig_val = rec.value if rec and isinstance(rec.value, dict) else {}
+        # Prefer an existing on-disk absolute path so Rancho can embed the PNG.
+        # ``_resolve_figure_path`` refuses machine-absolute paths for portability,
+        # which is correct for audit JSON but not for local HTML/PDF rendering.
+        for key in ("local_artifact_path", "relative_path"):
+            candidate = fig_val.get(key) or profile.get(key)
+            if candidate and Path(str(candidate)).is_file():
+                fig_path = str(candidate)
+                break
+        if not fig_path:
+            rel = profile.get("figure_relative_path")
+            attempt_dir = str((status.get("audit") or {}).get("gene_attempt_dir") or "")
+            if rel and attempt_dir:
+                candidate = Path(attempt_dir) / str(rel)
+                if candidate.is_file():
+                    fig_path = str(candidate)
+        if not fig_path and fig_val:
+            resolved, fig_diags = _resolve_figure_path(fig_val)
+            diagnostics.extend(fig_diags)
+            fig_path = resolved
+        graph_status = str(profile.get("graph_status") or "")
+        if fig_path and profile.get("graph_ok"):
+            blocks.append(
+                ReportContentBlock(
+                    kind="figure",
+                    text=f"{gene_symbol} GEO Profile chart ({uid})",
+                    figure_path=str(fig_path),
+                    presentation_role="section_3a_profile_figure",
+                    presentation_item_key=f"{item_key}-{uid}-figure",
+                    source_ids=p_src,
+                    evidence_record_ids=p_ev,
+                )
+            )
+        elif visual == STATUS_NOT_ATTEMPTED:
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text="Figure acquisition was not attempted for this run.",
+                    presentation_role="section_3a_profile_figure_status",
+                    presentation_item_key=f"{item_key}-{uid}-figure-status",
+                )
+            )
+        else:
+            note = "Profile chart unavailable."
+            if graph_status and graph_status not in {"success", "not_attempted_outside_shortlist"}:
+                note = f"Profile chart unavailable ({graph_status})."
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=note,
+                    presentation_role="section_3a_profile_figure_status",
+                    presentation_item_key=f"{item_key}-{uid}-figure-status",
+                )
+            )
+
+    caveat = str(summary.get("screening_caveat") or SCREENING_CAVEAT)
+    comparability = str(summary.get("comparability_note") or COMPARABILITY_NOTE)
+    policy = str(summary.get("selection_policy") or SELECTION_POLICY)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=f"{caveat} {comparability} {policy}",
+            presentation_role="section_3a_caveat",
+            presentation_item_key=f"{item_key}-caveat",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+        )
+    )
+
+    if not selected and scientific == STATUS_SUCCESS:
+        diagnostics.append(
+            PresentationDiagnostic(
+                "section_3a",
+                "scientific success with no polished selected profiles",
+                "warning",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -3720,6 +3978,7 @@ __all__ = [
     "build_homologues_blocks",
     "build_known_structure_blocks",
     "build_section_2c_blocks",
+    "build_section_3a_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Section-scoped dossier generation for Sections 1a–1e and opt-in 2a/2b/2c.
+"""Section-scoped dossier generation for Sections 1a–1e and opt-in 2a/2b/2c/3a.
 
 Example::
 
@@ -28,6 +28,7 @@ from gene_dossier.section_1e import (  # noqa: E402
 from gene_dossier.section_2a import Section2aConfig  # noqa: E402
 from gene_dossier.section_2b import Section2bConfig  # noqa: E402
 from gene_dossier.section_2c import Section2cConfig  # noqa: E402
+from gene_dossier.section_3a import Section3aConfig  # noqa: E402
 from gene_dossier.section_bundle import (  # noqa: E402
     DEFAULT_SECTION_BUNDLE_KEYS,
     SectionBundleError,
@@ -45,8 +46,8 @@ def main(argv: list[str] | None = None) -> int:
             "1b UCSC conservation / opt-in 1c Known structure / opt-in 1d "
             "AlphaFold / opt-in 1e Homologues / opt-in 2a Tissue-specific "
             "information / opt-in 2b Barres Lab RNA-Seq / opt-in 2c snRNA-Seq "
-            "cell type database) without LLM synthesis or full-report "
-            "rendering."
+            "cell type database / opt-in 3a GEO Profiles) without LLM "
+            "synthesis or full-report rendering."
         )
     )
     parser.add_argument("--gene", required=True, help="Gene symbol (e.g. SREBF2)")
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
         help=(
             "Section keys to include (1a, 1b, and/or opt-in "
-            "1c/1d/1e/2a/2b/2c). Default: 1a 1b"
+            "1c/1d/1e/2a/2b/2c/3a). Default: 1a 1b"
         ),
     )
     parser.add_argument(
@@ -125,6 +126,39 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--geo-max-candidates",
+        type=int,
+        default=500,
+        help=(
+            "Max GEO Profiles candidate UIDs to enrich for Section 3a "
+            "(default: 500; ignored unless 3a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--geo-max-selected",
+        type=int,
+        default=6,
+        help=(
+            "Max polished GEO Profiles to select for Section 3a "
+            "(default: 6; ignored unless 3a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--no-geo-profile-figures",
+        action="store_true",
+        help=(
+            "Skip GEO Profile chart acquisition for Section 3a "
+            "(ignored unless 3a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--refresh-section-3a",
+        action="store_true",
+        help=(
+            "Force a fresh Section 3a attempt directory (ignored unless 3a is selected)"
+        ),
+    )
+    parser.add_argument(
         "--acceptance-profile",
         default=None,
         choices=["section_1c_reference_genes", "section_1d_reference_genes"],
@@ -140,6 +174,14 @@ def main(argv: list[str] | None = None) -> int:
             "Replace an existing accepted visual-complete Section 2c gene pointer only "
             "when the newly rendered report also passes the complete scientific, visual, "
             "figure-role, and PDF acceptance checks."
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-3a-visual-accepted",
+        action="store_true",
+        help=(
+            "Optionally pin/replace a visual-complete Section 3a accepted pointer after "
+            "scientific-complete acceptance when charts and PDF checks pass."
         ),
     )
     parser.add_argument(
@@ -193,6 +235,19 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("%s", exc)
             return 2
 
+    section_3a_config = None
+    if "3a" in keys:
+        try:
+            section_3a_config = Section3aConfig(
+                force_refresh=args.refresh_section_3a,
+                max_discovery_profiles=args.geo_max_candidates,
+                max_selected_profiles=args.geo_max_selected,
+                attempt_figures=not args.no_geo_profile_figures,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 2
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -203,10 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         dpi=args.dpi,
         acceptance_profile=args.acceptance_profile,
         promote_section_2c_accepted=args.promote_section_2c_accepted,
+        promote_section_3a_visual_accepted=args.promote_section_3a_visual_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
         section_2c_config=section_2c_config,
+        section_3a_config=section_3a_config,
     )
 
     print(f"status={result.status}")
