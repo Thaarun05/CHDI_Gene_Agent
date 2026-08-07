@@ -1,0 +1,16 @@
+[
+  {
+    "queryItem": "GENEX",
+    "preferredName": "GENEX",
+    "stringId": "9606.ENSP0000001",
+    "ncbiTaxonId": 9606,
+    "taxonName": "Homo sapiens"
+  },
+  {
+    "queryItem": "GENEX",
+    "preferredName": "GENEX",
+    "stringId": "9606.ENSP0000002",
+    "ncbiTaxonId": 9606,
+    "taxonName": "Homo sapiens"
+  }
+]

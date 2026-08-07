@@ -1,0 +1,17 @@
+[
+  {
+    "stringId_A": "10090.ENSMUSP0000001",
+    "stringId_B": "10090.ENSMUSP0000002",
+    "preferredName_A": "A",
+    "preferredName_B": "B",
+    "ncbiTaxonId": "10090",
+    "score": 0.9,
+    "nscore": 0,
+    "fscore": 0,
+    "pscore": 0,
+    "ascore": 0,
+    "escore": 0.9,
+    "dscore": 0,
+    "tscore": 0
+  }
+]

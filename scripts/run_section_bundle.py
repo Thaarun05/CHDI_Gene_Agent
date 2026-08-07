@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Section-scoped dossier generation for Sections 1a–4a.
+"""Section-scoped dossier generation for Sections 1a–5a.
 
 Example::
 
@@ -8,7 +8,9 @@ Example::
       --output-dir data/outputs/section_validation/SREBF2 -v
 
 Omit ``--sections`` to run the default bundle (1a through 4a). Pass
-``--sections`` explicitly to override (e.g. ``--sections 4a``).
+``--sections`` explicitly to override (e.g. ``--sections 5a``).
+Section 5a (STRING) is supported/opt-in and not in the default bundle;
+structured network scope is fixed at add_nodes=30.
 """
 
 from __future__ import annotations
@@ -46,10 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Generate a standalone section bundle for deterministic sections "
-            "1a–4a (Gene Aliases, UCSC conservation, Known structure, "
-            "AlphaFold, Homologues, Tissue-specific expression, Barres Lab "
-            "RNA-Seq, snRNA-Seq cell type, GEO Profiles, Harmonizome TF "
-            "associations) without LLM synthesis or full-report rendering. "
+            "1a–4a by default, with opt-in 5a (STRING PPI). "
             "Default sections: 1a 1b 1c 1d 1e 2a 2b 2c 3a 4a."
         )
     )
@@ -59,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         default=list(DEFAULT_SECTION_BUNDLE_KEYS),
         help=(
-            "Section keys to include (1a, 1b, 1c, 1d, 1e, 2a, 2b, 2c, 3a, 4a). "
+            "Section keys to include (1a–4a default; opt-in 5a). "
             "Default: 1a 1b 1c 1d 1e 2a 2b 2c 3a 4a. Explicit --sections "
             "overrides the default."
         ),
@@ -215,6 +214,32 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--string-required-score",
+        type=int,
+        default=400,
+        help=(
+            "STRING required_score (0-1000) for Section 5a structured network, "
+            "official PNG, and get_link (default: 400; ignored unless 5a is selected). "
+            "Structured add_nodes is fixed at 30."
+        ),
+    )
+    parser.add_argument(
+        "--no-string-network-figure",
+        action="store_true",
+        help=(
+            "Skip the official STRING high-resolution network PNG for Section 5a "
+            "(ignored unless 5a is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-5a-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing successful Section 5a accepted pointer when the new "
+            "attempt is also complete (default: keep prior successful pointer)."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -291,6 +316,19 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("%s", exc)
             return 2
 
+    section_5a_config = None
+    if "5a" in keys:
+        try:
+            from gene_dossier.section_5a import Section5aConfig
+
+            section_5a_config = Section5aConfig(
+                required_score=args.string_required_score,
+                attempt_network_figure=not args.no_string_network_figure,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 2
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -303,12 +341,14 @@ def main(argv: list[str] | None = None) -> int:
         promote_section_2c_accepted=args.promote_section_2c_accepted,
         promote_section_3a_visual_accepted=args.promote_section_3a_visual_accepted,
         promote_section_4a_accepted=args.promote_section_4a_accepted,
+        promote_section_5a_accepted=args.promote_section_5a_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
         section_2c_config=section_2c_config,
         section_3a_config=section_3a_config,
         section_4a_config=section_4a_config,
+        section_5a_config=section_5a_config,
     )
 
     print(f"status={result.status}")

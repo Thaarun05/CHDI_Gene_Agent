@@ -227,6 +227,19 @@ def build_section_presentation(
             evidence_records=evidence_records,
             section_status=section_status,
         )
+    if key in {
+        "5a",
+        "5.a",
+        "string",
+        "string_db",
+        "protein_protein_interaction",
+        "ppi_partners_string",
+    }:
+        return build_section_5a_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -4226,6 +4239,225 @@ def build_section_4a_blocks(
     return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
 
 
+def build_section_5a_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+) -> SectionPresentationResult:
+    """Build Section 5a STRING network presentation blocks."""
+    from gene_dossier.section_5a import (
+        SCIENTIFIC_INTRO,
+        STATUS_IDENTIFIER_AMBIGUOUS,
+        STATUS_IDENTIFIER_NOT_FOUND,
+        STATUS_NO_INTERACTIONS,
+        STATUS_SOURCE_UNAVAILABLE,
+        STATUS_SUCCESS,
+        STRING_HOMEPAGE,
+    )
+
+    diagnostics: list[PresentationDiagnostic] = []
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (
+        str(summary.get("preferred_name") or summary.get("official_symbol") or gene_symbol or "")
+        .strip()
+        or "this gene"
+    )
+    item_key = str(summary.get("presentation_item_key") or f"string-{gene.lower()}")
+    summary_rec = next((r for r in records if r.fact_type == "section_5a_summary"), None)
+    fig_rec = next(
+        (r for r in records if r.fact_type == "section_5a_network_figure"), None
+    )
+    supp_rec = next(
+        (r for r in records if r.fact_type == "section_5a_supplementary_workbook"),
+        None,
+    )
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    src_ids, ev_ids = _ids(summary_rec)
+    blocks: list[ReportContentBlock] = []
+    scientific = str(
+        rendering.get("scientific_status") or summary.get("scientific_status") or ""
+    )
+    visual = str(rendering.get("visual_status") or summary.get("visual_status") or "")
+    network_url = str(summary.get("string_network_url") or STRING_HOMEPAGE)
+
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=str(summary.get("scientific_intro") or SCIENTIFIC_INTRO),
+            presentation_role="section_5a_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=src_ids,
+            evidence_record_ids=ev_ids,
+            links=[{"label": "STRING", "url": network_url}],
+        )
+    )
+
+    if scientific == STATUS_SOURCE_UNAVAILABLE:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="STRING network data were unavailable for this run.",
+                presentation_role="section_5a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        diagnostics.append(
+            PresentationDiagnostic("section_5a", "source unavailable", "warning")
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_IDENTIFIER_NOT_FOUND:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=f"STRING could not resolve an unambiguous protein identifier for {gene}.",
+                presentation_role="section_5a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_IDENTIFIER_AMBIGUOUS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=f"STRING returned an ambiguous identifier mapping for {gene}.",
+                presentation_role="section_5a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_NO_INTERACTIONS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    f"No STRING functional associations were returned for {gene} "
+                    "in the configured bounded network."
+                ),
+                presentation_role="section_5a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_SUCCESS:
+        n = int(summary.get("unique_node_count") or 0)
+        e = int(summary.get("unique_edge_count") or 0)
+        d = int(summary.get("direct_query_edge_count") or 0)
+        required = int(summary.get("required_score") or 400)
+        threshold = required / 1000.0
+        summary_text = (
+            f"The companion bounded structured STRING network contains {n} proteins "
+            f"and {e} STRING associations at a required combined-score threshold of "
+            f"{threshold:.3f}. {d} associations directly involve {gene}; "
+            f"the remaining {max(e - d, 0)} connect proteins within the displayed "
+            "neighborhood."
+        )
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=summary_text,
+                presentation_role="section_5a_network_summary",
+                presentation_item_key=f"{item_key}-network-summary",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    "The official STRING evidence-style visualization below uses a "
+                    "10-node first-shell and 20-node second-shell display."
+                ),
+                presentation_role="section_5a_network_summary",
+                presentation_item_key=f"{item_key}-figure-scope",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+
+    xlsx_name = summary.get("supplementary_xlsx") or f"{gene}_STRING.xlsx"
+    supp_ids, supp_ev = _ids(supp_rec or summary_rec)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=(
+                "The complete association inventory for the displayed bounded network "
+                f"is available as Supplementary Material ({xlsx_name})."
+            ),
+            presentation_role="section_5a_supplementary_note",
+            presentation_item_key=f"{item_key}-supplementary",
+            source_ids=supp_ids,
+            evidence_record_ids=supp_ev,
+        )
+    )
+
+    fig_val = dict(fig_rec.value) if fig_rec and isinstance(fig_rec.value, dict) else {}
+    if not fig_val and summary.get("network_figure_local_path"):
+        fig_val = {
+            "local_artifact_path": summary.get("network_figure_local_path"),
+            "relative_path": summary.get("network_figure_relative_path"),
+        }
+    if visual == STATUS_SUCCESS and fig_val:
+        fig_ids, fig_ev = _ids(fig_rec or summary_rec)
+        local = fig_val.get("local_artifact_path") or fig_val.get("relative_path")
+        fig_path = None
+        if local and Path(str(local)).is_file():
+            fig_path = str(local)
+        else:
+            resolved, fig_diags = _resolve_figure_path(fig_val)
+            diagnostics.extend(fig_diags)
+            fig_path = resolved
+        if fig_path:
+            blocks.append(
+                ReportContentBlock(
+                    kind="figure",
+                    figure_path=fig_path,
+                    figure_caption=f"STRING evidence-style network for {gene}",
+                    text=f"STRING evidence-style network for {gene}",
+                    presentation_role="section_5a_network_figure",
+                    presentation_item_key=f"{item_key}-network-figure",
+                    source_ids=fig_ids,
+                    evidence_record_ids=fig_ev,
+                )
+            )
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=(
+                        "Legend: nodes represent proteins (colored first-shell vs white "
+                        "second-shell neighbors; empty vs filled markers are "
+                        "STRING-provided structure indicators). Edges represent "
+                        "functional associations with evidence-style categories: "
+                        "curated databases, experimentally determined, gene neighborhood, "
+                        "gene fusion, gene co-occurrence, text mining, co-expression, "
+                        "and protein homology."
+                    ),
+                    presentation_role="section_5a_network_legend",
+                    presentation_item_key=f"{item_key}-network-legend",
+                    source_ids=fig_ids,
+                    evidence_record_ids=fig_ev,
+                )
+            )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
 __all__ = [
     "ALLOWED_LINK_HOSTS",
     "NOT_AVAILABLE",
@@ -4245,6 +4477,7 @@ __all__ = [
     "build_section_2c_blocks",
     "build_section_3a_blocks",
     "build_section_4a_blocks",
+    "build_section_5a_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",

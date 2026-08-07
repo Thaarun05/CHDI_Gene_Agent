@@ -1044,6 +1044,60 @@ table.section-1e-fallback-table td {{
 .section-bundle-body .section-1d-confidence-legend .swatch-high {{ background: #65CBF3; }}
 .section-bundle-body .section-1d-confidence-legend .swatch-low {{ background: #FFDB13; }}
 .section-bundle-body .section-1d-confidence-legend .swatch-very-low {{ background: #FF7D45; }}
+.section-bundle-body .section-5a-string-legend {{
+  font-size: 10pt;
+  line-height: 1.35;
+  margin-top: 8pt;
+}}
+.section-bundle-body .section-5a-string-legend .legend-title {{
+  font-weight: 700;
+  font-size: 10.5pt;
+  margin-bottom: 4pt;
+}}
+.section-bundle-body .section-5a-string-legend .legend-subtitle {{
+  font-weight: 600;
+  margin-top: 6pt;
+  margin-bottom: 2pt;
+}}
+.section-bundle-body .section-5a-string-legend .legend-row {{
+  margin: 1.5pt 0;
+}}
+.section-bundle-body .section-5a-string-legend .swatch {{
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.4em;
+  vertical-align: middle;
+  border: 1px solid #666;
+}}
+.section-bundle-body .section-5a-string-legend .node-colored {{ background: #7f7f7f; }}
+.section-bundle-body .section-5a-string-legend .node-white {{ background: #ffffff; }}
+.section-bundle-body .section-5a-string-legend .node-empty {{
+  background: transparent;
+  border-radius: 50%;
+}}
+.section-bundle-body .section-5a-string-legend .node-filled {{
+  background: #444444;
+  border-radius: 50%;
+}}
+.section-bundle-body .section-5a-string-legend .edge-db,
+.section-bundle-body .section-5a-string-legend .edge-exp,
+.section-bundle-body .section-5a-string-legend .edge-neigh,
+.section-bundle-body .section-5a-string-legend .edge-fusion,
+.section-bundle-body .section-5a-string-legend .edge-cooccur,
+.section-bundle-body .section-5a-string-legend .edge-text,
+.section-bundle-body .section-5a-string-legend .edge-coexp,
+.section-bundle-body .section-5a-string-legend .edge-homology {{
+  height: 0.2em;
+  width: 1.2em;
+  border: none;
+  background: #888888;
+}}
+.section-bundle-body .section-5a-string-legend .legend-note {{
+  margin-top: 6pt;
+  font-size: 9.5pt;
+  color: {REPORT_STYLE.brown_body};
+}}
 .section-bundle-body .section-1d-blurb {{
   font-size: 9.5pt;
   line-height: 1.35;
@@ -2112,12 +2166,162 @@ def render_section_4a_subsection_segments(sub: ReportSubsection) -> list[str]:
     ]
 
 
+_SECTION_5A_NARRATIVE_ROLES = frozenset(
+    {
+        "section_5a_intro",
+        "section_5a_network_summary",
+        "section_5a_supplementary_note",
+    }
+)
+
+
+def _render_section_5a_legend(block: ReportContentBlock) -> str:
+    """Local HTML/CSS STRING evidence legend (no scraped RGB claims)."""
+    return (
+        f'<div class="section-5a-string-legend" {_evidence_attr(block)}>'
+        '<div class="legend-title">STRING network legend</div>'
+        '<div class="legend-group">'
+        '<div class="legend-subtitle">Nodes (proteins)</div>'
+        '<div class="legend-row"><span class="swatch node-colored"></span>'
+        "Colored nodes: first-shell neighbors</div>"
+        '<div class="legend-row"><span class="swatch node-white"></span>'
+        "White nodes: second-shell neighbors</div>"
+        '<div class="legend-row"><span class="swatch node-empty"></span>'
+        "Empty markers: STRING structure indicator</div>"
+        '<div class="legend-row"><span class="swatch node-filled"></span>'
+        "Filled markers: STRING structure indicator</div>"
+        "</div>"
+        '<div class="legend-group">'
+        '<div class="legend-subtitle">Edges (functional associations)</div>'
+        '<div class="legend-row"><span class="swatch edge-db"></span>Curated databases</div>'
+        '<div class="legend-row"><span class="swatch edge-exp"></span>Experimentally determined</div>'
+        '<div class="legend-row"><span class="swatch edge-neigh"></span>Gene neighborhood</div>'
+        '<div class="legend-row"><span class="swatch edge-fusion"></span>Gene fusion</div>'
+        '<div class="legend-row"><span class="swatch edge-cooccur"></span>Gene co-occurrence</div>'
+        '<div class="legend-row"><span class="swatch edge-text"></span>Text mining</div>'
+        '<div class="legend-row"><span class="swatch edge-coexp"></span>Co-expression</div>'
+        '<div class="legend-row"><span class="swatch edge-homology"></span>Protein homology</div>'
+        "</div>"
+        f'<p class="legend-note">{_escape(block.text or "")}</p>'
+        "</div>"
+    )
+
+
+def _render_section_5a_blocks(blocks: list[ReportContentBlock]) -> str:
+    """Render Section 5a narrative/figure/legend/status blocks."""
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_5a_intro":
+            text = (block.text or "").strip()
+            link = (block.links or [{}])[0] if block.links else {}
+            url = _escape(link.get("url") or "#")
+            label = _escape(link.get("label") or "STRING")
+            if "STRING" in text:
+                pre, _, post = text.partition("STRING")
+                html = (
+                    f"{_escape(pre)}"
+                    f'<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = (
+                    f"{_escape(text)} "
+                    f'(<a style="color:{REPORT_STYLE.orange_link};" '
+                    f'href="{url}">{label}</a>)'
+                )
+            parts.append(
+                f'<div class="section-5a-narrative" {_evidence_attr(block)}>'
+                f"<p>{html}</p></div>"
+            )
+            continue
+        if role in _SECTION_5A_NARRATIVE_ROLES:
+            css = (
+                "section-5a-supplementary"
+                if role == "section_5a_supplementary_note"
+                else "section-5a-narrative"
+            )
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="{css}" {_evidence_attr(block)}><p>{text}</p></div>'
+            )
+            continue
+        if role == "section_5a_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-5a-status-line" {_evidence_attr(block)}>'
+                f"{text}</p>"
+            )
+            continue
+        if role == "section_5a_network_figure":
+            parts.append(_render_block(block))
+            continue
+        if role == "section_5a_network_legend":
+            parts.append(_render_section_5a_legend(block))
+            continue
+        parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_5a_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    """Group Section 5a blocks; keep figure+legend together when possible."""
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if (
+            block.presentation_page_break_before
+            and current
+            and role not in {"section_5a_network_legend", "section_5a_supplementary_note"}
+        ):
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_5a_subsection_segments(sub: ReportSubsection) -> list[str]:
+    """Render Section 5a as one subsection HTML string per page segment."""
+    segments = split_section_5a_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-5a">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_5a_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-5a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
 def _infer_major_number(blocks: list[ReportContentBlock]) -> int | None:
     """Infer the owning major section from presentation roles (``None`` if unclear)."""
     for block in blocks:
         role = str(block.presentation_role or "")
         if role.startswith("section_4a_"):
             return 4
+        if role.startswith("section_5a_"):
+            return 5
         if role.startswith("section_3a_"):
             return 3
         if role.startswith("section_2c_"):
@@ -2153,6 +2357,8 @@ def _render_subsection(sub: ReportSubsection, *, major_number: int | None = None
                 )
         elif sub.key == "a" and effective_major == 4:
             parts.append(_render_section_4a_blocks(list(sub.presentation_blocks)))
+        elif sub.key == "a" and effective_major == 5:
+            parts.append(_render_section_5a_blocks(list(sub.presentation_blocks)))
         elif sub.key == "a" and effective_major == 3:
             parts.append(_render_section_3a_blocks(list(sub.presentation_blocks)))
         elif sub.key == "d" and effective_major != 2:
@@ -3018,5 +3224,7 @@ __all__ = [
     "split_section_3a_page_segments",
     "render_section_4a_subsection_segments",
     "split_section_4a_page_segments",
+    "render_section_5a_subsection_segments",
+    "split_section_5a_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

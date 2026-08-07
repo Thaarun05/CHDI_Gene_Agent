@@ -85,7 +85,8 @@ def _fake_tool_result(*, with_meta: bool = True) -> ToolResult:
 
 def test_supported_keys_include_4a_defaults_unchanged() -> None:
     assert "4a" in SUPPORTED_SECTION_BUNDLE_KEYS
-    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "4a"
+    assert "5a" in SUPPORTED_SECTION_BUNDLE_KEYS
+    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "5a"
     assert DEFAULT_SECTION_BUNDLE_KEYS == (
         "1a",
         "1b",

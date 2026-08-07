@@ -149,6 +149,12 @@ PresentationRole = Literal[
     "section_4a_predicted_table",
     "section_4a_supplementary_note",
     "section_4a_source_status",
+    "section_5a_intro",
+    "section_5a_network_summary",
+    "section_5a_supplementary_note",
+    "section_5a_network_figure",
+    "section_5a_network_legend",
+    "section_5a_source_status",
 ]
 
 
