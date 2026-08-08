@@ -240,6 +240,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--no-biogrid-network-figure",
+        action="store_true",
+        help=(
+            "Skip the official BioGRID Network Viewer cy.png capture for Section 5b "
+            "(ignored unless 5b is selected)"
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-5b-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing successful Section 5b accepted pointer when the new "
+            "attempt is also complete (default: keep prior successful pointer)."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -329,6 +345,14 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.error("%s", exc)
             return 2
 
+    section_5b_config = None
+    if "5b" in keys:
+        from gene_dossier.section_5b import Section5bConfig
+
+        section_5b_config = Section5bConfig(
+            attempt_network_figure=not args.no_biogrid_network_figure,
+        )
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -342,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         promote_section_3a_visual_accepted=args.promote_section_3a_visual_accepted,
         promote_section_4a_accepted=args.promote_section_4a_accepted,
         promote_section_5a_accepted=args.promote_section_5a_accepted,
+        promote_section_5b_accepted=args.promote_section_5b_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
@@ -349,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         section_3a_config=section_3a_config,
         section_4a_config=section_4a_config,
         section_5a_config=section_5a_config,
+        section_5b_config=section_5b_config,
     )
 
     print(f"status={result.status}")

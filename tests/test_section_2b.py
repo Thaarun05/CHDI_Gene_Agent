@@ -58,6 +58,7 @@ def test_supported_keys_include_2b_default_unchanged():
         "3a",
         "4a",
         "5a",
+        "5b",
     )
     assert DEFAULT_SECTION_BUNDLE_KEYS == (
         "1a",

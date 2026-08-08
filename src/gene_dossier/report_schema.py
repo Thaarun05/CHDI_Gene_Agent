@@ -155,6 +155,11 @@ PresentationRole = Literal[
     "section_5a_network_figure",
     "section_5a_network_legend",
     "section_5a_source_status",
+    "section_5b_intro",
+    "section_5b_count",
+    "section_5b_supplementary_note",
+    "section_5b_network_figure",
+    "section_5b_source_status",
 ]
 
 

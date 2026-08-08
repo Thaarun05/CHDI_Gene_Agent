@@ -1098,6 +1098,25 @@ table.section-1e-fallback-table td {{
   font-size: 9.5pt;
   color: {REPORT_STYLE.brown_body};
 }}
+.section-bundle-body figure.rancho-figure.section-5b-network-figure {{
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 4pt auto 8pt auto;
+  text-align: center;
+}}
+.section-bundle-body figure.rancho-figure.section-5b-network-figure img {{
+  display: block;
+  margin: 0 auto;
+  width: 6.2in;
+  max-width: 96%;
+  height: auto;
+  object-fit: contain;
+}}
+.section-bundle-body .section-5b-count {{
+  font-weight: 700;
+  color: {REPORT_STYLE.brown_body};
+  margin: 6pt 0 10pt 0;
+}}
 .section-bundle-body .section-1d-blurb {{
   font-size: 9.5pt;
   line-height: 1.35;
@@ -2314,6 +2333,100 @@ def render_section_5a_subsection_segments(sub: ReportSubsection) -> list[str]:
     ]
 
 
+def _render_section_5b_blocks(blocks: list[ReportContentBlock]) -> str:
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_5b_intro":
+            text = (block.text or "").strip()
+            # Bold/link the xlsx filename when present
+            m = re.search(r"([A-Za-z0-9_]+_BIOGRID\.xlsx)", text)
+            if m:
+                name = m.group(1)
+                pre, _, post = text.partition(name)
+                html = (
+                    f"{_escape(pre)}"
+                    f'<span style="color:{REPORT_STYLE.orange_link}; '
+                    f'text-decoration:underline;">{_escape(name)}</span>'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = _escape(text)
+            parts.append(
+                f'<div class="section-5b-narrative" {_evidence_attr(block)}>'
+                f"<p>{html}</p></div>"
+            )
+            continue
+        if role == "section_5b_count":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-5b-count" {_evidence_attr(block)}>'
+                f"<strong>{text}</strong></p>"
+            )
+            continue
+        if role == "section_5b_supplementary_note":
+            # Intro already carries the supplementary sentence in golden layout;
+            # skip duplicate unless intro omitted it.
+            continue
+        if role == "section_5b_source_status":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-5b-status-line" {_evidence_attr(block)}>{text}</p>'
+            )
+            continue
+        if role == "section_5b_network_figure":
+            # Prefer figure caption from text
+            if not block.figure_caption and block.text:
+                block = block.model_copy(update={"figure_caption": block.text})
+            parts.append(_render_block(block))
+            continue
+        parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_5b_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_5b_subsection_segments(sub: ReportSubsection) -> list[str]:
+    segments = split_section_5b_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-5b">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_5b_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-5b">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
 def _infer_major_number(blocks: list[ReportContentBlock]) -> int | None:
     """Infer the owning major section from presentation roles (``None`` if unclear)."""
     for block in blocks:
@@ -3225,6 +3338,7 @@ __all__ = [
     "render_section_4a_subsection_segments",
     "split_section_4a_page_segments",
     "render_section_5a_subsection_segments",
+    "render_section_5b_subsection_segments",
     "split_section_5a_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",
 ]

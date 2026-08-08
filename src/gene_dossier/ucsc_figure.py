@@ -92,17 +92,17 @@ def sha256_hex(content: bytes) -> str:
 
 
 _API_KEY_QUERY_RE = re.compile(
-    r"([?&]api[_-]?key=)[^&\s\"']+",
+    r"([?&](?:api[_-]?key|accesskey)=)[^&\s\"']+",
     re.IGNORECASE,
 )
 _API_KEY_KV_RE = re.compile(
-    r"(api[_-]?key\s*[=:]\s*)([^\s,\"']+)",
+    r"((?:api[_-]?key|accesskey)\s*[=:]\s*)([^\s,\"']+)",
     re.IGNORECASE,
 )
 
 
 def redact_api_key(text: str | None) -> str:
-    """Remove apiKey query values case-insensitively from text/URLs/errors."""
+    """Remove apiKey/accesskey query values case-insensitively from text/URLs/errors."""
     if not text:
         return ""
     out = _API_KEY_QUERY_RE.sub(r"\1REDACTED", str(text))
@@ -111,12 +111,13 @@ def redact_api_key(text: str | None) -> str:
 
 
 def sanitize_params(params: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a copy of params with apiKey removed (any case)."""
+    """Return a copy of params with apiKey/accesskey removed (any case)."""
     if not params:
         return {}
     out: dict[str, Any] = {}
     for key, value in params.items():
-        if str(key).lower().replace("-", "_") in {"apikey", "api_key"}:
+        key_norm = str(key).lower().replace("-", "_")
+        if key_norm in {"apikey", "api_key", "accesskey"}:
             continue
         out[key] = value
     return out

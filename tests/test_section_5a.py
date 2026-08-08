@@ -97,7 +97,8 @@ def test_5a_in_supported_not_in_default() -> None:
     assert "5a" in SUPPORTED_SECTION_BUNDLE_KEYS
     assert "5a" not in DEFAULT_SECTION_BUNDLE_KEYS
     assert DEFAULT_SECTION_BUNDLE_KEYS[-1] == "4a"
-    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "5a"
+    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "5b"
+    assert "5b" in SUPPORTED_SECTION_BUNDLE_KEYS
     assert DEFAULT_SECTION_BUNDLE_KEYS == (
         "1a",
         "1b",

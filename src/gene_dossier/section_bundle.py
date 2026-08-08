@@ -85,6 +85,13 @@ from gene_dossier.section_5a import (
     node_generate_section_5a_derived_artifacts,
 )
 from gene_dossier.section_5a_sources import paths_for as section_5a_paths_for
+from gene_dossier.section_5b import (
+    Section5bConfig,
+    accept_section_5b_report,
+    evaluate_section_5b_complete,
+    node_generate_section_5b_derived_artifacts,
+)
+from gene_dossier.section_5b_sources import paths_for as section_5b_paths_for
 from gene_dossier.ucsc_figure import redact_api_key
 from gene_dossier.workflow import (
     DossierState,
@@ -98,7 +105,7 @@ from gene_dossier.workflow import (
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "3a", "4a", "5a")
+SUPPORTED_SECTION_BUNDLE_KEYS = ("1a", "1b", "1c", "1d", "1e", "2a", "2b", "2c", "3a", "4a", "5a", "5b")
 DEFAULT_SECTION_BUNDLE_KEYS = (
     "1a",
     "1b",
@@ -127,6 +134,7 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, set[str]] = {
     # globally discarded by source name.
     "4a": set(),
     "5a": set(),
+    "5b": set(),
 }
 
 _OPAQUE_REF_BY_ROLE = {
@@ -193,6 +201,10 @@ _OPAQUE_REF_BY_ROLE = {
     ("5a", "section_5a_supplementary_note"): "ev-5a-supplementary-note",
     ("5a", "section_5a_network_figure"): "ev-5a-network-figure",
     ("5a", "section_5a_network_legend"): "ev-5a-network-legend",
+    ("5b", "section_5b_intro"): "ev-5b-introduction",
+    ("5b", "section_5b_count"): "ev-5b-count",
+    ("5b", "section_5b_supplementary_note"): "ev-5b-supplementary-note",
+    ("5b", "section_5b_network_figure"): "ev-5b-network-figure",
 }
 
 _SECTION_1C_REF_SUFFIX_BY_ROLE = {
@@ -226,7 +238,7 @@ _SECTION_3A_NON_EVIDENCE_ROLES = frozenset(
 )
 _SECTION_4A_NON_EVIDENCE_ROLES = frozenset({"section_4a_source_status"})
 _SECTION_5A_NON_EVIDENCE_ROLES = frozenset(
-    {"section_5a_source_status", "section_5a_network_legend"}
+    {"section_5a_source_status", "section_5a_network_legend", "section_5b_source_status"}
 )
 
 _SAFE_ITEM_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -296,6 +308,8 @@ def validate_section_keys(section_keys: Iterable[str] | None) -> list[str]:
             key = "4a"
         elif key in {"5.a"}:
             key = "5a"
+        elif key in {"5.b"}:
+            key = "5b"
         if key not in SUPPORTED_SECTION_BUNDLE_KEYS:
             raise SectionBundleError(
                 f"Unsupported section key {key!r}. Supported: "
@@ -433,7 +447,7 @@ def sanitize_credentials(value: Any) -> Any:
         out: dict[str, Any] = {}
         for key, item in value.items():
             key_l = str(key).lower()
-            if key_l in {"apikey", "api_key", "ucsc_browser_api_key"}:
+            if key_l in {"apikey", "api_key", "accesskey", "ucsc_browser_api_key"}:
                 out[key] = "REDACTED"
             else:
                 out[key] = sanitize_credentials(item)
@@ -922,6 +936,7 @@ def build_section_bundle_document(
         "section_3a_status": status_by_key.get("3a"),
         "section_4a_status": status_by_key.get("4a"),
         "section_5a_status": status_by_key.get("5a"),
+        "section_5b_status": status_by_key.get("5b"),
     }
     return document, presentation, audit
 
@@ -944,6 +959,7 @@ def render_section_bundle_html(
         render_section_3a_subsection_segments,
         render_section_4a_subsection_segments,
         render_section_5a_subsection_segments,
+        render_section_5b_subsection_segments,
     )
 
     segment_renderers = {
@@ -992,7 +1008,8 @@ def render_section_bundle_html(
                 _render_major_section_5_pages(
                     major,
                     include_major_heading=include_major_heading,
-                    renderer=render_section_5a_subsection_segments,
+                    renderer_5a=render_section_5a_subsection_segments,
+                    renderer_5b=render_section_5b_subsection_segments,
                 )
             )
             continue
@@ -1297,9 +1314,10 @@ def _render_major_section_5_pages(
     major: ReportMajorSection,
     *,
     include_major_heading: bool,
-    renderer,
+    renderer_5a,
+    renderer_5b,
 ) -> list[str]:
-    """Render Major 5 (5a STRING) with heading once and page continuations."""
+    """Render Major 5 (5a STRING, 5b BioGRID) with heading once."""
     heading = f"{major.number}. {major.title}"
     page_break = SECTION_1C_PDF_PAGE_BREAK
     out: list[str] = []
@@ -1315,29 +1333,53 @@ def _render_major_section_5_pages(
             f"{_escape(heading)}</h2>"
         )
 
-    subsection_a = next((s for s in major.subsections if s.key == "a"), None)
-    segments: list[str] = []
-    if subsection_a is not None and any(
-        str(b.presentation_role or "").startswith("section_5a_")
-        for b in (subsection_a.presentation_blocks or [])
-    ):
-        segments = renderer(subsection_a)
-    elif subsection_a is not None:
-        segments = [_render_subsection(subsection_a, major_number=5)]
+    first_page_filled = False
 
-    if segments:
-        first_parts.append(segments[0])
-    first_parts.append("</section>")
-    out.extend(first_parts)
-
-    for index, segment in enumerate(segments[1:]):
-        out.append(page_break)
-        out.append(
-            f'<section id="section-{major.number}-5a-cont-{index + 2}" '
-            f'class="report-page section-bundle-body section-5a-continuation">'
-            f"{segment}</section>"
+    def _append_subsection(key: str, role_prefix: str, renderer, cont_tag: str) -> None:
+        nonlocal first_page_filled
+        subsection = next((s for s in major.subsections if s.key == key), None)
+        if subsection is None:
+            return
+        has_roles = any(
+            str(b.presentation_role or "").startswith(role_prefix)
+            for b in (subsection.presentation_blocks or [])
         )
-    return out
+        if has_roles:
+            segments = renderer(subsection)
+        else:
+            segments = [_render_subsection(subsection, major_number=5)] if (
+                subsection.presentation_blocks or subsection.blocks
+            ) else []
+        if not segments:
+            return
+        if not first_page_filled:
+            first_parts.append(segments[0])
+            first_page_filled = True
+            rest = segments[1:]
+        else:
+            # New subsection after first content: continue on same first page when
+            # possible only for first segment without page-break; otherwise new pages.
+            out.append(page_break)
+            out.append(
+                f'<section id="section-{major.number}-{cont_tag}-1" '
+                f'class="report-page section-bundle-body section-{cont_tag}-continuation">'
+                f"{segments[0]}</section>"
+            )
+            rest = segments[1:]
+        for index, segment in enumerate(rest):
+            out.append(page_break)
+            out.append(
+                f'<section id="section-{major.number}-{cont_tag}-cont-{index + 2}" '
+                f'class="report-page section-bundle-body section-{cont_tag}-continuation">'
+                f"{segment}</section>"
+            )
+
+    _append_subsection("a", "section_5a_", renderer_5a, "5a")
+    _append_subsection("b", "section_5b_", renderer_5b, "5b")
+
+    first_parts.append("</section>")
+    # If nothing was added, still emit the shell page with heading.
+    return ["".join(first_parts), *out] if first_page_filled or include_major_heading else out
 
 
 _BUNDLE_OUTPUT_NAMES = (
@@ -1520,6 +1562,7 @@ def run_section_bundle(
     promote_section_3a_visual_accepted: bool = False,
     promote_section_4a_accepted: bool = False,
     promote_section_5a_accepted: bool = False,
+    promote_section_5b_accepted: bool = False,
     section_1e_config: Section1eConfig | None = None,
     section_2a_config: Section2aConfig | None = None,
     section_2b_config: Section2bConfig | None = None,
@@ -1527,6 +1570,7 @@ def run_section_bundle(
     section_3a_config: Section3aConfig | None = None,
     section_4a_config: Section4aConfig | None = None,
     section_5a_config: Section5aConfig | None = None,
+    section_5b_config: Section5bConfig | None = None,
 ) -> SectionBundleResult:
     """Execute identity (+ section-owned sources) and write a section bundle."""
     cfg = settings or get_settings()
@@ -1556,6 +1600,7 @@ def run_section_bundle(
             "section_3a_status",
             "section_4a_status",
             "section_5a_status",
+            "section_5b_status",
             "coverage",
         ):
             if key in preloaded_state and preloaded_state[key] is not None:
@@ -1716,6 +1761,20 @@ def run_section_bundle(
                     transient=transient,
                     config=section_5a_config or Section5aConfig(),
                 )
+            if "5b" in keys:
+                state = {
+                    **state,
+                    "run_type": "section_bundle",
+                    "selected_section_keys": list(keys),
+                    "acceptance_profile": acceptance_profile,
+                }
+                state = node_generate_section_5b_derived_artifacts(
+                    state,
+                    settings=cfg,
+                    persist_db=persist_db,
+                    transient=transient,
+                    config=section_5b_config or Section5bConfig(),
+                )
 
         evidence = list(state.get("evidence_records") or [])
         section_status_by_key: dict[str, Any] = {}
@@ -1735,6 +1794,8 @@ def run_section_bundle(
             section_status_by_key["4a"] = state["section_4a_status"]
         if state.get("section_5a_status"):
             section_status_by_key["5a"] = state["section_5a_status"]
+        if state.get("section_5b_status"):
+            section_status_by_key["5b"] = state["section_5b_status"]
         document, presentation, audit = build_section_bundle_document(
             dossier_run_id=run_id,
             gene_symbol=gene,
@@ -1759,6 +1820,7 @@ def run_section_bundle(
                 "GEO Profiles",
                 "Harmonizome",
                 "STRING",
+                "BioGRID",
             }:
                 coverage.append(row)
         audit["coverage"] = [
@@ -1865,6 +1927,11 @@ def run_section_bundle(
             audit["section_5a"] = sanitize_credentials(
                 (state.get("section_5a_status") or {}).get("audit")
                 or state.get("section_5a_status")
+            )
+        if "5b" in keys and state.get("section_5b_status"):
+            audit["section_5b"] = sanitize_credentials(
+                (state.get("section_5b_status") or {}).get("audit")
+                or state.get("section_5b_status")
             )
         audit["errors"] = list(state.get("errors") or [])
         if errors:
@@ -2330,6 +2397,107 @@ def run_section_bundle(
                     "supplementary_xlsx_sha256"
                 )
             audit["section_5a"] = sanitize_credentials(section_5a_audit)
+            audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
+                "section_2_audit_json"
+            )
+            if not audit_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_audit_json") and value:
+                        audit_path = value
+                        break
+            if audit_path:
+                Path(audit_path).write_text(
+                    json.dumps(
+                        sanitize_credentials(audit),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+        if "5b" in keys and state.get("section_5b_status"):
+            section_5b_status = dict(state.get("section_5b_status") or {})
+            pdf_path = created_outputs.get("section_1_pdf") or created_outputs.get(
+                "section_2_pdf"
+            )
+            html_path = created_outputs.get("section_1_html") or created_outputs.get(
+                "section_2_html"
+            )
+            if not pdf_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_pdf") and value:
+                        pdf_path = value
+                        break
+            if not html_path:
+                for key, value in created_outputs.items():
+                    if str(key).endswith("_html") and value:
+                        html_path = value
+                        break
+            html_text = ""
+            if html_path and Path(str(html_path)).is_file():
+                html_text = Path(str(html_path)).read_text(encoding="utf-8")
+            attempt_dir = Path(
+                str((section_5b_status.get("audit") or {}).get("gene_attempt_dir") or "")
+            )
+            complete_eval = evaluate_section_5b_complete(
+                status=section_5b_status,
+                html_text=html_text,
+                pdf_path=Path(str(pdf_path)) if pdf_path else None,
+                attempt_dir=attempt_dir if attempt_dir.is_dir() else None,
+            )
+            section_5b_audit = dict(audit.get("section_5b") or {})
+            section_5b_audit["complete_acceptance"] = complete_eval
+            summary = dict(section_5b_status.get("summary") or {})
+            accepted_pointer = None
+            scientific = str(
+                (section_5b_status.get("rendering_status") or {}).get("scientific_status")
+                or ""
+            )
+            presentation_st = str(
+                (section_5b_status.get("rendering_status") or {}).get(
+                    "presentation_status"
+                )
+                or ""
+            )
+            if (
+                complete_eval.get("complete")
+                and scientific == "success"
+                and presentation_st == "success"
+                and attempt_dir.is_dir()
+            ):
+                cfg_5b = section_5b_config or Section5bConfig()
+                accepted_pointer = accept_section_5b_report(
+                    gene_symbol=gene,
+                    attempt_dir=attempt_dir,
+                    acceptance={
+                        "section_5b_complete": True,
+                        "scientific_status": scientific,
+                        "presentation_status": presentation_st,
+                        "evaluation": complete_eval,
+                        "supplementary_xlsx_sha256": summary.get(
+                            "supplementary_xlsx_sha256"
+                        ),
+                        "promotion_requested": bool(promote_section_5b_accepted),
+                    },
+                    artifacts={
+                        **dict(
+                            (section_5b_status.get("audit") or {}).get("artifacts") or {}
+                        ),
+                        "supplementary_xlsx_sha256": summary.get(
+                            "supplementary_xlsx_sha256"
+                        ),
+                    },
+                    output_root=cfg_5b.output_root or cfg.output_path,
+                    promote_existing=promote_section_5b_accepted,
+                )
+            if accepted_pointer is not None:
+                section_5b_audit["accepted_gene_pointer"] = str(accepted_pointer)
+                section_5b_audit["supplementary_xlsx_sha256"] = summary.get(
+                    "supplementary_xlsx_sha256"
+                )
+            audit["section_5b"] = sanitize_credentials(section_5b_audit)
             audit_path = created_outputs.get("section_1_audit_json") or created_outputs.get(
                 "section_2_audit_json"
             )
