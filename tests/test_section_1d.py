@@ -271,6 +271,7 @@ def test_sources_for_sections_excludes_generic_alphafold_when_1d_selected():
         "4a",
         "5a",
         "5b",
+        "6a",
     )
     assert DEFAULT_SECTION_BUNDLE_KEYS == (
         "1a",
@@ -861,6 +862,7 @@ def test_no_custom_coordinate_rendering_helpers_and_defaults():
         "4a",
         "5a",
         "5b",
+        "6a",
     )
     assert "1d" in DEFAULT_SECTION_BUNDLE_KEYS
     assert "1e" in DEFAULT_SECTION_BUNDLE_KEYS

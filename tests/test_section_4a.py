@@ -87,7 +87,7 @@ def test_supported_keys_include_4a_defaults_unchanged() -> None:
     assert "4a" in SUPPORTED_SECTION_BUNDLE_KEYS
     assert "5a" in SUPPORTED_SECTION_BUNDLE_KEYS
     assert "5b" in SUPPORTED_SECTION_BUNDLE_KEYS
-    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "5b"
+    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "6a"
     assert DEFAULT_SECTION_BUNDLE_KEYS == (
         "1a",
         "1b",

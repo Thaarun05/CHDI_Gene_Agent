@@ -160,6 +160,7 @@ def test_validate_section_keys_order_and_reject():
         "4a",
         "5a",
         "5b",
+        "6a",
     )
     with pytest.raises(SectionBundleError):
         validate_section_keys([])
@@ -1714,7 +1715,7 @@ def test_default_section_bundle_keys_full_ordered_1a_through_4a(tmp_path, monkey
         "4a",
     )
     assert DEFAULT_SECTION_BUNDLE_KEYS == expected
-    assert SUPPORTED_SECTION_BUNDLE_KEYS == expected + ("5a", "5b")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS == expected + ("5a", "5b", "6a")
     assert validate_section_keys(DEFAULT_SECTION_BUNDLE_KEYS) == list(expected)
     assert len(DEFAULT_SECTION_BUNDLE_KEYS) == len(set(DEFAULT_SECTION_BUNDLE_KEYS))
     assert validate_section_keys(["4a", "1a", "4a", "2b"]) == ["1a", "2b", "4a"]
@@ -1804,6 +1805,7 @@ def test_section_defaults_include_completed_sections():
         "4a",
         "5a",
         "5b",
+        "6a",
     )
     assert "1e" in DEFAULT_SECTION_BUNDLE_KEYS
     assert "4a" in DEFAULT_SECTION_BUNDLE_KEYS

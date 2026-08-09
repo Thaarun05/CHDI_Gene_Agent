@@ -160,6 +160,12 @@ PresentationRole = Literal[
     "section_5b_supplementary_note",
     "section_5b_network_figure",
     "section_5b_source_status",
+    "section_6a_intro",
+    "section_6a_supplementary_note",
+    "section_6a_top_chemicals_title",
+    "section_6a_top_chemicals_figure",
+    "section_6a_scientific_caveat",
+    "section_6a_source_status",
 ]
 
 

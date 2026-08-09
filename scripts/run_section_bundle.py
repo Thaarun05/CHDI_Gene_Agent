@@ -256,6 +256,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--refresh-section-6a-ctd-source",
+        action="store_true",
+        help=(
+            "Force a new CTD chem-gene bulk download for Section 6a instead of reusing "
+            "the accepted shared source pointer (ignored unless 6a is selected)."
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-6a-ctd-source",
+        action="store_true",
+        help=(
+            "Pin a newly downloaded CTD bulk artifact as the accepted shared source "
+            "(use with --refresh-section-6a-ctd-source; ignored unless 6a is selected)."
+        ),
+    )
+    parser.add_argument(
+        "--promote-section-6a-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing successful Section 6a accepted gene pointer when the "
+            "new attempt is also complete (default: keep prior successful pointer)."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -353,6 +377,15 @@ def main(argv: list[str] | None = None) -> int:
             attempt_network_figure=not args.no_biogrid_network_figure,
         )
 
+    section_6a_config = None
+    if "6a" in keys:
+        from gene_dossier.section_6a import Section6aConfig
+
+        section_6a_config = Section6aConfig(
+            force_refresh_ctd_source=args.refresh_section_6a_ctd_source,
+            promote_ctd_source=args.promote_section_6a_ctd_source,
+        )
+
     settings = get_settings()
     result = run_section_bundle(
         args.gene,
@@ -367,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         promote_section_4a_accepted=args.promote_section_4a_accepted,
         promote_section_5a_accepted=args.promote_section_5a_accepted,
         promote_section_5b_accepted=args.promote_section_5b_accepted,
+        promote_section_6a_accepted=args.promote_section_6a_accepted,
+        promote_section_6a_ctd_source=args.promote_section_6a_ctd_source,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,
@@ -375,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         section_4a_config=section_4a_config,
         section_5a_config=section_5a_config,
         section_5b_config=section_5b_config,
+        section_6a_config=section_6a_config,
     )
 
     print(f"status={result.status}")

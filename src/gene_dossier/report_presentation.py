@@ -251,6 +251,18 @@ def build_section_presentation(
             evidence_records=evidence_records,
             section_status=section_status,
         )
+    if key in {
+        "6a",
+        "6.a",
+        "ctd",
+        "comparative_toxicogenomics_database",
+        "ctd_perturbations",
+    }:
+        return build_section_6a_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -4490,6 +4502,7 @@ __all__ = [
     "build_section_4a_blocks",
     "build_section_5a_blocks",
     "build_section_5b_blocks",
+    "build_section_6a_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",
@@ -4504,6 +4517,316 @@ def build_section_5b_blocks(
     section_status: dict[str, Any] | None = None,
     diagnostics: list[PresentationDiagnostic] | None = None,
 ) -> SectionPresentationResult:
+    """Build polished Section 5b BioGRID presentation blocks."""
+    from gene_dossier.section_5b import (
+        SCIENTIFIC_INTRO,
+        STATUS_NO_INTERACTIONS,
+        STATUS_SOURCE_UNAVAILABLE,
+        STATUS_SUCCESS,
+        STATUS_TARGET_MISMATCH,
+    )
+
+    diagnostics = list(diagnostics or [])
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (
+        str(summary.get("official_symbol") or summary.get("gene_symbol") or gene_symbol or "")
+        .strip()
+        or "this gene"
+    )
+    item_key = str(summary.get("presentation_item_key") or f"biogrid-{gene.lower()}")
+    summary_rec = next((r for r in records if r.fact_type == "section_5b_summary"), None)
+    fig_rec = next(
+        (r for r in records if r.fact_type == "section_5b_network_figure"), None
+    )
+    supp_rec = next(
+        (r for r in records if r.fact_type == "section_5b_supplementary_workbook"),
+        None,
+    )
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    src_ids, ev_ids = _ids(summary_rec)
+    supp_src, supp_ev = _ids(supp_rec)
+    intro_src = list(dict.fromkeys([*src_ids, *supp_src]))
+    intro_ev = list(dict.fromkeys([*ev_ids, *supp_ev]))
+    blocks: list[ReportContentBlock] = []
+    scientific = str(
+        rendering.get("scientific_status") or summary.get("scientific_status") or ""
+    )
+    visual = str(rendering.get("visual_status") or summary.get("visual_status") or "")
+    xlsx_name = str(summary.get("supplementary_xlsx") or f"{gene.upper()}_BIOGRID.xlsx")
+    intro = str(summary.get("scientific_intro") or SCIENTIFIC_INTRO)
+    intro_full = (
+        f"{intro} The download of all interactions is available as Supplementary "
+        f"Material ({xlsx_name})."
+    )
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=intro_full,
+            presentation_role="section_5b_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=intro_src,
+            evidence_record_ids=intro_ev,
+            links=[{"label": "BioGRID", "url": "https://thebiogrid.org/"}],
+        )
+    )
+
+    if scientific == STATUS_SOURCE_UNAVAILABLE:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="BioGRID interaction data were unavailable for this run.",
+                presentation_role="section_5b_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_TARGET_MISMATCH:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=f"BioGRID target identity could not be reconciled for {gene}.",
+                presentation_role="section_5b_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_NO_INTERACTIONS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    f"No BioGRID interaction records were returned for {gene} "
+                    "in the configured query/release."
+                ),
+                presentation_role="section_5b_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_SUCCESS:
+        nr = int(summary.get("nonredundant_pair_count") or 0)
+        count_line = str(
+            summary.get("count_line") or f"{gene} has {nr} unique interactions."
+        )
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=count_line,
+                presentation_role="section_5b_count",
+                presentation_item_key=f"{item_key}-count",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+        if visual == STATUS_SUCCESS:
+            fig_src, fig_ev = _ids(fig_rec)
+            fig_path = summary.get("network_figure_local_path")
+            if fig_path:
+                blocks.append(
+                    ReportContentBlock(
+                        kind="figure",
+                        text=f"BioGRID Network Viewer for {gene}",
+                        figure_path=str(fig_path),
+                        figure_caption=f"BioGRID Network Viewer for {gene}",
+                        presentation_role="section_5b_network_figure",
+                        presentation_item_key=f"{item_key}-figure",
+                        presentation_page_break_before=True,
+                        source_ids=fig_src,
+                        evidence_record_ids=fig_ev,
+                    )
+                )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
+def build_section_6a_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+    diagnostics: list[PresentationDiagnostic] | None = None,
+) -> SectionPresentationResult:
+    """Build polished Section 6a CTD presentation blocks."""
+    from gene_dossier.section_6a import (
+        SCIENTIFIC_CAVEAT,
+        SCIENTIFIC_INTRO,
+        STATUS_NO_INTERACTIONS,
+        STATUS_SOURCE_UNAVAILABLE,
+        STATUS_SUCCESS,
+        STATUS_TARGET_MISMATCH,
+    )
+
+    diagnostics = list(diagnostics or [])
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    rendering = dict(status.get("rendering_status") or {})
+    gene = (
+        str(summary.get("official_symbol") or summary.get("gene_symbol") or gene_symbol or "")
+        .strip()
+        or "this gene"
+    )
+    item_key = str(summary.get("presentation_item_key") or f"ctd-{gene.lower()}")
+    summary_rec = next((r for r in records if r.fact_type == "section_6a_summary"), None)
+    fig_rec = next(
+        (r for r in records if r.fact_type == "section_6a_top_chemicals_figure"), None
+    )
+    supp_rec = next(
+        (r for r in records if r.fact_type == "section_6a_supplementary_workbook"),
+        None,
+    )
+
+    def _ids(rec: EvidenceRecord | None) -> tuple[list[str], list[str]]:
+        if rec is None:
+            return [], []
+        return (
+            [rec.source_id] if rec.source_id else [],
+            [rec.id] if rec.id else [],
+        )
+
+    src_ids, ev_ids = _ids(summary_rec)
+    supp_src, supp_ev = _ids(supp_rec)
+    intro_src = list(dict.fromkeys([*src_ids, *supp_src]))
+    intro_ev = list(dict.fromkeys([*ev_ids, *supp_ev]))
+    blocks: list[ReportContentBlock] = []
+    scientific = str(
+        rendering.get("scientific_status") or summary.get("scientific_status") or ""
+    )
+    visual = str(rendering.get("visual_status") or summary.get("visual_status") or "")
+    xlsx_name = str(summary.get("supplementary_xlsx") or f"{gene.upper()}_CTD.xlsx")
+    intro = str(summary.get("scientific_intro") or SCIENTIFIC_INTRO)
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=intro,
+            presentation_role="section_6a_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=intro_src,
+            evidence_record_ids=intro_ev,
+            links=[{"label": "CTD", "url": "https://ctdbase.org/"}],
+        )
+    )
+
+    if scientific == STATUS_SOURCE_UNAVAILABLE:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="CTD chemical–gene interaction data were unavailable for this run.",
+                presentation_role="section_6a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_TARGET_MISMATCH:
+        detail = str(summary.get("target_mismatch_detail") or "").strip()
+        if detail == "missing_authoritative_entrez_gene_id":
+            text = (
+                f"CTD target identity could not be established for {gene} "
+                "(authoritative Entrez Gene ID unavailable)."
+            )
+        else:
+            text = (
+                f"CTD target identity could not be reconciled for {gene} "
+                "(GeneID/symbol conflict on a target row)."
+            )
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=text,
+                presentation_role="section_6a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=(
+                f"The download of all interactions is available as Supplementary "
+                f"Material ({xlsx_name})."
+            ),
+            presentation_role="section_6a_supplementary_note",
+            presentation_item_key=f"{item_key}-supplementary",
+            source_ids=supp_src or src_ids,
+            evidence_record_ids=supp_ev or ev_ids,
+        )
+    )
+
+    if scientific == STATUS_NO_INTERACTIONS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    f"No CTD chemical–gene interaction records were found for {gene}."
+                ),
+                presentation_role="section_6a_source_status",
+                presentation_item_key=f"{item_key}-status",
+            )
+        )
+        return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+    if scientific == STATUS_SUCCESS:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="Top Interacting Chemicals",
+                presentation_role="section_6a_top_chemicals_title",
+                presentation_item_key=f"{item_key}-title",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+        if visual == STATUS_SUCCESS:
+            fig_src, fig_ev = _ids(fig_rec)
+            fig_path = summary.get("top_chemicals_figure_local_path")
+            if fig_path:
+                blocks.append(
+                    ReportContentBlock(
+                        kind="figure",
+                        text="",
+                        figure_path=str(fig_path),
+                        figure_caption="",
+                        presentation_role="section_6a_top_chemicals_figure",
+                        presentation_item_key=f"{item_key}-figure",
+                        source_ids=fig_src,
+                        evidence_record_ids=fig_ev,
+                    )
+                )
+        caveat = str(summary.get("scientific_caveat") or SCIENTIFIC_CAVEAT)
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=caveat,
+                presentation_role="section_6a_scientific_caveat",
+                presentation_item_key=f"{item_key}-caveat",
+                source_ids=src_ids,
+                evidence_record_ids=ev_ids,
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))
+
+
+def transcript_selection_sentence(tx_val: dict[str, Any]) -> str:
+    """Public alias for Section 1b transcript-selection wording."""
+    return _transcript_selection_sentence(tx_val)
+
     """Build polished Section 5b BioGRID presentation blocks."""
     from gene_dossier.section_5b import (
         SCIENTIFIC_INTRO,
