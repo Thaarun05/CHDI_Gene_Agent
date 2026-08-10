@@ -71,9 +71,15 @@ export function ComparePage() {
             <h2 className="text-sm font-medium text-text">Evidence-Grounded Comparison</h2>
             <p className="mt-3 text-[15px] leading-relaxed text-text-secondary">{data.narrative}</p>
             <p className="mt-3 text-xs text-text-muted">
-              Mock narrative for demo layout — will later receive an LLM-grounded comparison over
-              retrieved EvidenceRecords.
+              Comparison based on selected provenance-backed evidence runs. No AI score.
             </p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-muted">
+              {Object.entries(data.evidenceUniverses).map(([geneSymbol, universe]) => (
+                <span key={geneSymbol} className="rounded-full border border-border px-2.5 py-1">
+                  {geneSymbol}: {universe.dossierRunIds.join(', ')}
+                </span>
+              ))}
+            </div>
           </section>
         </>
       )}

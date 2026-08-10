@@ -16,10 +16,28 @@ const SECTIONS = [
   'Chemical Tools',
 ]
 
+const SECTION_KEY_MAP: Record<string, string[]> = {
+  'General Gene Information': ['1a', '1b', '1c', '1d', '1e'],
+  Structure: ['1b', '1c', '1d'],
+  Expression: ['2a', '2b', '2c'],
+  'GEO Perturbations': ['3a'],
+  'Transcription Factors': ['4a'],
+  'Protein Interactions': ['5a', '5b'],
+  'Chemical Perturbations': ['6a'],
+  'Chemical Tools': ['7a'],
+}
+
+function sectionKeysFor(selectedSections: string[]) {
+  return Array.from(
+    new Set(selectedSections.flatMap((section) => SECTION_KEY_MAP[section] ?? [])),
+  )
+}
+
 export function GenerateDossierPage() {
   const [params] = useSearchParams()
   const [gene, setGene] = useState(params.get('gene')?.toUpperCase() || 'SREBF2')
   const [selected, setSelected] = useState<string[]>([...SECTIONS])
+  const [useAccepted, setUseAccepted] = useState(true)
   const [job, setJob] = useState<WorkflowJob | null>(null)
   const [artifact, setArtifact] = useState<ReportArtifact | null>(null)
   const [starting, setStarting] = useState(false)
@@ -30,7 +48,7 @@ export function GenerateDossierPage() {
       void getJob(job.id).then((j) => {
         setJob(j)
         if (j.status === 'Completed') {
-          void getJobArtifacts(j.id).then(setArtifact)
+          void getJobArtifacts(j.id).then((artifacts) => setArtifact(artifacts.report))
         }
       })
     }, 700)
@@ -41,8 +59,15 @@ export function GenerateDossierPage() {
     setStarting(true)
     setArtifact(null)
     try {
-      const j = await startDossierJob(gene)
+      const j = await startDossierJob(gene, {
+        sectionKeys: sectionKeysFor(selected),
+        useExistingAccepted: useAccepted,
+      })
       setJob(j)
+      if (j.status === 'Completed') {
+        const artifacts = await getJobArtifacts(j.id)
+        setArtifact(artifacts.report)
+      }
     } finally {
       setStarting(false)
     }
@@ -61,8 +86,8 @@ export function GenerateDossierPage() {
           Generate HD-Focused Gene Dossier
         </h1>
         <p className="mt-2 text-sm text-text-secondary">
-          Runs validated deterministic section workflows. Mock job progress until FastAPI jobs are
-          wired.
+          Generate a dossier from validated deterministic workflows, or open the accepted demo
+          dossier instantly.
         </p>
       </div>
 
@@ -103,6 +128,16 @@ export function GenerateDossierPage() {
             ))}
           </div>
         </div>
+
+        <label className="flex items-center justify-between gap-4 rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm text-text-secondary">
+          <span>Use accepted dossier (instant)</span>
+          <input
+            type="checkbox"
+            checked={useAccepted}
+            onChange={(e) => setUseAccepted(e.target.checked)}
+            className="accent-[var(--color-accent)]"
+          />
+        </label>
 
         <button
           type="button"

@@ -46,7 +46,7 @@ export const coverageByGene: Record<string, EvidenceCoverageRow[]> = {
     { category: 'GEO Perturbations', status: 'Available' },
     { category: 'Transcription Factors', status: 'Available' },
     { category: 'Protein Interactions', status: 'Available', detail: 'STRING + BioGRID' },
-    { category: 'Chemical Perturbations', status: 'Available', detail: 'CTD interactions' },
+    { category: 'Chemical Perturbations', status: 'Not available', detail: 'No CTD perturbation records' },
     { category: 'Chemical Tools', status: 'Available', detail: 'ChEMBL workbook + literature tools' },
   ],
   CDH10: [
@@ -56,7 +56,7 @@ export const coverageByGene: Record<string, EvidenceCoverageRow[]> = {
     { category: 'GEO Perturbations', status: 'Limited' },
     { category: 'Transcription Factors', status: 'Available' },
     { category: 'Protein Interactions', status: 'Available' },
-    { category: 'Chemical Perturbations', status: 'Limited' },
+    { category: 'Chemical Perturbations', status: 'Not available', detail: 'No CTD perturbation records' },
     {
       category: 'Chemical Tools',
       status: 'Limited',
@@ -113,19 +113,6 @@ export const evidenceRecords: EvidenceRecord[] = [
     status: 'Available',
     apiRunId: 'API-703',
     rawArtifactId: 'RAW-703',
-  },
-  {
-    id: 'EV-104',
-    geneSymbol: 'SREBF2',
-    sourceName: 'CTD',
-    evidenceType: 'chemical_interaction',
-    factType: 'section_6a_chemical',
-    section: 'CTD perturbations',
-    retrievedAt: '2026-08-10T14:18:00Z',
-    displayText: 'Curated CTD chemical–gene interaction rows for SREBF2 chemical perturbations.',
-    status: 'Available',
-    apiRunId: 'API-601',
-    rawArtifactId: 'RAW-601',
   },
   {
     id: 'EV-201',
@@ -280,13 +267,22 @@ export const completedJob: WorkflowJob = {
   createdAt: '2026-08-10T14:14:00Z',
   completedAt: '2026-08-10T14:36:00Z',
   artifactIds: ['rep-srebf2'],
+  dossierRunId: 'cb9030ab81dc42db80b81dd15d48e653',
 }
 
 export const askResponseSrebf2: AskResponse = {
+  status: 'answered',
   question: 'What evidence suggests SREBF2 can be pharmacologically manipulated?',
   geneSymbol: 'SREBF2',
+  retrievalMethod: 'semantic',
+  generationMethod: 'deterministic',
+  embeddingBackend: 'local_minilm',
+  baseEvidenceRunId: '407e1a4293c6424e8b6b830a1f0a7c60',
+  toolRunIds: [],
+  dossierRunIds: ['407e1a4293c6424e8b6b830a1f0a7c60'],
+  evidenceUniverse: 'accepted_demo',
   summary:
-    'Stored dossier evidence indicates SREBF2 has small-molecule and chemical-perturbation signals across ChEMBL, PubMed tool literature, PubChem focused assays, and CTD interactions. These records support pharmacological manipulation as a research hypothesis, with source-specific limitations.',
+    'Stored dossier evidence indicates SREBF2 has small-molecule and chemical-tool signals across ChEMBL, PubMed tool literature, and PubChem focused assays. These records support pharmacological manipulation as a research hypothesis, with source-specific limitations.',
   evidenceBlocks: [
     {
       sourceGroup: 'ChEMBL',
@@ -315,15 +311,6 @@ export const askResponseSrebf2: AskResponse = {
         },
       ],
     },
-    {
-      sourceGroup: 'CTD',
-      items: [
-        {
-          text: 'Curated chemical–gene interactions provide additional chemical perturbation context.',
-          citationIds: ['c4'],
-        },
-      ],
-    },
   ],
   limitations: [
     'DrugBank API access was unavailable in the stored run.',
@@ -339,16 +326,16 @@ export const askResponseSrebf2: AskResponse = {
       sourceName: 'PubMed',
     },
     { id: 'c3', label: 'PubChem', evidenceRecordId: 'EV-103', sourceName: 'PubChem' },
-    { id: 'c4', label: 'Evidence #EV-104', evidenceRecordId: 'EV-104', sourceName: 'CTD' },
   ],
-  evidenceUsedCount: 12,
-  sourcesCount: 4,
-  toolsInvokedCount: 2,
+  evidenceUsedCount: 3,
+  sourcesCount: 3,
+  sourcesUsed: ['ChEMBL', 'PubChem', 'PubMed'],
+  toolsInvokedCount: 0,
+  toolActivity: [],
   agentActivity: [
     'Resolved SREBF2',
-    'Searching stored evidence',
+    'Semantic retrieval attempted first',
     'Checking chemical-tool evidence',
-    'Retrieving chemical perturbation evidence',
     'Validating sources',
     'Building grounded answer',
   ],
@@ -437,15 +424,15 @@ export const compareResponse: ComparisonResponse = {
       dimension: 'Chemical Perturbations',
       cells: {
         SREBF2: {
-          status: 'Available',
-          summary: 'CTD chemical–gene interactions',
-          evidenceCount: 40,
-          evidenceRecordIds: ['EV-104'],
+          status: 'Not available',
+          summary: 'No CTD perturbation records',
+          evidenceCount: 0,
+          evidenceRecordIds: [],
         },
         CDH10: {
-          status: 'Limited',
-          summary: 'Sparse CTD coverage in demo run',
-          evidenceCount: 5,
+          status: 'Not available',
+          summary: 'No CTD perturbation records',
+          evidenceCount: 0,
           evidenceRecordIds: [],
         },
       },
@@ -469,5 +456,19 @@ export const compareResponse: ComparisonResponse = {
     },
   ],
   narrative:
-    'SREBF2 shows denser chemical-tool and chemical-perturbation evidence in the stored dossiers, while CDH10 remains stronger on identity/expression/PPI but limited for direct chemical tools (no authoritative ChEMBL target; indirect literature only). This comparison is evidence-matrix based—not a scored ranking.',
+    'SREBF2 shows denser chemical-tool evidence in the accepted baseline, while CDH10 remains stronger on identity/expression/PPI but limited for direct chemical tools. Neither accepted baseline contains persisted CTD chemical-perturbation evidence. This comparison is evidence-matrix based, not a scored ranking.',
+  evidenceUniverses: {
+    SREBF2: {
+      baseEvidenceRunId: '407e1a4293c6424e8b6b830a1f0a7c60',
+      toolRunIds: [],
+      dossierRunIds: ['407e1a4293c6424e8b6b830a1f0a7c60'],
+      evidenceUniverse: 'accepted_demo',
+    },
+    CDH10: {
+      baseEvidenceRunId: 'd94f392f4a3941d5a59f697f58d18234',
+      toolRunIds: [],
+      dossierRunIds: ['d94f392f4a3941d5a59f697f58d18234'],
+      evidenceUniverse: 'accepted_demo',
+    },
+  },
 }

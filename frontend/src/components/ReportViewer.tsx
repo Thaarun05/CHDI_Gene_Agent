@@ -79,8 +79,7 @@ export function ReportViewer({
           )}
         </div>
         <p className="text-xs text-text-muted">
-          Embedded Rancho HTML artifact — not re-rendered in React. Demo iframe may require the
-          local artifact server.
+          Embedded Rancho HTML report artifact — backed by live FastAPI backend.
         </p>
       </div>
     </div>

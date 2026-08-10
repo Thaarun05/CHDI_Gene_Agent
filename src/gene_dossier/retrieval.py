@@ -7,9 +7,9 @@ in the provenance DB (Postgres/SQLite); raw material stays on disk via
 MVP scope (no hybrid RAG / reranking yet):
 
 1. In-memory keyword + metadata filters over :class:`EvidenceRecord`
-2. Optional Chroma collection keyed by ``source_id`` with ``display_text``
-   documents and filterable metadata (gene, section, source, grade,
-   assertion_type)
+2. Optional Chroma collection keyed by ``{dossier_run_id}:{evidence_record_id}``
+   with evidence text plus bounded structured context, and filterable metadata
+   (gene, run, section, source, grade, assertion_type)
 
 Missing chromadb, embedding model downloads, or disk errors soft-fail so the
 dossier pipeline still runs without an LLM or vector index.
@@ -45,6 +45,15 @@ def _enum_value(value: Any) -> str:
     if value is None:
         return ""
     return str(getattr(value, "value", value))
+
+
+def vector_id_for_record(record: EvidenceRecord) -> str:
+    """Return the Chroma primary key for one evidence record.
+
+    ``source_id`` can repeat across historical dossier runs, so vector IDs must
+    include both the provenance run and the persisted EvidenceRecord primary key.
+    """
+    return f"{record.dossier_run_id}:{record.id}"
 
 
 def tokenize(text: str) -> list[str]:
@@ -247,6 +256,71 @@ class HashEmbeddingFunction:
         return [v / norm for v in values]
 
 
+class LangChainEmbeddingFunction:
+    """Chroma-compatible wrapper around a real LangChain embedding provider."""
+
+    _gene_dossier_embedding_backend = "real"
+
+    def __init__(self, embeddings: Any, *, provider: str, model: str) -> None:
+        self.embeddings = embeddings
+        self.provider = provider
+        self.model = model
+
+    def name(self) -> str:
+        return f"gene_dossier_{self.provider}_{self.model}".replace("/", "_").replace(":", "_")
+
+    def __call__(self, input: list[str]) -> list[list[float]]:  # noqa: A003
+        return self.embeddings.embed_documents(list(input))
+
+    def embed_query(self, input: list[str]) -> list[list[float]]:  # noqa: A003
+        return self(input)
+
+
+def build_local_minilm_embedding_function() -> Any | None:
+    """Build Chroma's local ONNX all-MiniLM-L6-v2 embedding function.
+
+    Chroma downloads public model weights on first use, then performs document
+    and query embedding locally. Evidence text is never sent to a provider.
+    """
+    try:
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+        embedding_function = DefaultEmbeddingFunction()
+        embedding_function._gene_dossier_embedding_backend = "local_minilm"  # type: ignore[attr-defined]
+        embedding_function._gene_dossier_embedding_model = "all-MiniLM-L6-v2"  # type: ignore[attr-defined]
+        return embedding_function
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to build local MiniLM embedding model: %s", exc)
+        return None
+
+
+def build_real_embedding_function(settings: Settings | None = None) -> Any | None:
+    """Build an optional external semantic provider for non-demo callers."""
+    cfg = settings or get_settings()
+    if cfg.has_key("openai_api_key"):
+        try:
+            from langchain_openai import OpenAIEmbeddings
+
+            model_name = "text-embedding-3-small"
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "api_key": cfg.openai_api_key,
+                "tiktoken_enabled": False,
+                "check_embedding_ctx_length": False,
+            }
+            base_url = (cfg.openai_base_url or "").strip()
+            if base_url:
+                kwargs["base_url"] = base_url
+            return LangChainEmbeddingFunction(
+                OpenAIEmbeddings(**kwargs),
+                provider="openai",
+                model=model_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to build OpenAI embedding model: %s", exc)
+    return None
+
+
 def _record_metadata(record: EvidenceRecord) -> dict[str, str]:
     """Chroma metadata values must be scalar (str/int/float/bool)."""
     return {
@@ -263,6 +337,23 @@ def _record_metadata(record: EvidenceRecord) -> dict[str, str]:
     }
 
 
+def _record_document(record: EvidenceRecord) -> str:
+    """Bound semantic text to the supplied EvidenceRecord fields only."""
+    parts = [
+        record.display_text or "",
+        f"gene: {record.gene_symbol or ''}",
+        f"section: {record.section or ''}",
+        f"subsection: {record.subsection or ''}",
+        f"source: {record.source_name or ''}",
+        f"fact_type: {record.fact_type or ''}",
+        f"assertion_type: {_enum_value(record.assertion_type)}",
+        f"source_id: {record.source_id or ''}",
+        f"evidence_record_id: {record.id or ''}",
+        f"dossier_run_id: {record.dossier_run_id or ''}",
+    ]
+    return "\n".join(part for part in parts if part.strip())
+
+
 def _where_from_filters(
     *,
     gene_symbol: str | None = None,
@@ -271,6 +362,7 @@ def _where_from_filters(
     evidence_grade: EvidenceGrade | str | None = None,
     assertion_type: str | None = None,
     source_id: str | None = None,
+    dossier_run_ids: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Build a Chroma ``where`` clause (exact-match only; no substring section)."""
     clauses: list[dict[str, Any]] = []
@@ -286,6 +378,11 @@ def _where_from_filters(
         clauses.append({"assertion_type": _enum_value(assertion_type)})
     if source_id:
         clauses.append({"source_id": source_id})
+    run_ids = [rid for rid in dict.fromkeys(dossier_run_ids or []) if rid]
+    if len(run_ids) == 1:
+        clauses.append({"dossier_run_id": run_ids[0]})
+    elif len(run_ids) > 1:
+        clauses.append({"$or": [{"dossier_run_id": rid} for rid in run_ids]})
     if not clauses:
         return None
     if len(clauses) == 1:
@@ -303,6 +400,7 @@ class ChromaIndexStatus:
     path: str | None = None
     error: str | None = None
     indexed_count: int = 0
+    embedding_backend: str = "unavailable"  # local_minilm | real | hash_test_fallback | unavailable
 
 
 class ChromaEvidenceIndex:
@@ -319,13 +417,48 @@ class ChromaEvidenceIndex:
         collection_name: str = DEFAULT_COLLECTION,
         embedding_function: Any | None = None,
         ephemeral: bool = False,
+        allow_hash_fallback: bool = True,
+        allow_external_embedding_provider: bool = True,
     ) -> None:
         self.settings = settings or get_settings()
         self.collection_name = collection_name
-        self.embedding_function = embedding_function or HashEmbeddingFunction()
+        self.embedding_backend = "unavailable"
+        if embedding_function is not None:
+            self.embedding_function = embedding_function
+            self.embedding_backend = getattr(
+                embedding_function,
+                "_gene_dossier_embedding_backend",
+                "real",
+            )
+        elif allow_external_embedding_provider:
+            real_embedding = build_real_embedding_function(self.settings)
+            if real_embedding is not None:
+                self.embedding_function = real_embedding
+                self.embedding_backend = "real"
+            elif allow_hash_fallback:
+                self.embedding_function = HashEmbeddingFunction()
+                self.embedding_function._gene_dossier_embedding_backend = "hash_test_fallback"  # type: ignore[attr-defined]
+                self.embedding_backend = "hash_test_fallback"
+            else:
+                self.embedding_function = None
+        elif allow_hash_fallback:
+            self.embedding_function = HashEmbeddingFunction()
+            self.embedding_function._gene_dossier_embedding_backend = "hash_test_fallback"  # type: ignore[attr-defined]
+            self.embedding_backend = "hash_test_fallback"
+        else:
+            self.embedding_function = None
         self._client: Any | None = None
         self._collection: Any | None = None
         self.status = ChromaIndexStatus(available=False, backend="unavailable")
+
+        if self.embedding_function is None:
+            self.status = ChromaIndexStatus(
+                available=False,
+                backend="unavailable",
+                error="semantic embedding function unavailable",
+                embedding_backend="unavailable",
+            )
+            return
 
         try:
             import chromadb
@@ -334,6 +467,7 @@ class ChromaEvidenceIndex:
                 available=False,
                 backend="unavailable",
                 error=f"chromadb import failed: {exc}",
+                embedding_backend=self.embedding_backend,
             )
             logger.warning("Chroma unavailable: %s", exc)
             return
@@ -364,12 +498,14 @@ class ChromaEvidenceIndex:
                 collection=self.collection_name,
                 path=path_str,
                 indexed_count=int(self._collection.count()),
+                embedding_backend=self.embedding_backend,
             )
         except Exception as exc:  # noqa: BLE001
             self.status = ChromaIndexStatus(
                 available=False,
                 backend="unavailable",
                 error=str(exc),
+                embedding_backend=self.embedding_backend,
             )
             logger.warning("Chroma init failed; semantic search disabled: %s", exc)
             self._client = None
@@ -380,16 +516,16 @@ class ChromaEvidenceIndex:
         return bool(self.status.available and self._collection is not None)
 
     def upsert_evidence(self, records: Iterable[EvidenceRecord]) -> int:
-        """Index / update records by ``source_id``. Returns count upserted."""
+        """Index / update records by run-qualified EvidenceRecord ID. Returns count upserted."""
         if not self.available or self._collection is None:
             return 0
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict[str, str]] = []
         for record in records:
-            sid = (record.source_id or "").strip()
-            text = (record.display_text or "").strip()
-            if not sid or not text:
+            sid = vector_id_for_record(record)
+            text = _record_document(record).strip()
+            if not text:
                 continue
             ids.append(sid)
             documents.append(text)
@@ -417,6 +553,7 @@ class ChromaEvidenceIndex:
         evidence_grade: EvidenceGrade | str | None = None,
         assertion_type: str | None = None,
         source_id: str | None = None,
+        dossier_run_ids: list[str] | tuple[str, ...] | set[str] | None = None,
         limit: int = 10,
         record_lookup: dict[str, EvidenceRecord] | None = None,
     ) -> list[RetrievalHit]:
@@ -433,6 +570,7 @@ class ChromaEvidenceIndex:
             evidence_grade=evidence_grade,
             assertion_type=assertion_type,
             source_id=source_id,
+            dossier_run_ids=dossier_run_ids,
         )
         try:
             kwargs: dict[str, Any] = {
@@ -505,6 +643,7 @@ def search_evidence(
     evidence_grade: EvidenceGrade | str | None = None,
     assertion_type: str | None = None,
     source_id: str | None = None,
+    dossier_run_ids: list[str] | tuple[str, ...] | set[str] | None = None,
     limit: int = 20,
     use_chroma: bool = True,
     chroma_index: ChromaEvidenceIndex | None = None,
@@ -527,7 +666,15 @@ def search_evidence(
         source_id=source_id,
         limit=limit,
     )
-    by_id: dict[str, RetrievalHit] = {h.source_id: h for h in keyword_hits}
+    by_id: dict[str, RetrievalHit] = {
+        vector_id_for_record(h.record): RetrievalHit(
+            record=h.record,
+            score=h.score,
+            method=h.method,
+            source_id=vector_id_for_record(h.record),
+        )
+        for h in keyword_hits
+    }
 
     if use_chroma and (query or "").strip():
         index = chroma_index
@@ -539,7 +686,7 @@ def search_evidence(
             if index.available:
                 index.upsert_evidence(record_list)
         if index is not None and index.available:
-            lookup = {r.source_id: r for r in record_list if r.source_id}
+            lookup = {vector_id_for_record(r): r for r in record_list}
             semantic_hits = index.query(
                 query,
                 gene_symbol=gene_symbol,
@@ -548,6 +695,7 @@ def search_evidence(
                 evidence_grade=evidence_grade,
                 assertion_type=assertion_type,
                 source_id=source_id,
+                dossier_run_ids=dossier_run_ids,
                 limit=limit,
                 record_lookup=lookup,
             )
@@ -577,8 +725,10 @@ def search_evidence(
 __all__ = [
     "DEFAULT_COLLECTION",
     "RetrievalHit",
+    "vector_id_for_record",
     "KeywordEvidenceIndex",
     "HashEmbeddingFunction",
+    "build_local_minilm_embedding_function",
     "ChromaIndexStatus",
     "ChromaEvidenceIndex",
     "tokenize",

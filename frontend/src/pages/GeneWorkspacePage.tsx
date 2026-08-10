@@ -43,8 +43,8 @@ export function GeneWorkspacePage() {
       .then(([g, c, e]) => {
         if (cancelled) return
         setGene(g)
-        setCoverage(c)
-        setEvidence(e)
+        setCoverage(c.rows)
+        setEvidence(e.records)
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message)
@@ -63,14 +63,12 @@ export function GeneWorkspacePage() {
 
   return (
     <div className="fade-in space-y-8">
-      <div className="flex flex-wrap gap-2 text-sm">
-        <Link to="/genes/SREBF2" className="text-text-secondary hover:text-text">
-          SREBF2
+      <div className="flex flex-wrap gap-2 text-sm items-center">
+        <Link to="/genes" className="text-text-secondary hover:text-text">
+          Genes
         </Link>
-        <span className="text-text-muted">·</span>
-        <Link to="/genes/CDH10" className="text-text-secondary hover:text-text">
-          CDH10
-        </Link>
+        <span className="text-text-muted">/</span>
+        <span className="text-text font-medium">{gene.symbol}</span>
       </div>
 
       <GeneHeader gene={gene} />
@@ -98,7 +96,7 @@ export function GeneWorkspacePage() {
           <div className="surface-card p-5">
             <h3 className="text-sm font-medium text-text">Target Summary</h3>
             <p className="mt-3 text-sm leading-relaxed text-text-secondary">{gene.summary}</p>
-            <p className="mt-3 text-xs text-text-muted">Demo/mock content · not live FastAPI data</p>
+            <p className="mt-3 text-xs text-text-muted">Live FastAPI provenance database data</p>
           </div>
           <EvidenceCoverage rows={coverage} />
           <OverviewTile
@@ -111,7 +109,7 @@ export function GeneWorkspacePage() {
           />
           <OverviewTile
             title="Chemical Perturbations"
-            body="CTD chemical–gene interaction evidence is available for SREBF2; CDH10 shows limited coverage in the demo."
+            body="Baseline CTD chemical-gene interaction evidence is not present in the accepted demo evidence run."
           />
           <OverviewTile
             title="Chemical Tools"

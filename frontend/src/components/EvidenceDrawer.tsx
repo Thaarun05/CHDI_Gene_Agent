@@ -6,7 +6,7 @@ function MetaRow({ label, value }: { label: string; value?: string }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-border/60 py-2.5 last:border-0">
       <dt className="text-xs text-text-muted">{label}</dt>
-      <dd className="max-w-[60%] text-right text-sm text-text break-all">{value || '—'}</dd>
+      <dd className="max-w-[60%] text-right text-sm text-text break-all">{value || 'Not available'}</dd>
     </div>
   )
 }

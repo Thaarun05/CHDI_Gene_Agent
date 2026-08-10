@@ -7,11 +7,13 @@
 
 import type {
   AskResponse,
+  EvidenceCoverageResponse,
   ComparisonResponse,
-  EvidenceCoverageRow,
+  EvidenceListResponse,
   EvidenceRecord,
   Gene,
   HistoryItem,
+  JobArtifactsResponse,
   RecentWorkItem,
   ReportArtifact,
   WorkflowJob,
@@ -29,7 +31,7 @@ import {
   reports,
 } from '@/mocks/data'
 
-const USE_MOCKS = true
+const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === 'true'
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -59,20 +61,41 @@ export async function getGene(symbol: string): Promise<Gene> {
   return http<Gene>(`/genes/${encodeURIComponent(symbol)}`)
 }
 
-export async function getEvidenceCoverage(symbol: string): Promise<EvidenceCoverageRow[]> {
+function baselineMeta(symbol: string) {
+  const gene = symbol.toUpperCase()
+  const baseEvidenceRunId =
+    gene === 'CDH10'
+      ? 'd94f392f4a3941d5a59f697f58d18234'
+      : '407e1a4293c6424e8b6b830a1f0a7c60'
+  return {
+    geneSymbol: gene,
+    baseEvidenceRunId,
+    toolRunIds: [],
+    dossierRunIds: [baseEvidenceRunId],
+    evidenceUniverse: 'accepted_demo' as const,
+  }
+}
+
+export async function getEvidenceCoverage(symbol: string): Promise<EvidenceCoverageResponse> {
   if (USE_MOCKS) {
     await delay(200)
-    return coverageByGene[symbol.toUpperCase()] ?? []
+    return {
+      ...baselineMeta(symbol),
+      rows: coverageByGene[symbol.toUpperCase()] ?? [],
+    }
   }
   return http(`/genes/${encodeURIComponent(symbol)}/coverage`)
 }
 
-export async function listGeneEvidence(symbol: string): Promise<EvidenceRecord[]> {
+export async function listGeneEvidence(symbol: string): Promise<EvidenceListResponse> {
   if (USE_MOCKS) {
     await delay()
-    return evidenceRecords.filter(
-      (e) => e.geneSymbol.toUpperCase() === symbol.toUpperCase(),
-    )
+    return {
+      ...baselineMeta(symbol),
+      records: evidenceRecords.filter(
+        (e) => e.geneSymbol.toUpperCase() === symbol.toUpperCase(),
+      ),
+    }
   }
   return http(`/genes/${encodeURIComponent(symbol)}/evidence`)
 }
@@ -110,21 +133,45 @@ export async function listAllEvidence(filters?: {
   if (filters?.type) qs.set('type', filters.type)
   if (filters?.section) qs.set('section', filters.section)
   const q = qs.toString()
-  return http(`/evidence${q ? `?${q}` : ''}`)
+  const response = await http<EvidenceListResponse>(`/evidence${q ? `?${q}` : ''}`)
+  return response.records
 }
 
-export async function startDossierJob(geneSymbol: string): Promise<WorkflowJob> {
+export async function startDossierJob(
+  geneSymbol: string,
+  options?: {
+    sectionKeys?: string[]
+    useExistingAccepted?: boolean
+  },
+): Promise<WorkflowJob> {
   if (USE_MOCKS) {
     await delay(400)
     const job = createMockJob(geneSymbol)
+    job.sectionKeys = options?.sectionKeys
+    if (options?.useExistingAccepted) {
+      job.status = 'Completed'
+      job.completedAt = new Date().toISOString()
+      job.artifactIds = [
+        reports.find((r) => r.geneSymbol === job.geneSymbol)?.id ?? 'rep-srebf2',
+      ]
+      job.dossierRunId =
+        job.geneSymbol.toUpperCase() === 'CDH10'
+          ? 'ae97cb43e4d94732b72ef86cecc3f40d'
+          : 'cb9030ab81dc42db80b81dd15d48e653'
+    }
     jobStore.set(job.id, job)
     // Simulate progress in background for demo UX.
-    void simulateJob(job.id)
+    if (!options?.useExistingAccepted) void simulateJob(job.id)
     return job
   }
   return http('/jobs', {
     method: 'POST',
-    body: JSON.stringify({ gene_symbol: geneSymbol, job_type: 'hd_dossier' }),
+    body: JSON.stringify({
+      gene_symbol: geneSymbol,
+      job_type: 'hd_dossier',
+      sections: options?.sectionKeys,
+      use_existing_accepted: options?.useExistingAccepted ?? false,
+    }),
   })
 }
 
@@ -164,12 +211,17 @@ export async function getJob(jobId: string): Promise<WorkflowJob> {
   return http(`/jobs/${encodeURIComponent(jobId)}`)
 }
 
-export async function getJobArtifacts(jobId: string): Promise<ReportArtifact | null> {
+export async function getJobArtifacts(jobId: string): Promise<JobArtifactsResponse> {
   if (USE_MOCKS) {
     await delay(150)
     const job = jobStore.get(jobId) ?? completedJob
     const id = job.artifactIds?.[0]
-    return reports.find((r) => r.id === id) ?? reports[0] ?? null
+    return {
+      jobId,
+      dossierRunId: job.dossierRunId ?? null,
+      report: reports.find((r) => r.id === id) ?? reports[0] ?? null,
+      supplementaryArtifacts: [],
+    }
   }
   return http(`/jobs/${encodeURIComponent(jobId)}/artifacts`)
 }
@@ -195,18 +247,33 @@ export async function getReport(id: string): Promise<ReportArtifact> {
 export async function askEvidenceQuestion(
   question: string,
   geneSymbol = 'SREBF2',
+  options?: {
+    dossierRunId?: string
+    refreshIfAvailable?: boolean
+    toolRunIds?: string[]
+  },
 ): Promise<AskResponse> {
   if (USE_MOCKS) {
     await delay(700)
+    const meta = baselineMeta(geneSymbol)
     return {
       ...askResponseSrebf2,
+      ...meta,
+      status: askResponseSrebf2.status ?? 'answered',
+      embeddingBackend: askResponseSrebf2.embeddingBackend ?? 'local_minilm',
       question,
-      geneSymbol: geneSymbol.toUpperCase(),
+      geneSymbol: meta.geneSymbol,
     }
   }
   return http('/ask', {
     method: 'POST',
-    body: JSON.stringify({ question, gene_symbol: geneSymbol }),
+    body: JSON.stringify({
+      question,
+      gene_symbol: geneSymbol,
+      dossier_run_id: options?.dossierRunId,
+      refresh_if_available: options?.refreshIfAvailable ?? false,
+      tool_run_ids: options?.toolRunIds ?? [],
+    }),
   })
 }
 
@@ -216,6 +283,10 @@ export async function compareGenes(geneSymbols: string[]): Promise<ComparisonRes
     return {
       ...compareResponse,
       genes: geneSymbols.length ? geneSymbols : compareResponse.genes,
+      evidenceUniverses: compareResponse.evidenceUniverses ?? {
+        SREBF2: baselineMeta('SREBF2'),
+        CDH10: baselineMeta('CDH10'),
+      },
     }
   }
   return http('/compare', {

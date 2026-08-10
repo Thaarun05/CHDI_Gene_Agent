@@ -4,6 +4,7 @@ export type EvidenceStatus =
   | 'Available'
   | 'Limited'
   | 'Missing'
+  | 'Not available'
   | 'No Results'
   | 'Unavailable'
   | 'Source Error'
@@ -29,6 +30,23 @@ export interface EvidenceCoverageRow {
   detail?: string
 }
 
+export type EvidenceUniverseName =
+  | 'accepted_demo'
+  | 'explicit_run'
+  | 'accepted_demo_with_tool_overlay'
+
+export interface EvidenceUniverseMeta {
+  baseEvidenceRunId?: string | null
+  toolRunIds: string[]
+  dossierRunIds: string[]
+  evidenceUniverse: EvidenceUniverseName
+}
+
+export interface EvidenceCoverageResponse extends EvidenceUniverseMeta {
+  geneSymbol: string
+  rows: EvidenceCoverageRow[]
+}
+
 export interface EvidenceRecord {
   id: string
   geneSymbol: string
@@ -36,6 +54,7 @@ export interface EvidenceRecord {
   evidenceType: string
   factType: string
   evidenceClass?: string
+  evidenceGrade?: string
   section: string
   subsection?: string
   sourceIdentifier?: string
@@ -45,6 +64,11 @@ export interface EvidenceRecord {
   apiRunId?: string
   rawArtifactId?: string
   sourceUrl?: string
+}
+
+export interface EvidenceListResponse extends EvidenceUniverseMeta {
+  geneSymbol: string
+  records: EvidenceRecord[]
 }
 
 export interface ApiRun {
@@ -90,6 +114,9 @@ export interface WorkflowJob {
   createdAt: string
   completedAt?: string
   artifactIds?: string[]
+  dossierRunId?: string
+  sectionKeys?: string[]
+  errors?: string[]
 }
 
 export interface Citation {
@@ -100,9 +127,17 @@ export interface Citation {
 }
 
 export interface AskResponse {
+  status: string
   question: string
   geneSymbol: string
   summary: string
+  retrievalMethod: string
+  generationMethod: string
+  embeddingBackend: string
+  baseEvidenceRunId?: string | null
+  toolRunIds: string[]
+  dossierRunIds: string[]
+  evidenceUniverse: EvidenceUniverseName
   evidenceBlocks: Array<{
     sourceGroup: string
     items: Array<{ text: string; citationIds: string[] }>
@@ -111,7 +146,9 @@ export interface AskResponse {
   citations: Citation[]
   evidenceUsedCount: number
   sourcesCount: number
+  sourcesUsed: string[]
   toolsInvokedCount: number
+  toolActivity: Array<Record<string, unknown>>
   agentActivity: string[]
 }
 
@@ -130,6 +167,21 @@ export interface ComparisonResponse {
     cells: Record<string, ComparisonCell>
   }>
   narrative: string
+  evidenceUniverses: Record<string, EvidenceUniverseMeta>
+}
+
+export interface Artifact {
+  id: string
+  path: string
+  artifactType: string
+  exists: boolean
+}
+
+export interface JobArtifactsResponse {
+  jobId: string
+  dossierRunId?: string | null
+  report: ReportArtifact | null
+  supplementaryArtifacts: Artifact[]
 }
 
 export interface HistoryItem {

@@ -14,6 +14,8 @@ export function AskPage() {
     params.get('q') ||
     'What evidence suggests SREBF2 can be pharmacologically manipulated?'
   const gene = params.get('gene') || 'SREBF2'
+  const refreshIfAvailable =
+    params.get('refresh_if_available') === 'true' || params.get('refresh') === 'true'
 
   const [query, setQuery] = useState(initialQ)
   const [loading, setLoading] = useState(false)
@@ -30,7 +32,9 @@ export function AskPage() {
     setLoading(true)
     setDetail(null)
     try {
-      const res = await askEvidenceQuestion(q, gene)
+      const res = await askEvidenceQuestion(q, gene, {
+        refreshIfAvailable,
+      })
       setResponse(res)
     } finally {
       setLoading(false)
@@ -79,6 +83,20 @@ export function AskPage() {
           <AgentActivity steps={response.agentActivity} />
 
           <article className="surface-card space-y-6 p-6">
+            <section className="flex flex-wrap gap-2 text-xs text-text-secondary">
+              <span className="rounded-full border border-border px-2.5 py-1">
+                {response.retrievalMethod === 'semantic' ? 'Semantic Retrieval' : 'Keyword Retrieval'}
+              </span>
+              <span className="rounded-full border border-border px-2.5 py-1">
+                {response.generationMethod === 'grounded_llm'
+                  ? 'Grounded LLM'
+                  : 'Deterministic Grounded Summary'}
+              </span>
+              <span className="rounded-full border border-border px-2.5 py-1">
+                Embedding: {response.embeddingBackend}
+              </span>
+            </section>
+
             <section>
               <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
                 Summary
@@ -163,10 +181,20 @@ export function AskPage() {
                 </ul>
               )}
               {detail === 'sources' && (
-                <p>ChEMBL, PubMed, PubChem, CTD (demo sources for this answer).</p>
+                <p>{response.sourcesUsed.length ? response.sourcesUsed.join(', ') : 'No sources used.'}</p>
               )}
               {detail === 'tools' && (
-                <p>Stored-evidence retrieval · Chemical-tool evidence check (demo tool list).</p>
+                <div className="space-y-2">
+                  {response.toolActivity.length === 0 && <p>No tools invoked.</p>}
+                  {response.toolActivity.map((tool, i) => (
+                    <div key={i}>
+                      <p>Selected tool: {String(tool.toolName ?? 'unknown')}</p>
+                      <p>Sections: {Array.isArray(tool.sectionKeys) ? tool.sectionKeys.join(', ') : 'none'}</p>
+                      <p>New evidence run: {String(tool.dossierRunId ?? 'none')}</p>
+                      <p>Evidence re-indexed: {String(tool.indexedRecords ?? 0)}</p>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}

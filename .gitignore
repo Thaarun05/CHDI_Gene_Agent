@@ -31,6 +31,14 @@ data/indexes/
 *.sqlite
 *.sqlite3
 
+# Local source datasets and downloaded responses
+All/
+rnaseq_donor*/
+response.*
+CHDI_Data_APIs_Gene_Report_SREBF2 copy.md
+chatgpt_message_chat.txt
+directory_structure.txt
+
 # OS / editor
 .DS_Store
 .idea/
