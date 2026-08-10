@@ -50,7 +50,7 @@ def _row(
 
 
 def test_supported_includes_5b_default_through_4a() -> None:
-    assert SUPPORTED_SECTION_BUNDLE_KEYS[-3:] == ("5a", "5b", "6a")
+    assert SUPPORTED_SECTION_BUNDLE_KEYS[-4:] == ("5a", "5b", "6a", "7a")
     assert "5b" not in DEFAULT_SECTION_BUNDLE_KEYS
     assert DEFAULT_SECTION_BUNDLE_KEYS[-1] == "4a"
 

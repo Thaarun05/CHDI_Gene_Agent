@@ -272,6 +272,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--promote-section-7a-accepted",
+        action="store_true",
+        help=(
+            "Replace an existing successful Section 7a accepted gene pointer when the "
+            "new run is complete (ignored unless 7a is selected)."
+        ),
+    )
+    parser.add_argument(
         "--promote-section-6a-accepted",
         action="store_true",
         help=(
@@ -402,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         promote_section_5b_accepted=args.promote_section_5b_accepted,
         promote_section_6a_accepted=args.promote_section_6a_accepted,
         promote_section_6a_ctd_source=args.promote_section_6a_ctd_source,
+        promote_section_7a_accepted=args.promote_section_7a_accepted,
         section_1e_config=section_1e_config,
         section_2a_config=section_2a_config,
         section_2b_config=section_2b_config,

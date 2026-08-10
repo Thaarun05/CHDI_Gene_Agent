@@ -263,6 +263,18 @@ def build_section_presentation(
             evidence_records=evidence_records,
             section_status=section_status,
         )
+    if key in {
+        "7a",
+        "7.a",
+        "chemical_tools",
+        "chembl",
+        "chemical_tools_inhibitors",
+    }:
+        return build_section_7a_blocks(
+            gene_symbol=gene_symbol,
+            evidence_records=evidence_records,
+            section_status=section_status,
+        )
     return SectionPresentationResult(blocks=(), diagnostics=())
 
 
@@ -4503,6 +4515,7 @@ __all__ = [
     "build_section_5a_blocks",
     "build_section_5b_blocks",
     "build_section_6a_blocks",
+    "build_section_7a_blocks",
     "build_section_presentation",
     "build_tissue_specific_information_blocks",
     "format_safe_table_cell_html",
@@ -4966,3 +4979,225 @@ def transcript_selection_sentence(tx_val: dict[str, Any]) -> str:
 def transcript_selection_sentence(tx_val: dict[str, Any]) -> str:
     """Public alias for Section 1b transcript-selection wording."""
     return _transcript_selection_sentence(tx_val)
+
+
+
+def build_section_7a_blocks(
+    *,
+    gene_symbol: str,
+    evidence_records: Sequence[EvidenceRecord],
+    section_status: dict[str, Any] | None = None,
+    diagnostics: list[PresentationDiagnostic] | None = None,
+) -> SectionPresentationResult:
+    """Build polished Section 7a chemical-tools presentation blocks."""
+    diagnostics = list(diagnostics or [])
+    records = list(evidence_records)
+    status = section_status or {}
+    summary = dict(status.get("summary") or {})
+    gene = (
+        str(summary.get("gene_symbol") or gene_symbol or "").strip() or "this gene"
+    )
+    item_key = f"chem-tools-{gene.lower()}"
+    blocks: list[ReportContentBlock] = []
+    source_blocks = dict(summary.get("source_blocks") or {})
+
+    def _ids_for(*fact_types: str) -> tuple[list[str], list[str]]:
+        src: list[str] = []
+        ev: list[str] = []
+        for rec in records:
+            if rec.fact_type in fact_types:
+                if rec.source_id:
+                    src.append(rec.source_id)
+                if rec.id:
+                    ev.append(rec.id)
+        return list(dict.fromkeys(src)), list(dict.fromkeys(ev))
+
+    intro = str(
+        summary.get("scientific_intro")
+        or (
+            f"{gene} gene was queried in the following databases to identify any known "
+            "inhibitors or agonists and their effect(s) on the gene."
+        )
+    )
+    intro_src, intro_ev = _ids_for("section_7a_summary")
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=intro,
+            presentation_role="section_7a_intro",
+            presentation_item_key=f"{item_key}-intro",
+            source_ids=intro_src,
+            evidence_record_ids=intro_ev,
+        )
+    )
+
+    chembl = dict(source_blocks.get("chembl") or {})
+    chembl_text = str(
+        chembl.get("display")
+        or (
+            f"ChEMBL – see Supplementary Material ({chembl.get('workbook')})"
+            if chembl.get("workbook")
+            else "ChEMBL – No results"
+        )
+    )
+    c_src, c_ev = _ids_for("section_7a_chembl_workbook", "section_7a_summary")
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=chembl_text,
+            presentation_role="section_7a_chembl_line",
+            presentation_item_key=f"{item_key}-chembl",
+            source_ids=c_src,
+            evidence_record_ids=c_ev,
+        )
+    )
+
+    drugbank = dict(source_blocks.get("drugbank") or {})
+    db_text = str(drugbank.get("display") or "DrugBank – API access unavailable")
+    d_src, d_ev = _ids_for("section_7a_drugbank_status")
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=db_text,
+            presentation_role="section_7a_drugbank_line",
+            presentation_item_key=f"{item_key}-drugbank",
+            source_ids=d_src,
+            evidence_record_ids=d_ev,
+        )
+    )
+
+    pubmed = dict(source_blocks.get("pubmed") or {})
+    polished = list(summary.get("polished_literature") or pubmed.get("polished") or [])
+    p_src, p_ev = _ids_for("section_7a_pubmed_tool")
+    if polished:
+        from gene_dossier.section_7a import build_literature_effect_prose
+
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="PubMed",
+                presentation_role="section_7a_source_status",
+                presentation_item_key=f"{item_key}-pubmed-label",
+                source_ids=p_src,
+                evidence_record_ids=p_ev,
+            )
+        )
+        for i, lit in enumerate(polished[:7]):
+            pmid = str(lit.get("pmid") or "")
+            prose = build_literature_effect_prose(lit)
+            cite_label = str(lit.get("citation_label") or "").strip()
+            link_label = cite_label or (f"PMID {pmid}" if pmid else "")
+            # Citation appears once via the hyperlink label; never also inline PMID text.
+            blocks.append(
+                ReportContentBlock(
+                    kind="narrative",
+                    text=prose,
+                    presentation_role="section_7a_pubmed_entry",
+                    presentation_item_key=f"{item_key}-pubmed-{i}-{pmid or i}",
+                    source_ids=p_src,
+                    evidence_record_ids=p_ev,
+                    links=(
+                        [
+                            {
+                                "label": link_label,
+                                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                            }
+                        ]
+                        if pmid and link_label
+                        else None
+                    ),
+                )
+            )
+    else:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=str(pubmed.get("display") or "PubMed – No results"),
+                presentation_role="section_7a_source_status",
+                presentation_item_key=f"{item_key}-pubmed-empty",
+                source_ids=p_src,
+                evidence_record_ids=p_ev,
+            )
+        )
+
+    pubchem = dict(source_blocks.get("pubchem") or {})
+    polished_pc = list(
+        pubchem.get("polished_focused")
+        or summary.get("source_blocks", {}).get("pubchem", {}).get("polished_focused")
+        or []
+    )
+    # Never render the full focused inventory in the PDF table.
+    pc_src, pc_ev = _ids_for("section_7a_pubchem_assay")
+    if polished_pc:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text="PubChem",
+                presentation_role="section_7a_source_status",
+                presentation_item_key=f"{item_key}-pubchem-label",
+                source_ids=pc_src,
+                evidence_record_ids=pc_ev,
+            )
+        )
+        rows = []
+        for row in polished_pc:
+            rows.append(
+                [
+                    str(row.get("aid") or ""),
+                    str(row.get("bioassay_name") or ""),
+                    gene,  # never emit SREBF3 leakage
+                    str(row.get("comment") or row.get("reason") or ""),
+                ]
+            )
+        blocks.append(
+            ReportContentBlock(
+                kind="table",
+                presentation_role="section_7a_pubchem_table",
+                presentation_item_key=f"{item_key}-pubchem",
+                table_headers=["AID", "BioAssay Name", "Target Gene", "Comment"],
+                table_rows=rows,
+                source_ids=pc_src,
+                evidence_record_ids=pc_ev,
+            )
+        )
+    else:
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=str(pubchem.get("display") or "PubChem – No results"),
+                presentation_role="section_7a_source_status",
+                presentation_item_key=f"{item_key}-pubchem-empty",
+                source_ids=pc_src,
+                evidence_record_ids=pc_ev,
+            )
+        )
+
+    ncats = dict(source_blocks.get("ncats") or {})
+    n_src, n_ev = _ids_for("section_7a_ncats_candidate")
+    blocks.append(
+        ReportContentBlock(
+            kind="narrative",
+            text=str(ncats.get("display") or "NCATS Inxight: Drugs – No results"),
+            presentation_role="section_7a_ncats_line",
+            presentation_item_key=f"{item_key}-ncats",
+            source_ids=n_src,
+            evidence_record_ids=n_ev,
+        )
+    )
+
+    if (drugbank.get("source_status") or "") == "unavailable_not_configured" or (
+        "unavailable" in str(drugbank.get("source_status") or "")
+    ):
+        blocks.append(
+            ReportContentBlock(
+                kind="narrative",
+                text=(
+                    "DrugBank API access was unavailable for this run; other public "
+                    "chemical-tool sources were still evaluated."
+                ),
+                presentation_role="section_7a_caveat",
+                presentation_item_key=f"{item_key}-caveat",
+            )
+        )
+
+    return SectionPresentationResult(blocks=tuple(blocks), diagnostics=tuple(diagnostics))

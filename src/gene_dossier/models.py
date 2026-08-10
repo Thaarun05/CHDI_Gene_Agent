@@ -93,6 +93,7 @@ class AssertionType(str, Enum):
     variant_association = "variant_association"
     disease_association = "disease_association"
     chemical_interaction = "chemical_interaction"
+    chemical_tool = "chemical_tool"
     perturbation = "perturbation"
     transcription_factor_association = "transcription_factor_association"
     knockout_phenotype = "knockout_phenotype"

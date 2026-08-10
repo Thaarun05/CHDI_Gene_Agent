@@ -37,7 +37,7 @@ def _sha(path: Path) -> str:
 def test_supported_not_default_and_owns_http():
     """Section 6a freeze contract: supported/opt-in only; defaults unchanged."""
     assert "6a" in SUPPORTED_SECTION_BUNDLE_KEYS
-    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "6a"
+    assert SUPPORTED_SECTION_BUNDLE_KEYS[-1] == "7a"
     assert "6a" not in DEFAULT_SECTION_BUNDLE_KEYS
     assert SECTION_SOURCE_DEPENDENCIES["6a"] == set()
     # Frozen: do not promote 6a into the default bundle.

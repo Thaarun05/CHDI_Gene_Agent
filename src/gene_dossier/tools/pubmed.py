@@ -185,6 +185,36 @@ def esearch(
     )
 
 
+def esearch_custom(
+    term: str,
+    retmax: int = DEFAULT_RETMAX,
+    *,
+    gene_symbol: str = "",
+    sort: str = "relevance",
+    retstart: int = 0,
+    settings: Settings | None = None,
+) -> ToolResult:
+    """ESearch with an arbitrary term (no HD-MeSH default)."""
+    cfg = settings or get_settings()
+    search_term = str(term).strip()
+    params = {
+        "db": "pubmed",
+        "term": search_term,
+        "retmode": "json",
+        "retmax": str(retmax),
+        "retstart": str(retstart),
+        "sort": sort,
+    }
+    return _request(
+        endpoint_name="esearch_custom",
+        gene_symbol=gene_symbol or search_term[:80],
+        path="esearch.fcgi",
+        params=params,
+        settings=cfg,
+        expect_json=True,
+    )
+
+
 def esummary(
     pubmed_ids: str | list[str] | int,
     *,
@@ -226,12 +256,13 @@ def efetch(
         id_str = ",".join(str(p) for p in pubmed_ids)
     else:
         id_str = str(pubmed_ids)
-    params = {
+    params: dict[str, Any] = {
         "db": "pubmed",
         "id": id_str,
-        "rettype": rettype,
         "retmode": retmode,
     }
+    if rettype:
+        params["rettype"] = rettype
     return _request(
         endpoint_name="efetch",
         gene_symbol=gene_symbol or id_str,
@@ -240,6 +271,53 @@ def efetch(
         settings=cfg,
         expect_json=False,
     )
+
+
+def efetch_abstracts(
+    pmids: str | list[str] | int,
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch PubMed abstract XML for one or more PMIDs (Section 7a helper)."""
+    cfg = settings or get_settings()
+    if isinstance(pmids, (list, tuple)):
+        id_list = [str(p).strip() for p in pmids if str(p).strip()]
+        id_str = ",".join(id_list)
+    else:
+        id_str = str(pmids).strip()
+        id_list = [id_str] if id_str else []
+    if not id_str:
+        return _tool_result(
+            endpoint_name="efetch_abstracts",
+            gene_symbol=gene_symbol,
+            request_url=f"{EUTILS_BASE}/efetch.fcgi",
+            request_params={"db": "pubmed", "id": "", "rettype": "abstract", "retmode": "xml"},
+            success=False,
+            error_type="invalid_request",
+            error_message="efetch_abstracts requires at least one PMID",
+        )
+    result = efetch(
+        id_list,
+        gene_symbol=gene_symbol,
+        rettype="abstract",
+        retmode="xml",
+        settings=cfg,
+    )
+    if result.endpoint_name == "efetch":
+        # Preserve transport fields but label the endpoint for Section 7a provenance.
+        return _tool_result(
+            endpoint_name="efetch_abstracts",
+            gene_symbol=result.gene_symbol,
+            request_url=result.request_url,
+            request_params=result.request_params,
+            success=result.success,
+            status_code=result.status_code,
+            data=result.data,
+            error_type=result.error_type,
+            error_message=result.error_message,
+        )
+    return result
 
 
 def extract_id_list(esearch_result: ToolResult) -> list[str]:
@@ -354,6 +432,97 @@ def search_hd_literature(
     )
 
 
+
+def efetch_pubmed_xml(
+    pmids: str | list[str] | int,
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch full PubMed XML (includes ChemicalList when present)."""
+    cfg = settings or get_settings()
+    if isinstance(pmids, (list, tuple)):
+        id_list = [str(p).strip() for p in pmids if str(p).strip()]
+    else:
+        id_list = [str(pmids).strip()] if str(pmids).strip() else []
+    if not id_list:
+        return _tool_result(
+            endpoint_name="efetch_pubmed_xml",
+            gene_symbol=gene_symbol,
+            request_url=f"{EUTILS_BASE}/efetch.fcgi",
+            request_params={"db": "pubmed", "id": "", "retmode": "xml"},
+            success=False,
+            error_type="invalid_request",
+            error_message="efetch_pubmed_xml requires at least one PMID",
+        )
+    result = efetch(
+        id_list,
+        gene_symbol=gene_symbol,
+        rettype="",
+        retmode="xml",
+        settings=cfg,
+    )
+    return _tool_result(
+        endpoint_name="efetch_pubmed_xml",
+        gene_symbol=result.gene_symbol,
+        request_url=result.request_url,
+        request_params=result.request_params,
+        success=result.success,
+        status_code=result.status_code,
+        data=result.data,
+        error_type=result.error_type,
+        error_message=result.error_message,
+    )
+
+
+
+def extract_medline_chemicals(raw_xml: str) -> dict[str, list[dict[str, str]]]:
+    """Parse PubMed XML ChemicalList entries keyed by PMID."""
+    import re as _re
+    out: dict[str, list[dict[str, str]]] = {}
+    if not raw_xml:
+        return out
+    # Split roughly by PubmedArticle
+    articles = _re.split(r"</PubmedArticle>", raw_xml)
+    for art in articles:
+        m_pmid = _re.search(r"<PMID[^>]*>(\d+)</PMID>", art)
+        if not m_pmid:
+            continue
+        pmid = m_pmid.group(1)
+        chems: list[dict[str, str]] = []
+        for cm in _re.finditer(
+            r"<Chemical>.*?<NameOfSubstance[^>]*>(.*?)</NameOfSubstance>.*?</Chemical>",
+            art,
+            _re.I | _re.S,
+        ):
+            name = _re.sub(r"<[^>]+>", "", cm.group(1)).strip()
+            if name:
+                chems.append({"name": name, "source": "pubmed_chemical_list"})
+        if chems:
+            out[pmid] = chems
+    return out
+
+
+def extract_pmid_title_abstract(raw_xml: str) -> dict[str, dict[str, str]]:
+    """Return {pmid: {title, abstract}} from PubMed XML."""
+    import re as _re
+    out: dict[str, dict[str, str]] = {}
+    if not raw_xml:
+        return out
+    articles = _re.split(r"</PubmedArticle>", raw_xml)
+    for art in articles:
+        m_pmid = _re.search(r"<PMID[^>]*>(\d+)</PMID>", art)
+        if not m_pmid:
+            continue
+        pmid = m_pmid.group(1)
+        m_title = _re.search(r"<ArticleTitle[^>]*>(.*?)</ArticleTitle>", art, _re.I | _re.S)
+        title = _re.sub(r"<[^>]+>", "", m_title.group(1)).strip() if m_title else ""
+        abstracts = _re.findall(r"<AbstractText[^>]*>(.*?)</AbstractText>", art, _re.I | _re.S)
+        abstract = " ".join(_re.sub(r"<[^>]+>", "", a) for a in abstracts)
+        out[pmid] = {"title": title, "abstract": abstract}
+    return out
+
+
 __all__ = [
     "SOURCE_NAME",
     "EUTILS_BASE",
@@ -361,8 +530,13 @@ __all__ = [
     "HD_MESH",
     "build_hd_search_term",
     "esearch",
+    "esearch_custom",
     "esummary",
     "efetch",
+    "efetch_abstracts",
     "extract_id_list",
+    "efetch_pubmed_xml",
+    "extract_medline_chemicals",
+    "extract_pmid_title_abstract",
     "search_hd_literature",
 ]

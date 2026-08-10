@@ -1143,6 +1143,40 @@ table.section-1e-fallback-table td {{
   margin: 4pt 0 8pt 0;
   font-style: normal;
 }}
+
+.section-bundle-body .section-7a-narrative {{
+  margin: 0 0 8pt 0;
+}}
+.section-bundle-body .section-7a-status-line {{
+  margin: 2pt 0;
+}}
+.section-bundle-body .section-7a-chembl-line {{
+  margin: 4pt 0 2pt 0;
+}}
+.section-bundle-body .section-7a-pubmed-entry {{
+  margin: 4pt 0;
+}}
+.section-bundle-body .section-7a-caveat {{
+  margin-top: 8pt;
+  color: #8a6a55;
+  font-size: 9pt;
+}}
+.section-bundle-body table.section-7a-pubchem-table {{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9pt;
+  margin: 6pt 0 10pt 0;
+}}
+.section-bundle-body table.section-7a-pubchem-table th,
+.section-bundle-body table.section-7a-pubchem-table td {{
+  border: 1px solid #d0c4b8;
+  padding: 3pt 5pt;
+  vertical-align: top;
+}}
+.section-bundle-body table.section-7a-pubchem-table th {{
+  background: #f7f1ea;
+  text-align: left;
+}}
 .section-bundle-body .section-1d-blurb {{
   font-size: 9.5pt;
   line-height: 1.35;
@@ -3442,6 +3476,125 @@ def build_and_write_rancho_report(
     return doc, paths
 
 
+
+def _render_section_7a_blocks(blocks: list[ReportContentBlock]) -> str:
+    parts: list[str] = []
+    for block in blocks:
+        role = str(block.presentation_role or "")
+        if role == "section_7a_intro":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<div class="section-7a-narrative" {_evidence_attr(block)}>'
+                f"<p>{text}</p></div>"
+            )
+            continue
+        if role in {
+            "section_7a_chembl_line",
+            "section_7a_drugbank_line",
+            "section_7a_ncats_line",
+            "section_7a_source_status",
+        }:
+            text = (block.text or "").strip()
+            m = re.search(r"([A-Za-z0-9_]+_Chembl_Inhibitor\.xlsx)", text)
+            if m:
+                name = m.group(1)
+                pre, _, post = text.partition(name)
+                html = (
+                    f"{_escape(pre)}"
+                    f'<span style="color:{REPORT_STYLE.orange_link}; '
+                    f'text-decoration:underline;">{_escape(name)}</span>'
+                    f"{_escape(post)}"
+                )
+            else:
+                html = _escape(text)
+            css = (
+                "section-7a-chembl-line"
+                if role == "section_7a_chembl_line"
+                else "section-7a-status-line"
+            )
+            parts.append(f'<p class="{css}" {_evidence_attr(block)}>{html}</p>')
+            continue
+        if role == "section_7a_pubmed_entry":
+            text = _escape((block.text or "").strip())
+            link_html = ""
+            for link in block.links or []:
+                url = str(link.get("url") or "")
+                label = _escape(str(link.get("label") or url))
+                if url:
+                    link_html += (
+                        f' <a href="{_escape(url)}" style="color:{REPORT_STYLE.orange_link};">'
+                        f"{label}</a>"
+                    )
+            parts.append(
+                f'<p class="section-7a-pubmed-entry" {_evidence_attr(block)}>'
+                f"{text}{link_html}</p>"
+            )
+            continue
+        if role == "section_7a_caveat":
+            text = _escape((block.text or "").strip())
+            parts.append(
+                f'<p class="section-7a-caveat" {_evidence_attr(block)}>{text}</p>'
+            )
+            continue
+        if role == "section_7a_pubchem_table" and block.table_headers:
+            headers = "".join(f"<th>{_escape(h)}</th>" for h in block.table_headers)
+            body_rows = []
+            for row in block.table_rows or []:
+                cells = "".join(f"<td>{_escape(str(c))}</td>" for c in row)
+                body_rows.append(f"<tr>{cells}</tr>")
+            parts.append(
+                f'<table class="section-7a-pubchem-table" {_evidence_attr(block)}>'
+                f"<thead><tr>{headers}</tr></thead>"
+                f"<tbody>{''.join(body_rows)}</tbody></table>"
+            )
+            continue
+        parts.append(_render_block(block))
+    return "\n".join(parts)
+
+
+def split_section_7a_page_segments(
+    blocks: list[ReportContentBlock],
+) -> list[list[ReportContentBlock]]:
+    segments: list[list[ReportContentBlock]] = []
+    current: list[ReportContentBlock] = []
+    for block in blocks:
+        if block.presentation_page_break_before and current:
+            segments.append(current)
+            current = []
+        current.append(block)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def render_section_7a_subsection_segments(sub: ReportSubsection) -> list[str]:
+    segments = split_section_7a_page_segments(list(sub.presentation_blocks or []))
+    heading = f"{sub.key}. {sub.title}"
+    subsection_class = re.sub(r"[^a-z0-9]+", "-", sub.key.lower()).strip("-")
+    rendered: list[str] = []
+    for index, segment in enumerate(segments):
+        parts = [
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-7a">'
+        ]
+        if index == 0:
+            parts.append(
+                f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+                f"{_escape(heading)}</h3>"
+            )
+        parts.append(_render_section_7a_blocks(segment))
+        parts.append("</section>")
+        rendered.append("\n".join(parts))
+    return rendered or [
+        (
+            f'<section class="report-subsection subsection-{_escape(subsection_class)} '
+            f'subsection-7a">'
+            f'<h3 class="sub-heading" style="color:{REPORT_STYLE.orange_sub};">'
+            f"{_escape(heading)}</h3></section>"
+        )
+    ]
+
+
 __all__ = [
     "render_rancho_html",
     "render_rancho_pdf",
@@ -3466,6 +3619,8 @@ __all__ = [
     "render_section_5a_subsection_segments",
     "render_section_5b_subsection_segments",
     "render_section_6a_subsection_segments",
+    "render_section_7a_subsection_segments",
+    "split_section_7a_page_segments",
     "split_section_5a_page_segments",
     "split_section_6a_page_segments",
     "SECTION_1C_PDF_PAGE_BREAK",

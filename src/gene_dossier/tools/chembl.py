@@ -176,6 +176,9 @@ def summarize_assay(assay: dict[str, Any]) -> dict[str, Any]:
         "assay_organism": assay.get("assay_organism"),
         "assay_cell_type": assay.get("assay_cell_type"),
         "target_chembl_id": assay.get("target_chembl_id"),
+        "relationship_type": assay.get("relationship_type"),
+        "confidence_score": assay.get("confidence_score"),
+        "confidence_description": assay.get("confidence_description"),
         "document_chembl_id": assay.get("document_chembl_id"),
     }
 
@@ -282,6 +285,91 @@ def prefer_target_id(
         targets, gene_symbol, organism=organism
     )
     return selected
+
+
+def resolve_authoritative_target(
+    targets: list[Any],
+    *,
+    uniprot_accession: str,
+    gene_symbol: str,
+    organism: str = ORGANISM_HUMAN,
+) -> tuple[str | None, str, str]:
+    """Resolve a human ChEMBL target by authoritative UniProt accession.
+
+    Prefers organism-matching ``SINGLE PROTEIN`` rows whose
+    ``target_components[].accession`` equals ``uniprot_accession``.
+
+    Returns ``(target_chembl_id | None, method, detail)`` where method is one of:
+    - ``uniprot_single_protein`` — unique human SINGLE PROTEIN UniProt match
+    - ``uniprot_match`` — unique UniProt match that is not SINGLE PROTEIN
+    - ``ambiguous`` — multiple equally preferred matches
+    - ``not_found`` — no UniProt accession match
+
+    Never falls back to name/synonym scoring or the first search hit.
+    """
+    accession = str(uniprot_accession or "").strip().upper()
+    symbol = str(gene_symbol or "").strip()
+    if not accession:
+        return None, "not_found", "missing uniprot_accession"
+
+    single_protein: list[str] = []
+    other_matches: list[str] = []
+    for row in targets:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("target_chembl_id")
+        if not tid:
+            continue
+        org = str(row.get("organism") or "")
+        if organism and org and org != organism:
+            continue
+        components = row.get("target_components") or []
+        if not isinstance(components, list):
+            continue
+        has_accession = False
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            acc = str(comp.get("accession") or "").strip().upper()
+            if acc == accession:
+                has_accession = True
+                break
+        if not has_accession:
+            continue
+        target_type = str(row.get("target_type") or "").strip().upper()
+        tid_s = str(tid)
+        if target_type == "SINGLE PROTEIN":
+            if tid_s not in single_protein:
+                single_protein.append(tid_s)
+        else:
+            if tid_s not in other_matches:
+                other_matches.append(tid_s)
+
+    if len(single_protein) == 1:
+        return (
+            single_protein[0],
+            "uniprot_single_protein",
+            f"{accession} SINGLE PROTEIN ({symbol or 'gene'})",
+        )
+    if len(single_protein) > 1:
+        return (
+            None,
+            "ambiguous",
+            f"multiple SINGLE PROTEIN matches for {accession}: {single_protein}",
+        )
+    if len(other_matches) == 1:
+        return (
+            other_matches[0],
+            "uniprot_match",
+            f"{accession} non-SINGLE-PROTEIN match ({symbol or 'gene'})",
+        )
+    if len(other_matches) > 1:
+        return (
+            None,
+            "ambiguous",
+            f"multiple UniProt matches for {accession}: {other_matches}",
+        )
+    return None, "not_found", f"no human UniProt match for {accession}"
 
 
 def default_assay_search_terms(
@@ -395,6 +483,194 @@ def activities(
         path="activity.json",
         params=params,
         settings=cfg,
+    )
+
+
+def activities_by_target(
+    target_chembl_id: str,
+    gene_symbol: str = "",
+    limit: int = DEFAULT_ACTIVITY_LIMIT,
+    offset: int = 0,
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch activities filtered by exact ``target_chembl_id``."""
+    cfg = settings or get_settings()
+    tid = str(target_chembl_id).strip()
+    if not tid:
+        return _tool_result(
+            endpoint_name="activities_by_target",
+            gene_symbol=gene_symbol,
+            request_url=f"{CHEMBL_BASE}/activity.json",
+            request_params={"target_chembl_id": "", "limit": str(limit), "offset": str(offset)},
+            success=False,
+            error_type="invalid_request",
+            error_message="ChEMBL activities_by_target requires target_chembl_id",
+        )
+    params = {
+        "target_chembl_id": tid,
+        "limit": limit,
+        "offset": offset,
+    }
+    return _request_json(
+        endpoint_name="activities_by_target",
+        gene_symbol=gene_symbol or tid,
+        path="activity.json",
+        params=params,
+        settings=cfg,
+    )
+
+
+def assays_by_target(
+    target_chembl_id: str,
+    gene_symbol: str = "",
+    limit: int = DEFAULT_ASSAY_LIMIT,
+    offset: int = 0,
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch assays filtered by exact ``target_chembl_id`` (one HTTP page)."""
+    cfg = settings or get_settings()
+    tid = str(target_chembl_id).strip()
+    if not tid:
+        return _tool_result(
+            endpoint_name="assays_by_target",
+            gene_symbol=gene_symbol,
+            request_url=f"{CHEMBL_BASE}/assay.json",
+            request_params={"target_chembl_id": "", "limit": str(limit), "offset": str(offset)},
+            success=False,
+            error_type="invalid_request",
+            error_message="ChEMBL assays_by_target requires target_chembl_id",
+        )
+    params = {
+        "target_chembl_id": tid,
+        "limit": limit,
+        "offset": offset,
+    }
+    return _request_json(
+        endpoint_name="assays_by_target",
+        gene_symbol=gene_symbol or tid,
+        path="assay.json",
+        params=params,
+        settings=cfg,
+    )
+
+
+def is_direct_assay_relationship(assay: dict[str, Any] | None) -> bool:
+    """True only when ChEMBL assay metadata explicitly marks a direct target link."""
+    if not isinstance(assay, dict):
+        return False
+    rel = str(assay.get("relationship_type") or "").strip().upper()
+    return rel in {"D", "DIRECT"}
+
+
+def fetch_exact_target_activities(
+    target_chembl_id: str,
+    *,
+    gene_symbol: str = "",
+    limit: int = DEFAULT_ACTIVITY_LIMIT,
+    max_pages: int = 50,
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Paginate exact-target ``activity.json?target_chembl_id=`` until exhausted.
+
+    On success, ``data`` includes merged ``activities``, ``activity_summaries``,
+    page count, and the last page payload metadata.
+    """
+    cfg = settings or get_settings()
+    tid = str(target_chembl_id).strip()
+    if not tid:
+        return _tool_result(
+            endpoint_name="fetch_exact_target_activities",
+            gene_symbol=gene_symbol,
+            request_url=f"{CHEMBL_BASE}/activity.json",
+            request_params={"target_chembl_id": ""},
+            success=False,
+            error_type="invalid_request",
+            error_message="fetch_exact_target_activities requires target_chembl_id",
+        )
+
+    all_activities: list[dict[str, Any]] = []
+    pages: list[Any] = []
+    offset = 0
+    last_url = f"{CHEMBL_BASE}/activity.json"
+    last_params: dict[str, Any] = {}
+    last_status: int | None = None
+    total_count: int | None = None
+    page_idx = 0
+
+    while page_idx < max(1, int(max_pages)):
+        page = activities_by_target(
+            tid,
+            gene_symbol=gene_symbol,
+            limit=limit,
+            offset=offset,
+            settings=cfg,
+        )
+        last_url = page.request_url
+        last_params = page.request_params
+        last_status = page.status_code
+        if not page.success:
+            return _tool_result(
+                endpoint_name="fetch_exact_target_activities",
+                gene_symbol=gene_symbol or tid,
+                request_url=page.request_url,
+                request_params=page.request_params,
+                success=False,
+                status_code=page.status_code,
+                data={
+                    "target_chembl_id": tid,
+                    "activities": all_activities,
+                    "pages": pages,
+                    "failed_offset": offset,
+                    "page_error": page.data,
+                },
+                error_type=page.error_type or "activities_by_target_failed",
+                error_message=page.error_message or "ChEMBL exact-target activities failed",
+            )
+        pages.append(page.data)
+        payload = page.data if isinstance(page.data, dict) else {}
+        page_meta = payload.get("page_meta") if isinstance(payload.get("page_meta"), dict) else {}
+        if total_count is None and page_meta.get("total_count") is not None:
+            try:
+                total_count = int(page_meta["total_count"])
+            except (TypeError, ValueError):
+                total_count = None
+        batch = payload.get("activities") or []
+        if not isinstance(batch, list):
+            batch = []
+        for row in batch:
+            if isinstance(row, dict):
+                all_activities.append(row)
+        if not batch:
+            break
+        offset += len(batch)
+        if total_count is not None and offset >= total_count:
+            break
+        if page_meta.get("next") in (None, "", False):
+            break
+        page_idx += 1
+
+    summaries = [summarize_activity(a) for a in all_activities]
+    return _tool_result(
+        endpoint_name="fetch_exact_target_activities",
+        gene_symbol=gene_symbol or tid,
+        request_url=last_url,
+        request_params={
+            "target_chembl_id": tid,
+            "limit": limit,
+            "pages_fetched": len(pages),
+            **last_params,
+        },
+        success=True,
+        status_code=last_status,
+        data={
+            "target_chembl_id": tid,
+            "activities": all_activities,
+            "activity_summaries": summaries,
+            "activity_count": len(all_activities),
+            "total_count": total_count if total_count is not None else len(all_activities),
+            "pages_fetched": len(pages),
+            "page_payloads": pages,
+        },
     )
 
 
@@ -589,9 +865,14 @@ __all__ = [
     "summarize_activity",
     "select_target_id",
     "prefer_target_id",
+    "resolve_authoritative_target",
     "default_assay_search_terms",
     "target_search",
     "assay_search",
     "activities",
+    "activities_by_target",
+    "assays_by_target",
+    "is_direct_assay_relationship",
+    "fetch_exact_target_activities",
     "fetch_chemical_tools",
 ]

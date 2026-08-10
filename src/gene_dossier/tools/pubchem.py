@@ -287,6 +287,244 @@ def assay_csv(
     )
 
 
+def _aid_csv(aids: list[str | int]) -> str:
+    return ",".join(str(a).strip() for a in aids if str(a).strip())
+
+
+def assay_descriptions_batch(
+    aids: list[str | int],
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch assay description JSON for comma-separated AIDs."""
+    cfg = settings or get_settings()
+    aid_str = _aid_csv(aids)
+    if not aid_str:
+        return _tool_result(
+            endpoint_name="assay_descriptions_batch",
+            gene_symbol=gene_symbol,
+            request_url=f"{PUG_BASE}/assay/aid/description/JSON",
+            request_params={"aids": []},
+            success=False,
+            error_type="invalid_request",
+            error_message="assay_descriptions_batch requires at least one AID",
+        )
+    url = f"{PUG_BASE}/assay/aid/{aid_str}/description/JSON"
+    return _request(
+        endpoint_name="assay_descriptions_batch",
+        gene_symbol=gene_symbol or aid_str,
+        url=url,
+        request_params={"aids": aid_str},
+        settings=cfg,
+        expect_json=True,
+    )
+
+
+def assay_targets_geneid_symbol_batch(
+    aids: list[str | int],
+    *,
+    gene_symbol: str = "",
+    settings: Settings | None = None,
+) -> ToolResult:
+    """Fetch assay targets (GeneID,GeneSymbol) for comma-separated AIDs."""
+    cfg = settings or get_settings()
+    aid_str = _aid_csv(aids)
+    if not aid_str:
+        return _tool_result(
+            endpoint_name="assay_targets_geneid_symbol_batch",
+            gene_symbol=gene_symbol,
+            request_url=f"{PUG_BASE}/assay/aid/targets/GeneID,GeneSymbol/JSON",
+            request_params={"aids": []},
+            success=False,
+            error_type="invalid_request",
+            error_message="assay_targets_geneid_symbol_batch requires at least one AID",
+        )
+    url = f"{PUG_BASE}/assay/aid/{aid_str}/targets/GeneID,GeneSymbol/JSON"
+    return _request(
+        endpoint_name="assay_targets_geneid_symbol_batch",
+        gene_symbol=gene_symbol or aid_str,
+        url=url,
+        request_params={"aids": aid_str, "target_fields": "GeneID,GeneSymbol"},
+        settings=cfg,
+        expect_json=True,
+    )
+
+
+def _norm_token(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _description_accessions(description_payload: Any) -> list[str]:
+    accessions: list[str] = []
+    if not isinstance(description_payload, dict):
+        return accessions
+    containers = description_payload.get("PC_AssayContainer") or []
+    if not isinstance(containers, list):
+        return accessions
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        assay = container.get("assay") if isinstance(container.get("assay"), dict) else {}
+        descr = assay.get("descr") if isinstance(assay.get("descr"), dict) else {}
+        targets = descr.get("target") or []
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            mol = target.get("mol_id") if isinstance(target.get("mol_id"), dict) else {}
+            for key in ("protein_accession", "accession", "uniprot"):
+                acc = mol.get(key)
+                if acc:
+                    accessions.append(str(acc).strip().upper())
+    return accessions
+
+
+def _description_gene_ids_symbols(description_payload: Any) -> tuple[list[str], list[str]]:
+    gene_ids: list[str] = []
+    symbols: list[str] = []
+    if not isinstance(description_payload, dict):
+        return gene_ids, symbols
+    containers = description_payload.get("PC_AssayContainer") or []
+    if not isinstance(containers, list):
+        return gene_ids, symbols
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        assay = container.get("assay") if isinstance(container.get("assay"), dict) else {}
+        descr = assay.get("descr") if isinstance(assay.get("descr"), dict) else {}
+        targets = descr.get("target") or []
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            mol = target.get("mol_id") if isinstance(target.get("mol_id"), dict) else {}
+            for key in ("gene_id", "geneid", "GeneID"):
+                gid = mol.get(key)
+                if gid is not None and str(gid).strip():
+                    gene_ids.append(str(gid).strip())
+            name = target.get("name")
+            if name:
+                symbols.append(str(name).strip())
+    return gene_ids, symbols
+
+
+def _description_chembl_target_ids(description_payload: Any) -> list[str]:
+    ids: list[str] = []
+    if not isinstance(description_payload, dict):
+        return ids
+    containers = description_payload.get("PC_AssayContainer") or []
+    if not isinstance(containers, list):
+        return ids
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        assay = container.get("assay") if isinstance(container.get("assay"), dict) else {}
+        descr = assay.get("descr") if isinstance(assay.get("descr"), dict) else {}
+        comments = descr.get("comment") or []
+        if not isinstance(comments, list):
+            continue
+        for comment in comments:
+            text = str(comment or "")
+            upper = text.upper()
+            marker = "TARGET CHEMBL ID:"
+            if marker in upper:
+                # Preserve original casing for the ID token after the marker.
+                idx = upper.index(marker)
+                rest = text[idx + len(marker) :].strip()
+                token = rest.split()[0] if rest.split() else ""
+                if token.upper().startswith("CHEMBL"):
+                    ids.append(token.strip().upper())
+    return ids
+
+
+def _targets_endpoint_gene_ids_symbols(
+    targets_payload: Any,
+) -> tuple[list[str], list[str], int]:
+    """Return (gene_ids, symbols, distinct_target_row_count) from targets JSON."""
+    gene_ids: list[str] = []
+    symbols: list[str] = []
+    if not isinstance(targets_payload, dict):
+        return gene_ids, symbols, 0
+    info_list = targets_payload.get("InformationList") or {}
+    if not isinstance(info_list, dict):
+        return gene_ids, symbols, 0
+    rows = info_list.get("Information") or []
+    if not isinstance(rows, list):
+        return gene_ids, symbols, 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for gid in row.get("GeneID") or []:
+            if gid is not None and str(gid).strip():
+                gene_ids.append(str(gid).strip())
+        for sym in row.get("GeneSymbol") or []:
+            if sym is not None and str(sym).strip():
+                symbols.append(str(sym).strip())
+    return gene_ids, symbols, len(rows)
+
+
+def classify_focused_assay(
+    description_payload: Any,
+    targets_payload: Any,
+    *,
+    uniprot: str | None = None,
+    entrez: str | int | None = None,
+    symbol: str | None = None,
+    chembl_target_id: str | None = None,
+) -> tuple[bool, str]:
+    """Return ``(focused, reason)`` for Section 7a PubChem filtering.
+
+    Focused when any of:
+    - A description protein accession matches ``uniprot``
+    - B description GeneID/symbol matches ``entrez`` / ``symbol``
+    - C description ChEMBL target ID matches ``chembl_target_id``
+    - D targets endpoint has a single focused target reconciling to the gene
+    """
+    want_acc = _norm_token(uniprot)
+    want_entrez = str(entrez).strip() if entrez is not None else ""
+    want_symbol = _norm_token(symbol)
+    want_chembl = _norm_token(chembl_target_id)
+
+    accessions = _description_accessions(description_payload)
+    if want_acc and want_acc in {_norm_token(a) for a in accessions}:
+        return True, f"description_uniprot_match:{want_acc}"
+
+    desc_gids, desc_symbols = _description_gene_ids_symbols(description_payload)
+    if want_entrez and want_entrez in {str(g).strip() for g in desc_gids}:
+        return True, f"description_geneid_match:{want_entrez}"
+    if want_symbol and want_symbol in {_norm_token(s) for s in desc_symbols}:
+        return True, f"description_symbol_match:{want_symbol}"
+
+    chembl_ids = _description_chembl_target_ids(description_payload)
+    if want_chembl and want_chembl in {_norm_token(c) for c in chembl_ids}:
+        return True, f"description_chembl_target_match:{want_chembl}"
+
+    tgt_gids, tgt_symbols, _row_count = _targets_endpoint_gene_ids_symbols(targets_payload)
+    unique_gids = sorted({str(g).strip() for g in tgt_gids if str(g).strip()})
+    unique_syms = sorted({_norm_token(s) for s in tgt_symbols if str(s).strip()})
+    if len(unique_gids) > 5 or len(unique_syms) > 5:
+        return False, "broad_screen_membership_only"
+    if len(unique_gids) <= 1 and len(unique_syms) <= 1 and (unique_gids or unique_syms):
+        if want_entrez and want_entrez in unique_gids:
+            return True, f"targets_endpoint_geneid_match:{want_entrez}"
+        if want_symbol and want_symbol in unique_syms:
+            return True, f"targets_endpoint_symbol_match:{want_symbol}"
+        return False, "target_not_reconciled"
+
+    if isinstance(targets_payload, dict) and targets_payload.get("Fault"):
+        # Common for ChEMBL-imported assays with protein accession but no GeneID targets.
+        if accessions or chembl_ids:
+            return False, "target_not_reconciled"
+        return False, "no_focused_target_metadata"
+
+    if not accessions and not chembl_ids and not desc_gids and not unique_gids:
+        return False, "no_focused_target_metadata"
+    return False, "target_not_reconciled"
+
+
 def fetch_bioassays(
     gene_id: str | int,
     *,
@@ -450,5 +688,8 @@ __all__ = [
     "aids_by_geneid",
     "assay_description",
     "assay_csv",
+    "assay_descriptions_batch",
+    "assay_targets_geneid_symbol_batch",
+    "classify_focused_assay",
     "fetch_bioassays",
 ]

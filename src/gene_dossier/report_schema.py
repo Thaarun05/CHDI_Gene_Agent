@@ -166,6 +166,14 @@ PresentationRole = Literal[
     "section_6a_top_chemicals_figure",
     "section_6a_scientific_caveat",
     "section_6a_source_status",
+    "section_7a_intro",
+    "section_7a_source_status",
+    "section_7a_chembl_line",
+    "section_7a_drugbank_line",
+    "section_7a_pubmed_entry",
+    "section_7a_pubchem_table",
+    "section_7a_ncats_line",
+    "section_7a_caveat",
 ]
 
 
@@ -656,7 +664,18 @@ def resolve_report_slot(record: EvidenceRecord) -> ReportSlot | None:
         return ReportSlot("6", "a")
 
     # --- Section 7: Chemical tools ---
-    if source in {"chembl", "pubchem"}:
+    if assertion is AssertionType.chemical_tool:
+        return ReportSlot("7", "a")
+    if source in {
+        "chembl",
+        "pubchem",
+        "pubtator3",
+        "pubmed",
+        "drugbank",
+        "ncats inxight",
+        "ncats inxight: drugs",
+        "section7a",
+    }:
         return ReportSlot("7", "a")
     if assertion is AssertionType.chemical_interaction and source != "ctd":
         if "tractab" in fact or "tractability" in subsection:
