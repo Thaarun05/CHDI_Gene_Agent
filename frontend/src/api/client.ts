@@ -34,6 +34,32 @@ import {
 const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === 'true'
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
+export function resolveArtifactUrl(
+  url?: string | null,
+  apiBase = API_BASE,
+): string | undefined {
+  if (!url) return undefined
+  if (/^https?:\/\//i.test(url)) return url
+
+  const normalizedApiBase = apiBase.replace(/\/+$/, '')
+  if (url.startsWith('/api/')) {
+    const backendBase = normalizedApiBase.endsWith('/api')
+      ? normalizedApiBase.slice(0, -4)
+      : normalizedApiBase
+    return `${backendBase}${url}`
+  }
+
+  return `${normalizedApiBase}/${url.replace(/^\/+/, '')}`
+}
+
+function normalizeReport(report: ReportArtifact): ReportArtifact {
+  return {
+    ...report,
+    htmlUrl: resolveArtifactUrl(report.htmlUrl),
+    pdfUrl: resolveArtifactUrl(report.pdfUrl),
+  }
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
@@ -223,7 +249,13 @@ export async function getJobArtifacts(jobId: string): Promise<JobArtifactsRespon
       supplementaryArtifacts: [],
     }
   }
-  return http(`/jobs/${encodeURIComponent(jobId)}/artifacts`)
+  const response = await http<JobArtifactsResponse>(
+    `/jobs/${encodeURIComponent(jobId)}/artifacts`,
+  )
+  return {
+    ...response,
+    report: response.report ? normalizeReport(response.report) : null,
+  }
 }
 
 export async function listReports(): Promise<ReportArtifact[]> {
@@ -231,7 +263,8 @@ export async function listReports(): Promise<ReportArtifact[]> {
     await delay()
     return reports
   }
-  return http('/reports')
+  const response = await http<ReportArtifact[]>('/reports')
+  return response.map(normalizeReport)
 }
 
 export async function getReport(id: string): Promise<ReportArtifact> {
@@ -241,7 +274,8 @@ export async function getReport(id: string): Promise<ReportArtifact> {
     if (!report) throw new Error(`Report not found: ${id}`)
     return report
   }
-  return http(`/reports/${encodeURIComponent(id)}`)
+  const response = await http<ReportArtifact>(`/reports/${encodeURIComponent(id)}`)
+  return normalizeReport(response)
 }
 
 export async function askEvidenceQuestion(

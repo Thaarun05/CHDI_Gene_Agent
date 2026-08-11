@@ -273,7 +273,15 @@ _HD_DOSSIER_DEFAULT_SECTIONS: list[str] = [
 DEMO_GENE_REGISTRY: dict[str, dict[str, Any]] = {
     "SREBF2": {
         "report_id": "rep-srebf2",
-        "html_path": PROJECT_ROOT / "data" / "outputs" / "cb9030ab81dc42db80b81dd15d48e653_rancho_report.html",
+        "html_path": (
+            PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "SREBF2_full_1a7a"
+            / "407e1a4293c6424e8b6b830a1f0a7c60"
+            / "section_1.html"
+        ),
         "pdf_path": PROJECT_ROOT / "SREBF2_report" / "SREBF2_report.pdf",
         "base_evidence_run_id": "407e1a4293c6424e8b6b830a1f0a7c60",
         "report_run_id": "cb9030ab81dc42db80b81dd15d48e653",
@@ -288,7 +296,15 @@ DEMO_GENE_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "CDH10": {
         "report_id": "rep-cdh10",
-        "html_path": PROJECT_ROOT / "data" / "outputs" / "ae97cb43e4d94732b72ef86cecc3f40d_rancho_report.html",
+        "html_path": (
+            PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "CDH10_full_1a7a"
+            / "d94f392f4a3941d5a59f697f58d18234"
+            / "section_1.html"
+        ),
         "pdf_path": PROJECT_ROOT / "CDH10 report" / "CDH10_report.pdf",
         "base_evidence_run_id": "d94f392f4a3941d5a59f697f58d18234",
         "report_run_id": "ae97cb43e4d94732b72ef86cecc3f40d",

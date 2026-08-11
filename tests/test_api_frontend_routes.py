@@ -461,6 +461,41 @@ def test_accepted_job_preserves_selected_section_keys() -> None:
     assert job.dossierRunId == "cb9030ab81dc42db80b81dd15d48e653"
 
 
+def test_accepted_report_html_resolves_validated_full_artifacts() -> None:
+    expected = {
+        "SREBF2": (
+            api_main.PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "SREBF2_full_1a7a"
+            / "407e1a4293c6424e8b6b830a1f0a7c60"
+            / "section_1.html"
+        ),
+        "CDH10": (
+            api_main.PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "CDH10_full_1a7a"
+            / "d94f392f4a3941d5a59f697f58d18234"
+            / "section_1.html"
+        ),
+    }
+
+    for gene, expected_path in expected.items():
+        report_id = api_main.DEMO_GENE_REGISTRY[gene]["report_id"]
+        resolved_id, resolved_html, _ = api_main._find_report_files(gene)
+        response = api_main.handle_get_report_html(report_id)
+
+        assert expected_path.exists()
+        assert api_main.DEMO_GENE_REGISTRY[gene]["html_path"] == expected_path
+        assert resolved_id == report_id
+        assert resolved_html == expected_path
+        assert response.path == expected_path
+        assert response.media_type == "text/html"
+
+
 def test_friday_baseline_chemical_perturbations_are_zero() -> None:
     srebf2 = api_main.handle_get_gene_coverage("SREBF2")
     cdh10 = api_main.handle_get_gene_coverage("CDH10")
