@@ -284,7 +284,7 @@ export async function listReports(): Promise<ReportArtifact[]> {
     return reports
   }
   const response = await http<ReportArtifact[]>('/reports')
-  return response.map(normalizeReport)
+  return response.map((report) => normalizeReport(report))
 }
 
 export async function getReport(id: string): Promise<ReportArtifact> {
