@@ -282,7 +282,15 @@ DEMO_GENE_REGISTRY: dict[str, dict[str, Any]] = {
             / "407e1a4293c6424e8b6b830a1f0a7c60"
             / "section_1.html"
         ),
-        "pdf_path": PROJECT_ROOT / "SREBF2_report" / "SREBF2_report.pdf",
+        "pdf_path": (
+            PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "SREBF2_full_1a7a"
+            / "407e1a4293c6424e8b6b830a1f0a7c60"
+            / "section_1.pdf"
+        ),
         "base_evidence_run_id": "407e1a4293c6424e8b6b830a1f0a7c60",
         "report_run_id": "cb9030ab81dc42db80b81dd15d48e653",
         "name": "Sterol regulatory element binding transcription factor 2",
@@ -305,7 +313,15 @@ DEMO_GENE_REGISTRY: dict[str, dict[str, Any]] = {
             / "d94f392f4a3941d5a59f697f58d18234"
             / "section_1.html"
         ),
-        "pdf_path": PROJECT_ROOT / "CDH10 report" / "CDH10_report.pdf",
+        "pdf_path": (
+            PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "CDH10_full_1a7a"
+            / "d94f392f4a3941d5a59f697f58d18234"
+            / "section_1.pdf"
+        ),
         "base_evidence_run_id": "d94f392f4a3941d5a59f697f58d18234",
         "report_run_id": "ae97cb43e4d94732b72ef86cecc3f40d",
         "name": "Cadherin 10",
@@ -1063,12 +1079,12 @@ def handle_get_report_pdf(report_id: str):
     rid = report_id.lower()
     project_root = PROJECT_ROOT
     if rid in {"rep-srebf2", "srebf2"}:
-        pdf_p = project_root / "SREBF2_report" / "SREBF2_report.pdf"
-        if pdf_p.exists():
+        _, _, pdf_p = _find_report_files("SREBF2")
+        if pdf_p and pdf_p.exists():
             return FileResponse(pdf_p, media_type="application/pdf", filename="SREBF2_HD_Dossier.pdf")
     if rid in {"rep-cdh10", "cdh10"}:
-        pdf_p = project_root / "CDH10 report" / "CDH10_report.pdf"
-        if pdf_p.exists():
+        _, _, pdf_p = _find_report_files("CDH10")
+        if pdf_p and pdf_p.exists():
             return FileResponse(pdf_p, media_type="application/pdf", filename="CDH10_HD_Dossier.pdf")
 
     outputs_dir = project_root / "data" / "outputs"

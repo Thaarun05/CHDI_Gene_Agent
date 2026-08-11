@@ -496,6 +496,45 @@ def test_accepted_report_html_resolves_validated_full_artifacts() -> None:
         assert response.media_type == "text/html"
 
 
+def test_accepted_report_pdf_resolves_beside_validated_html() -> None:
+    expected = {
+        "SREBF2": (
+            api_main.PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "SREBF2_full_1a7a"
+            / "407e1a4293c6424e8b6b830a1f0a7c60"
+            / "section_1.pdf",
+            api_main.PROJECT_ROOT / "SREBF2_report" / "SREBF2_report.pdf",
+        ),
+        "CDH10": (
+            api_main.PROJECT_ROOT
+            / "data"
+            / "outputs"
+            / "section_validation"
+            / "CDH10_full_1a7a"
+            / "d94f392f4a3941d5a59f697f58d18234"
+            / "section_1.pdf",
+            api_main.PROJECT_ROOT / "CDH10 report" / "CDH10_report.pdf",
+        ),
+    }
+
+    for gene, (expected_pdf, old_pdf) in expected.items():
+        report_id = api_main.DEMO_GENE_REGISTRY[gene]["report_id"]
+        _, resolved_html, resolved_pdf = api_main._find_report_files(gene)
+        response = api_main.handle_get_report_pdf(report_id)
+
+        assert expected_pdf.exists()
+        assert api_main.DEMO_GENE_REGISTRY[gene]["pdf_path"] == expected_pdf
+        assert resolved_html is not None
+        assert expected_pdf.parent == resolved_html.parent
+        assert resolved_pdf == expected_pdf
+        assert resolved_pdf != old_pdf
+        assert response.path == expected_pdf
+        assert response.media_type == "application/pdf"
+
+
 def test_friday_baseline_chemical_perturbations_are_zero() -> None:
     srebf2 = api_main.handle_get_gene_coverage("SREBF2")
     cdh10 = api_main.handle_get_gene_coverage("CDH10")
