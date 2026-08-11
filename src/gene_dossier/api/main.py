@@ -363,6 +363,11 @@ class JobArtifactsResponseOut(BaseModel):
     supplementaryArtifacts: list[ArtifactOut] = Field(default_factory=list)
 
 
+# Runtime-generated reports share the in-memory lifetime of frontend jobs.
+# Structure: {report_id: {"report": ReportArtifactOut, "html_path": Path, "pdf_path": Path | None}}
+_GENERATED_REPORT_STORE: dict[str, dict[str, Any]] = {}
+
+
 class CitationOut(BaseModel):
     id: str
     label: str
@@ -1048,6 +1053,11 @@ def handle_list_reports() -> list[ReportArtifactOut]:
 
 
 def handle_get_report(report_id: str) -> ReportArtifactOut:
+    with _JOB_STORE_LOCK:
+        generated = _GENERATED_REPORT_STORE.get(report_id)
+    if generated:
+        return generated["report"]
+
     reports = handle_list_reports()
     for r in reports:
         if r.id.lower() == report_id.lower() or r.geneSymbol.lower() in report_id.lower():
@@ -1081,6 +1091,13 @@ def handle_get_report_html(report_id: str):
                 headers=_ACCEPTED_REPORT_CACHE_HEADERS,
             )
 
+    with _JOB_STORE_LOCK:
+        generated = _GENERATED_REPORT_STORE.get(report_id)
+    if generated:
+        html_p = generated["html_path"]
+        if html_p.exists():
+            return FileResponse(html_p, media_type="text/html")
+
     outputs_dir = get_settings().project_root / "data" / "outputs"
     html_p = outputs_dir / f"{report_id}_rancho_report.html"
     if html_p.exists():
@@ -1110,6 +1127,19 @@ def handle_get_report_pdf(report_id: str):
                 filename="CDH10_HD_Dossier.pdf",
                 headers=_ACCEPTED_REPORT_CACHE_HEADERS,
             )
+
+    with _JOB_STORE_LOCK:
+        generated = _GENERATED_REPORT_STORE.get(report_id)
+    if generated:
+        pdf_p = generated["pdf_path"]
+        if pdf_p and pdf_p.exists():
+            report: ReportArtifactOut = generated["report"]
+            return FileResponse(
+                pdf_p,
+                media_type="application/pdf",
+                filename=f"{report.geneSymbol}_HD_Dossier.pdf",
+            )
+        raise HTTPException(status_code=404, detail=f"Report PDF not found: {report_id}")
 
     outputs_dir = project_root / "data" / "outputs"
     pdf_p = outputs_dir / f"{report_id}_rancho_report.pdf"
@@ -1925,9 +1955,38 @@ def _run_section_bundle_job(job_id: str, gene: str, section_keys: list[str]) -> 
             write_pdf=False,  # PDF generation is slow; skip for background jobs
         )
 
-        final_status = result.status  # 'completed' | 'partial' | 'failed'
-        artifact_ids: list[str] = list(result.output_paths.keys())
+        final_status = (result.status or "failed").lower()
         output_paths_str = {k: str(v) for k, v in result.output_paths.items()}
+        completed_at = datetime.now(tz=timezone.utc).isoformat()
+
+        generated_report_id: str | None = None
+        generated_report_entry: dict[str, Any] | None = None
+        html_value = result.output_paths.get("section_1_html")
+        html_path = Path(html_value) if html_value else None
+        if final_status in {"completed", "partial"} and html_path and html_path.is_file():
+            generated_report_id = f"report-{result.dossier_run_id}"
+            pdf_value = result.output_paths.get("section_1_pdf")
+            pdf_path = Path(pdf_value) if pdf_value and Path(pdf_value).is_file() else None
+            report_status = "Completed" if final_status == "completed" else "Partial"
+            generated_report = ReportArtifactOut(
+                id=generated_report_id,
+                geneSymbol=result.gene_symbol,
+                title=f"HD Gene Dossier — {result.gene_symbol}",
+                status=report_status,
+                createdAt=completed_at,
+                sections=[f"Section {key}" for key in section_keys],
+                htmlUrl=f"/api/reports/{generated_report_id}/html",
+                pdfUrl=(
+                    f"/api/reports/{generated_report_id}/pdf" if pdf_path else None
+                ),
+            )
+            generated_report_entry = {
+                "report": generated_report,
+                "html_path": html_path,
+                "pdf_path": pdf_path,
+            }
+
+        artifact_ids = [generated_report_id] if generated_report_id else []
 
         # Build stages from section_keys
         stages = [
@@ -1935,9 +1994,10 @@ def _run_section_bundle_job(job_id: str, gene: str, section_keys: list[str]) -> 
             for k in section_keys
         ]
 
-        completed_at = datetime.now(tz=timezone.utc).isoformat()
         with _JOB_STORE_LOCK:
             if job_id in _JOB_STORE:
+                if generated_report_id and generated_report_entry:
+                    _GENERATED_REPORT_STORE[generated_report_id] = generated_report_entry
                 job_out = _JOB_STORE[job_id]["job"]
                 job_out.status = final_status.capitalize() if final_status else "Completed"
                 job_out.stages = stages
@@ -2102,7 +2162,7 @@ def get_job_artifacts_endpoint(job_id: str) -> JobArtifactsResponseOut:
 
     supplementary: list[ArtifactOut] = []
     for key, path_str in output_paths.items():
-        if report and key in {"html", "pdf"}:
+        if report and key in {"html", "pdf", "section_1_html", "section_1_pdf"}:
             continue
         p = Path(path_str)
         supplementary.append(

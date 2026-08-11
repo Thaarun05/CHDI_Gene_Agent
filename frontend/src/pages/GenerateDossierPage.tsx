@@ -40,15 +40,34 @@ export function GenerateDossierPage() {
   const [useAccepted, setUseAccepted] = useState(true)
   const [job, setJob] = useState<WorkflowJob | null>(null)
   const [artifact, setArtifact] = useState<ReportArtifact | null>(null)
+  const [artifactResolved, setArtifactResolved] = useState(false)
   const [starting, setStarting] = useState(false)
 
+  async function loadArtifacts(jobId: string) {
+    setArtifactResolved(false)
+    try {
+      const artifacts = await getJobArtifacts(jobId)
+      setArtifact(artifacts.report)
+    } catch {
+      setArtifact(null)
+    } finally {
+      setArtifactResolved(true)
+    }
+  }
+
   useEffect(() => {
-    if (!job || job.status === 'Completed' || job.status === 'Failed') return
+    if (
+      !job ||
+      job.status === 'Completed' ||
+      job.status === 'Partial' ||
+      job.status === 'Failed'
+    )
+      return
     const t = setInterval(() => {
       void getJob(job.id).then((j) => {
         setJob(j)
-        if (j.status === 'Completed') {
-          void getJobArtifacts(j.id).then((artifacts) => setArtifact(artifacts.report))
+        if (j.status === 'Completed' || j.status === 'Partial') {
+          void loadArtifacts(j.id)
         }
       })
     }, 700)
@@ -58,15 +77,15 @@ export function GenerateDossierPage() {
   async function onGenerate() {
     setStarting(true)
     setArtifact(null)
+    setArtifactResolved(false)
     try {
       const j = await startDossierJob(gene, {
         sectionKeys: sectionKeysFor(selected),
         useExistingAccepted: useAccepted,
       })
       setJob(j)
-      if (j.status === 'Completed') {
-        const artifacts = await getJobArtifacts(j.id)
-        setArtifact(artifacts.report)
+      if (j.status === 'Completed' || j.status === 'Partial') {
+        await loadArtifacts(j.id)
       }
     } finally {
       setStarting(false)
@@ -151,20 +170,32 @@ export function GenerateDossierPage() {
 
       {job && <JobProgress job={job} />}
 
-      {job?.status === 'Completed' && (
+      {(job?.status === 'Completed' || job?.status === 'Partial') && (
         <div className="surface-card flex flex-wrap gap-2 p-5">
-          <Link
-            to={`/reports/${artifact?.id ?? 'rep-srebf2'}`}
-            className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text transition hover:border-accent/40"
-          >
-            View Interactive Report
-          </Link>
-          <a
-            href={artifact?.pdfUrl || '#'}
-            className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-secondary"
-          >
-            Download PDF
-          </a>
+          {!artifactResolved ? (
+            <span className="px-1 py-2.5 text-sm text-text-muted">
+              Loading report artifact…
+            </span>
+          ) : artifact?.id ? (
+            <Link
+              to={`/reports/${artifact.id}`}
+              className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text transition hover:border-accent/40"
+            >
+              View Interactive Report
+            </Link>
+          ) : (
+            <span className="px-1 py-2.5 text-sm text-text-muted">
+              Report artifact is not available.
+            </span>
+          )}
+          {artifact?.pdfUrl && (
+            <a
+              href={artifact.pdfUrl}
+              className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-secondary"
+            >
+              Download PDF
+            </a>
+          )}
           <button
             type="button"
             className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-secondary"

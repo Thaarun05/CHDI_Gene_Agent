@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from gene_dossier.api import main as api_main
 from gene_dossier import synthesis
 from gene_dossier.models import AssertionType, EvidenceGrade, EvidenceRecord, SourceType
+from gene_dossier.section_bundle import SectionBundleResult
 
 
 class _Result:
@@ -95,6 +99,217 @@ def _evidence_record(
         evidence_grade=EvidenceGrade.C,
         display_text="Stored test evidence.",
     )
+
+
+def _run_fake_section_bundle_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    run_id: str,
+    status: str,
+    include_html: bool,
+    gene: str = "CDH10",
+) -> dict[str, object]:
+    output_dir = tmp_path / run_id
+    output_dir.mkdir()
+    presentation_path = output_dir / "section_1.json"
+    audit_path = output_dir / "section_1_audit.json"
+    html_path = output_dir / "section_1.html"
+    presentation_path.write_text("{}\n", encoding="utf-8")
+    audit_path.write_text("{}\n", encoding="utf-8")
+    if include_html:
+        html_path.write_text("<html><body>Fresh report</body></html>", encoding="utf-8")
+
+    output_paths = {
+        "section_1_json": presentation_path,
+        "section_1_audit_json": audit_path,
+    }
+    if include_html:
+        output_paths["section_1_html"] = html_path
+
+    result = SectionBundleResult(
+        gene_symbol=gene,
+        dossier_run_id=run_id,
+        selected_section_keys=["1a", "5a", "5b"],
+        output_dir=output_dir,
+        output_paths=output_paths,
+        status=status,
+    )
+    job_id = f"job-{run_id}"
+    report_id = f"report-{run_id}"
+    job = api_main.WorkflowJobOut(
+        id=job_id,
+        geneSymbol=gene,
+        jobType="hd_dossier",
+        status="Queued",
+        stages=[],
+        createdAt="2026-08-11T00:00:00+00:00",
+        artifactIds=None,
+        sectionKeys=["1a", "5a", "5b"],
+        errors=[],
+    )
+    with api_main._JOB_STORE_LOCK:
+        api_main._JOB_STORE[job_id] = {
+            "job": job,
+            "dossier_run_id": None,
+            "output_paths": {},
+        }
+        api_main._GENERATED_REPORT_STORE.pop(report_id, None)
+
+    monkeypatch.setattr(
+        api_main,
+        "run_section_bundle",
+        lambda *_args, **_kwargs: result,
+    )
+    api_main._run_section_bundle_job(job_id, gene, ["1a", "5a", "5b"])
+    return {
+        "job_id": job_id,
+        "report_id": report_id,
+        "run_id": run_id,
+        "html_path": html_path,
+    }
+
+
+def _clean_fake_section_bundle_job(info: dict[str, object]) -> None:
+    with api_main._JOB_STORE_LOCK:
+        api_main._JOB_STORE.pop(str(info["job_id"]), None)
+        api_main._GENERATED_REPORT_STORE.pop(str(info["report_id"]), None)
+
+
+@pytest.fixture
+def completed_fresh_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="fresh-run-test-123",
+        status="completed",
+        include_html=True,
+    )
+    try:
+        yield info
+    finally:
+        _clean_fake_section_bundle_job(info)
+
+
+def test_fresh_job_uses_generated_report_id(completed_fresh_job) -> None:
+    job = api_main.get_job_endpoint(str(completed_fresh_job["job_id"]))
+
+    assert job.status == "Completed"
+    assert job.dossierRunId == "fresh-run-test-123"
+    assert job.artifactIds == ["report-fresh-run-test-123"]
+    assert not any(key.startswith("section_1_") for key in job.artifactIds)
+
+
+def test_fresh_job_artifacts_returns_generated_report(completed_fresh_job) -> None:
+    artifacts = api_main.get_job_artifacts_endpoint(str(completed_fresh_job["job_id"]))
+
+    assert artifacts.dossierRunId == "fresh-run-test-123"
+    assert artifacts.report is not None
+    assert artifacts.report.id == "report-fresh-run-test-123"
+    assert artifacts.report.geneSymbol == "CDH10"
+    assert artifacts.report.htmlUrl.endswith(
+        "/api/reports/report-fresh-run-test-123/html"
+    )
+    assert artifacts.report.pdfUrl is None
+
+
+def test_generated_report_metadata_and_exact_html_resolve(completed_fresh_job) -> None:
+    report_id = str(completed_fresh_job["report_id"])
+    report = api_main.handle_get_report(report_id)
+    response = api_main.handle_get_report_html(report_id)
+
+    assert report.id == report_id
+    assert report.geneSymbol == "CDH10"
+    assert report.sections == ["Section 1a", "Section 5a", "Section 5b"]
+    assert response.path == completed_fresh_job["html_path"]
+    assert response.media_type == "text/html"
+
+
+def test_generated_report_pdf_is_unavailable(completed_fresh_job) -> None:
+    with pytest.raises(api_main.HTTPException) as exc_info:
+        api_main.handle_get_report_pdf(str(completed_fresh_job["report_id"]))
+
+    assert exc_info.value.status_code == 404
+
+
+def test_generated_primary_html_is_not_supplementary(completed_fresh_job) -> None:
+    artifacts = api_main.get_job_artifacts_endpoint(str(completed_fresh_job["job_id"]))
+    supplementary_ids = {artifact.id for artifact in artifacts.supplementaryArtifacts}
+
+    assert "section_1_html" not in supplementary_ids
+    assert supplementary_ids == {"section_1_json", "section_1_audit_json"}
+
+
+def test_partial_fresh_job_preserves_status_and_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="fresh-partial-test-123",
+        status="partial",
+        include_html=True,
+    )
+    try:
+        job = api_main.get_job_endpoint(str(info["job_id"]))
+        artifacts = api_main.get_job_artifacts_endpoint(str(info["job_id"]))
+
+        assert job.status == "Partial"
+        assert job.artifactIds == ["report-fresh-partial-test-123"]
+        assert artifacts.report is not None
+        assert artifacts.report.status == "Partial"
+    finally:
+        _clean_fake_section_bundle_job(info)
+
+
+def test_failed_fresh_job_does_not_advertise_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="fresh-failed-test-123",
+        status="failed",
+        include_html=True,
+    )
+    try:
+        job = api_main.get_job_endpoint(str(info["job_id"]))
+        artifacts = api_main.get_job_artifacts_endpoint(str(info["job_id"]))
+
+        assert job.status == "Failed"
+        assert job.artifactIds == []
+        assert artifacts.report is None
+        with pytest.raises(api_main.HTTPException):
+            api_main.handle_get_report(str(info["report_id"]))
+    finally:
+        _clean_fake_section_bundle_job(info)
+
+
+def test_fresh_job_without_html_does_not_advertise_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="fresh-no-html-test-123",
+        status="completed",
+        include_html=False,
+    )
+    try:
+        job = api_main.get_job_endpoint(str(info["job_id"]))
+        artifacts = api_main.get_job_artifacts_endpoint(str(info["job_id"]))
+
+        assert job.status == "Completed"
+        assert job.artifactIds == []
+        assert artifacts.report is None
+    finally:
+        _clean_fake_section_bundle_job(info)
 
 
 def test_pharmacology_question_scopes_to_chemical_evidence() -> None:
@@ -455,10 +670,40 @@ def test_accepted_job_preserves_selected_section_keys() -> None:
             "sections": ["5a", "5b"],
         }
     )
+    try:
+        assert job.status == "Completed"
+        assert job.sectionKeys == ["5a", "5b"]
+        assert job.dossierRunId == "cb9030ab81dc42db80b81dd15d48e653"
+        assert job.artifactIds == ["rep-srebf2"]
+    finally:
+        with api_main._JOB_STORE_LOCK:
+            api_main._JOB_STORE.pop(job.id, None)
 
-    assert job.status == "Completed"
-    assert job.sectionKeys == ["5a", "5b"]
-    assert job.dossierRunId == "cb9030ab81dc42db80b81dd15d48e653"
+
+def test_accepted_cdh10_job_keeps_registered_report_id() -> None:
+    job = api_main.create_job_endpoint(
+        {
+            "gene_symbol": "CDH10",
+            "use_existing_accepted": True,
+            "sections": ["5a", "5b"],
+        }
+    )
+    try:
+        assert job.status == "Completed"
+        assert job.dossierRunId == "ae97cb43e4d94732b72ef86cecc3f40d"
+        assert job.artifactIds == ["rep-cdh10"]
+    finally:
+        with api_main._JOB_STORE_LOCK:
+            api_main._JOB_STORE.pop(job.id, None)
+
+
+def test_generate_page_has_no_accepted_report_fallback() -> None:
+    source = (
+        api_main.PROJECT_ROOT / "frontend" / "src" / "pages" / "GenerateDossierPage.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "artifact?.id ?? 'rep-srebf2'" not in source
+    assert "Report artifact is not available." in source
 
 
 def test_accepted_report_html_resolves_validated_full_artifacts() -> None:
