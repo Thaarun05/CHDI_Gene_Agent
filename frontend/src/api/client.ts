@@ -52,11 +52,31 @@ export function resolveArtifactUrl(
   return `${normalizedApiBase}/${url.replace(/^\/+/, '')}`
 }
 
-function normalizeReport(report: ReportArtifact): ReportArtifact {
+export function addArtifactVersion(
+  url: string | undefined,
+  version: string,
+): string | undefined {
+  if (!url) return undefined
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}v=${encodeURIComponent(version)}`
+}
+
+export function normalizeReport(
+  report: ReportArtifact,
+  apiBase = API_BASE,
+): ReportArtifact {
+  const version = report.createdAt || report.id
+
   return {
     ...report,
-    htmlUrl: resolveArtifactUrl(report.htmlUrl),
-    pdfUrl: resolveArtifactUrl(report.pdfUrl),
+    htmlUrl: addArtifactVersion(
+      resolveArtifactUrl(report.htmlUrl, apiBase),
+      version,
+    ),
+    pdfUrl: addArtifactVersion(
+      resolveArtifactUrl(report.pdfUrl, apiBase),
+      version,
+    ),
   }
 }
 
