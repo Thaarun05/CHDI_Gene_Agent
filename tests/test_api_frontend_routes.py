@@ -494,6 +494,8 @@ def test_accepted_report_html_resolves_validated_full_artifacts() -> None:
         assert resolved_html == expected_path
         assert response.path == expected_path
         assert response.media_type == "text/html"
+        assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate"
+        assert response.headers["pragma"] == "no-cache"
 
 
 def test_accepted_report_pdf_resolves_beside_validated_html() -> None:
@@ -533,6 +535,8 @@ def test_accepted_report_pdf_resolves_beside_validated_html() -> None:
         assert resolved_pdf != old_pdf
         assert response.path == expected_pdf
         assert response.media_type == "application/pdf"
+        assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate"
+        assert response.headers["pragma"] == "no-cache"
 
 
 def test_friday_baseline_chemical_perturbations_are_zero() -> None:

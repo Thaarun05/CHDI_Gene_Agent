@@ -1056,16 +1056,30 @@ def handle_get_report(report_id: str) -> ReportArtifactOut:
     raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
 
 
+_ACCEPTED_REPORT_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+}
+
+
 def handle_get_report_html(report_id: str):
     rid = report_id.lower()
     if rid in {"rep-srebf2", "srebf2"}:
         run_id, html_p, _ = _find_report_files("SREBF2")
         if html_p and html_p.exists():
-            return FileResponse(html_p, media_type="text/html")
+            return FileResponse(
+                html_p,
+                media_type="text/html",
+                headers=_ACCEPTED_REPORT_CACHE_HEADERS,
+            )
     if rid in {"rep-cdh10", "cdh10"}:
         run_id, html_p, _ = _find_report_files("CDH10")
         if html_p and html_p.exists():
-            return FileResponse(html_p, media_type="text/html")
+            return FileResponse(
+                html_p,
+                media_type="text/html",
+                headers=_ACCEPTED_REPORT_CACHE_HEADERS,
+            )
 
     outputs_dir = get_settings().project_root / "data" / "outputs"
     html_p = outputs_dir / f"{report_id}_rancho_report.html"
@@ -1081,11 +1095,21 @@ def handle_get_report_pdf(report_id: str):
     if rid in {"rep-srebf2", "srebf2"}:
         _, _, pdf_p = _find_report_files("SREBF2")
         if pdf_p and pdf_p.exists():
-            return FileResponse(pdf_p, media_type="application/pdf", filename="SREBF2_HD_Dossier.pdf")
+            return FileResponse(
+                pdf_p,
+                media_type="application/pdf",
+                filename="SREBF2_HD_Dossier.pdf",
+                headers=_ACCEPTED_REPORT_CACHE_HEADERS,
+            )
     if rid in {"rep-cdh10", "cdh10"}:
         _, _, pdf_p = _find_report_files("CDH10")
         if pdf_p and pdf_p.exists():
-            return FileResponse(pdf_p, media_type="application/pdf", filename="CDH10_HD_Dossier.pdf")
+            return FileResponse(
+                pdf_p,
+                media_type="application/pdf",
+                filename="CDH10_HD_Dossier.pdf",
+                headers=_ACCEPTED_REPORT_CACHE_HEADERS,
+            )
 
     outputs_dir = project_root / "data" / "outputs"
     pdf_p = outputs_dir / f"{report_id}_rancho_report.pdf"
