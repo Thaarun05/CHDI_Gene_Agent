@@ -3,17 +3,22 @@ import { Paperclip, Send, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const SUGGESTIONS = ['SREBF2', 'CDH10', 'Chemical tools', 'Protein interactions']
+const GENE_OPTIONS = ['SREBF2', 'CDH10'] as const
 
 export function SearchComposer({
   value,
   onChange,
   onSubmit,
+  selectedGene,
+  onSelectGene,
   placeholder = 'Ask about a gene, target, pathway, compound, or evidence question...',
   className,
 }: {
   value: string
   onChange: (v: string) => void
   onSubmit: () => void
+  selectedGene?: string
+  onSelectGene?: (gene: string) => void
   placeholder?: string
   className?: string
 }) {
@@ -69,18 +74,22 @@ export function SearchComposer({
                 onClick={() => setGeneOpen((o) => !o)}
                 className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary transition hover:bg-white/5"
               >
-                Gene / Target
+                {selectedGene ? `Target Gene: ${selectedGene}` : 'Gene / Target'}
                 <ChevronDown className="size-3" />
               </button>
               {geneOpen && (
                 <div className="absolute bottom-full left-0 mb-1 w-36 overflow-hidden rounded-xl border border-border bg-card-elevated shadow-xl">
-                  {['SREBF2', 'CDH10'].map((g) => (
+                  {GENE_OPTIONS.map((g) => (
                     <button
                       key={g}
                       type="button"
                       className="block w-full px-3 py-2 text-left text-xs text-text-secondary hover:bg-white/5 hover:text-text"
                       onClick={() => {
-                        onChange(value ? `${value} ${g}` : g)
+                        if (onSelectGene) {
+                          onSelectGene(g)
+                        } else {
+                          onChange(value ? `${value} ${g}` : g)
+                        }
                         setGeneOpen(false)
                       }}
                     >
@@ -119,7 +128,13 @@ export function SearchComposer({
           <button
             key={s}
             type="button"
-            onClick={() => onChange(s)}
+            onClick={() => {
+              if (onSelectGene && GENE_OPTIONS.includes(s as (typeof GENE_OPTIONS)[number])) {
+                onSelectGene(s)
+              } else {
+                onChange(s)
+              }
+            }}
             className="rounded-full border border-border bg-bg-secondary/80 px-3.5 py-1.5 text-xs text-text-secondary transition hover:border-accent/35 hover:text-text"
           >
             {s}

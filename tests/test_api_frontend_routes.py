@@ -622,7 +622,55 @@ def test_local_minilm_backend_can_label_semantic(monkeypatch) -> None:
     assert hits == [semantic_hit]
 
 
-def test_llm_output_with_invented_evidence_id_falls_back(monkeypatch) -> None:
+def test_llm_output_with_valid_ordinal_citation_is_accepted(monkeypatch) -> None:
+    valid = "a" * 32
+    record = _evidence_record(
+        section="Chemical tools",
+        source_name="ChEMBL",
+        assertion_type=AssertionType.chemical_tool,
+    ).model_copy(update={"id": valid})
+    hit = api_main.RetrievalHit(
+        record=record,
+        score=0.9,
+        method="semantic",
+        source_id=f"{record.dossier_run_id}:{record.id}",
+    )
+
+    class _Settings:
+        def has_llm(self):
+            return True
+
+    class _Model:
+        def invoke(self, _prompt):
+            return "Grounded answer supported by stored chemical-tool evidence. [[1]]"
+
+    monkeypatch.setattr(api_main, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        synthesis,
+        "build_chat_model_candidates",
+        lambda _settings: [SimpleNamespace(provider="fake", model=_Model())],
+    )
+
+    summary, method = api_main._try_grounded_llm_summary(
+        question="Can this be manipulated?",
+        gene="SREBF2",
+        hits=[hit],
+    )
+
+    assert summary == "Grounded answer supported by stored chemical-tool evidence. [[1]]"
+    assert method == "grounded_llm"
+
+
+@pytest.mark.parametrize(
+    "response_template",
+    [
+        "Grounded answer without a citation marker.",
+        "Grounded answer with an out-of-range marker. [[2]]",
+        "Grounded answer exposes EvidenceRecord {valid}. [[1]]",
+        "Grounded answer exposes invented ID {invented}. [[1]]",
+    ],
+)
+def test_invalid_llm_citation_output_falls_back(monkeypatch, response_template: str) -> None:
     valid = "a" * 32
     invented = "b" * 32
     record = _evidence_record(
@@ -643,7 +691,7 @@ def test_llm_output_with_invented_evidence_id_falls_back(monkeypatch) -> None:
 
     class _Model:
         def invoke(self, _prompt):
-            return f"Grounded answer cites EvidenceRecord {valid} and EvidenceRecord {invented}."
+            return response_template.format(valid=valid, invented=invented)
 
     monkeypatch.setattr(api_main, "get_settings", lambda: _Settings())
     monkeypatch.setattr(
@@ -660,6 +708,37 @@ def test_llm_output_with_invented_evidence_id_falls_back(monkeypatch) -> None:
 
     assert summary is None
     assert method == "deterministic"
+
+
+def test_deterministic_summary_uses_ordinals_and_redacts_record_ids() -> None:
+    evidence_id = "a" * 32
+    record = _evidence_record(
+        section="Chemical tools",
+        source_name="ChEMBL",
+        assertion_type=AssertionType.chemical_tool,
+    ).model_copy(
+        update={
+            "id": evidence_id,
+            "display_text": f"EvidenceRecord {evidence_id} supports the retrieved claim.",
+        }
+    )
+    hit = api_main.RetrievalHit(
+        record=record,
+        score=0.9,
+        method="semantic",
+        source_id=f"{record.dossier_run_id}:{record.id}",
+    )
+
+    summary = api_main._deterministic_grounded_summary(
+        gene="SREBF2",
+        hits=[hit],
+        retrieval_method="semantic",
+        category="chemical_tool",
+    )
+
+    assert "[[1]]" in summary
+    assert evidence_id not in summary
+    assert "[1]" not in summary.replace("[[1]]", "")
 
 
 def test_accepted_job_preserves_selected_section_keys() -> None:
@@ -704,6 +783,36 @@ def test_generate_page_has_no_accepted_report_fallback() -> None:
 
     assert "artifact?.id ?? 'rep-srebf2'" not in source
     assert "Report artifact is not available." in source
+
+
+def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
+    frontend_root = api_main.PROJECT_ROOT / "frontend" / "src"
+    ask_source = (frontend_root / "pages" / "AskPage.tsx").read_text(encoding="utf-8")
+    composer_source = (frontend_root / "components" / "SearchComposer.tsx").read_text(
+        encoding="utf-8"
+    )
+    activity_source = (frontend_root / "components" / "AgentActivity.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const [selectedGene, setSelectedGene]" in ask_source
+    assert "const initialQ = params.get('q') ?? ''" in ask_source
+    assert "useState<AskGene>(initialGene)" in ask_source
+    assert "if (initialQ.trim())" in ask_source
+    assert "void submit(initialQ)" in ask_source
+    assert "What evidence suggests SREBF2 can be pharmacologically manipulated?" not in ask_source
+    assert "const requestGene = selectedGene" in ask_source
+    assert "askEvidenceQuestion(q, requestGene" in ask_source
+    assert "requestGeneration.current" in ask_source
+    assert "setResponse(null)" in ask_source
+    assert "new URLSearchParams(current)" in ask_source
+    assert "next.set('gene', gene)" in ask_source
+    assert "response.citations[ordinal - 1]" in ask_source
+    assert "<AgentActivity steps={response.agentActivity} />" in ask_source
+    assert "onSelectGene={selectGene}" in ask_source
+    assert "onSelectGene(g)" in composer_source
+    assert "const isActive = loading && i === steps.length - 1" in activity_source
+    assert "const isLast = i === steps.length - 1" not in activity_source
 
 
 def test_accepted_report_html_resolves_validated_full_artifacts() -> None:

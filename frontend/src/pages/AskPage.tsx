@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { askEvidenceQuestion } from '@/api/client'
 import type { AskResponse } from '@/api/types'
@@ -8,19 +8,25 @@ import { CitationChip } from '@/components/CitationChip'
 import { LoadingSkeleton } from '@/components/EmptyState'
 import { TopBar } from '@/components/TopBar'
 
+type AskGene = 'SREBF2' | 'CDH10'
+
+function parseAskGene(value: string | null): AskGene {
+  return value?.trim().toUpperCase() === 'CDH10' ? 'CDH10' : 'SREBF2'
+}
+
 export function AskPage() {
-  const [params] = useSearchParams()
-  const initialQ =
-    params.get('q') ||
-    'What evidence suggests SREBF2 can be pharmacologically manipulated?'
-  const gene = params.get('gene') || 'SREBF2'
+  const [params, setParams] = useSearchParams()
+  const initialQ = params.get('q') ?? ''
+  const initialGene = parseAskGene(params.get('gene'))
   const refreshIfAvailable =
     params.get('refresh_if_available') === 'true' || params.get('refresh') === 'true'
 
   const [query, setQuery] = useState(initialQ)
+  const [selectedGene, setSelectedGene] = useState<AskGene>(initialGene)
   const [loading, setLoading] = useState(false)
   const [response, setResponse] = useState<AskResponse | null>(null)
   const [detail, setDetail] = useState<'evidence' | 'sources' | 'tools' | null>(null)
+  const requestGeneration = useRef(0)
 
   const citationMap = useMemo(() => {
     const m = new Map<string, AskResponse['citations'][number]>()
@@ -29,20 +35,42 @@ export function AskPage() {
   }, [response])
 
   async function submit(q = query) {
+    const generation = ++requestGeneration.current
+    const requestGene = selectedGene
     setLoading(true)
     setDetail(null)
     try {
-      const res = await askEvidenceQuestion(q, gene, {
+      const res = await askEvidenceQuestion(q, requestGene, {
         refreshIfAvailable,
       })
-      setResponse(res)
+      if (generation === requestGeneration.current) {
+        setResponse(res)
+      }
     } finally {
-      setLoading(false)
+      if (generation === requestGeneration.current) {
+        setLoading(false)
+      }
     }
   }
 
+  function selectGene(value: string) {
+    const gene = parseAskGene(value)
+    requestGeneration.current += 1
+    setSelectedGene(gene)
+    setResponse(null)
+    setDetail(null)
+    setLoading(false)
+    setParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('gene', gene)
+      return next
+    }, { replace: true })
+  }
+
   useEffect(() => {
-    void submit(initialQ)
+    if (initialQ.trim()) {
+      void submit(initialQ)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -60,13 +88,20 @@ export function AskPage() {
         </p>
       </div>
 
-      <SearchComposer value={query} onChange={setQuery} onSubmit={() => void submit()} />
+      <SearchComposer
+        value={query}
+        onChange={setQuery}
+        onSubmit={() => void submit()}
+        selectedGene={selectedGene}
+        onSelectGene={selectGene}
+      />
 
       {loading && (
         <div className="space-y-4">
           <AgentActivity
+            loading={loading}
             steps={[
-              `Resolved ${gene.toUpperCase()}`,
+              `Resolved ${selectedGene}`,
               'Searching stored evidence',
               'Checking chemical-tool evidence',
               'Building grounded answer',
@@ -101,7 +136,9 @@ export function AskPage() {
               <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
                 Summary
               </h2>
-              <p className="mt-2 text-[15px] leading-relaxed text-text">{response.summary}</p>
+              <p className="mt-2 text-[15px] leading-relaxed text-text">
+                <InlineCitationSummary response={response} />
+              </p>
             </section>
 
             <section>
@@ -202,6 +239,26 @@ export function AskPage() {
       )}
     </div>
   )
+}
+
+function InlineCitationSummary({ response }: { response: AskResponse }) {
+  return response.summary.split(/(\[\[\d+\]\])/g).map((part, index) => {
+    const marker = /^\[\[(\d+)\]\]$/.exec(part)
+    if (!marker) return part
+
+    const ordinal = Number(marker[1])
+    const citation = response.citations[ordinal - 1]
+    if (!citation) return part
+
+    return (
+      <CitationChip
+        key={`${ordinal}-${index}`}
+        label={`[${ordinal}]`}
+        evidenceRecordId={citation.evidenceRecordId}
+        className="mx-0.5"
+      />
+    )
+  })
 }
 
 function MetaButton({

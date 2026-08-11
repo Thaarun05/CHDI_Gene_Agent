@@ -282,7 +282,7 @@ export const askResponseSrebf2: AskResponse = {
   dossierRunIds: ['407e1a4293c6424e8b6b830a1f0a7c60'],
   evidenceUniverse: 'accepted_demo',
   summary:
-    'Stored dossier evidence indicates SREBF2 has small-molecule and chemical-tool signals across ChEMBL, PubMed tool literature, and PubChem focused assays. These records support pharmacological manipulation as a research hypothesis, with source-specific limitations.',
+    'Stored dossier evidence indicates SREBF2 has small-molecule and chemical-tool signals across ChEMBL, PubMed tool literature, and PubChem focused assays. [[1]] [[2]] [[3]] These records support pharmacological manipulation as a research hypothesis, with source-specific limitations.',
   evidenceBlocks: [
     {
       sourceGroup: 'ChEMBL',

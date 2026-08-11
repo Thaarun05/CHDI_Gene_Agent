@@ -1498,6 +1498,30 @@ def _execute_controlled_tool(gene: str, tool_name: str, spec: dict[str, Any]) ->
         return activity
 
 
+_CITATION_MARKER_RE = re.compile(r"\[\[(\d+)\]\]")
+_HEX_EVIDENCE_ID_RE = re.compile(r"\b[a-f0-9]{32}\b", re.IGNORECASE)
+_EVIDENCE_RECORD_LABEL_RE = re.compile(
+    r"\bEvidenceRecord(?:\s+ID)?[:#\s]+([A-Za-z0-9_.:-]+)",
+    re.IGNORECASE,
+)
+
+
+def _contains_raw_evidence_id(text: str, evidence_ids: list[str]) -> bool:
+    return (
+        any(evidence_id and evidence_id in text for evidence_id in evidence_ids)
+        or bool(_EVIDENCE_RECORD_LABEL_RE.search(text))
+        or bool(_HEX_EVIDENCE_ID_RE.search(text))
+    )
+
+
+def _redact_raw_evidence_ids(text: str, evidence_ids: list[str]) -> str:
+    redacted = text
+    for evidence_id in sorted((item for item in evidence_ids if item), key=len, reverse=True):
+        redacted = redacted.replace(evidence_id, "stored evidence record")
+    redacted = _EVIDENCE_RECORD_LABEL_RE.sub("stored evidence record", redacted)
+    return _HEX_EVIDENCE_ID_RE.sub("stored evidence record", redacted)
+
+
 def _deterministic_grounded_summary(
     *,
     gene: str,
@@ -1506,38 +1530,30 @@ def _deterministic_grounded_summary(
     category: str | None,
 ) -> str:
     source_set = sorted({h.record.source_name for h in hits if h.record.source_name})
-    snippets = [h.record.display_text for h in hits[:3] if h.record.display_text]
+    evidence_ids = [h.record.id for h in hits]
     lines = [
         f"Retrieved {len(hits)} {gene} evidence records via {retrieval_method} search within {_category_scope_label(category)}.",
     ]
     if source_set:
         lines.append(f"Sources represented: {', '.join(source_set)}.")
+    snippets = [
+        (ordinal, _redact_raw_evidence_ids(hit.record.display_text, evidence_ids))
+        for ordinal, hit in enumerate(hits[:3], start=1)
+        if hit.record.display_text
+    ]
     if snippets:
         lines.append("Representative retrieved evidence:")
-        lines.extend(f"[{i}] {snippet[:260]}" for i, snippet in enumerate(snippets, start=1))
+        lines.extend(f"{snippet[:260]} [[{ordinal}]]" for ordinal, snippet in snippets)
     return " ".join(lines)
 
 
-_HEX_EVIDENCE_ID_RE = re.compile(r"\b[a-f0-9]{32}\b", re.IGNORECASE)
-_EVIDENCE_RECORD_LABEL_RE = re.compile(
-    r"\bEvidenceRecord(?:\s+ID)?[:#\s]+([A-Za-z0-9_.:-]+)",
-    re.IGNORECASE,
-)
-
-
-def _extract_cited_evidence_ids(text: str) -> list[str]:
-    """Extract literal EvidenceRecord identifiers cited by generated text."""
-    candidates: list[str] = []
-    candidates.extend(match.group(1).strip(".,;()[]{}") for match in _EVIDENCE_RECORD_LABEL_RE.finditer(text or ""))
-    candidates.extend(match.group(0) for match in _HEX_EVIDENCE_ID_RE.finditer(text or ""))
-    return _unique_ids(candidates)
-
-
-def _llm_citations_are_supported(text: str, allowed_ids: set[str]) -> bool:
-    cited_ids = _extract_cited_evidence_ids(text)
-    if not cited_ids:
+def _llm_citations_are_supported(text: str, evidence_ids: list[str]) -> bool:
+    ordinals = [int(match.group(1)) for match in _CITATION_MARKER_RE.finditer(text)]
+    if not ordinals:
         return False
-    return all(cited_id in allowed_ids for cited_id in cited_ids)
+    if any(ordinal < 1 or ordinal > len(evidence_ids) for ordinal in ordinals):
+        return False
+    return not _contains_raw_evidence_id(text, evidence_ids)
 
 
 def _try_grounded_llm_summary(
@@ -1556,14 +1572,18 @@ def _try_grounded_llm_summary(
         return None, "deterministic"
 
     evidence_lines = []
-    allowed_ids = {h.record.id for h in hits}
-    for h in hits[:8]:
+    prompt_hits = hits[:8]
+    evidence_ids = [hit.record.id for hit in prompt_hits]
+    for ordinal, h in enumerate(prompt_hits, start=1):
         evidence_lines.append(
-            f"EvidenceRecord {h.record.id} | source={h.record.source_name} | text={h.record.display_text}"
+            f"[[{ordinal}]] | internal EvidenceRecord ID={h.record.id} | "
+            f"source={h.record.source_name} | text={h.record.display_text}"
         )
     prompt = (
         "Answer only from the supplied EvidenceRecords. Do not add outside biology. "
-        "Cite EvidenceRecord IDs literally. State limitations when evidence is thin. "
+        "Cite claims only with the supplied double-bracket ordinal markers such as [[1]]. "
+        "Never write an EvidenceRecord ID in the answer and never invent a citation marker. "
+        "State limitations when evidence is thin. "
         f"Gene: {gene}\nQuestion: {question}\n\n" + "\n".join(evidence_lines)
     )
     for candidate in build_chat_model_candidates(settings):
@@ -1573,7 +1593,7 @@ def _try_grounded_llm_summary(
             if isinstance(text, list):
                 text = " ".join(str(part) for part in text)
             text = str(text).strip()
-            if text and _llm_citations_are_supported(text, allowed_ids):
+            if text and _llm_citations_are_supported(text, evidence_ids):
                 return text, "grounded_llm"
         except Exception as exc:  # noqa: BLE001
             logger.warning("ask: grounded LLM synthesis failed via %s: %s", candidate.provider, exc)

@@ -3,9 +3,11 @@ import { cn } from '@/lib/utils'
 
 export function AgentActivity({
   steps,
+  loading = false,
   className,
 }: {
   steps: string[]
+  loading?: boolean
   className?: string
 }) {
   return (
@@ -15,15 +17,15 @@ export function AgentActivity({
       </p>
       <ul className="space-y-2">
         {steps.map((step, i) => {
-          const isLast = i === steps.length - 1
+          const isActive = loading && i === steps.length - 1
           return (
             <li key={step} className="flex items-center gap-2.5 text-sm">
-              {isLast ? (
+              {isActive ? (
                 <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-secondary" />
               ) : (
                 <CheckCircle2 className="size-3.5 shrink-0 text-accent" />
               )}
-              <span className={cn(isLast ? 'text-text' : 'text-text-secondary')}>{step}</span>
+              <span className={cn(isActive ? 'text-text' : 'text-text-secondary')}>{step}</span>
             </li>
           )
         })}
