@@ -498,19 +498,21 @@ def test_populated_output_dir_rejected_and_preexisting_survives(tmp_path, monkey
     )
     # Fresh empty dir with a pre-seeded file that is not a bundle stem... 
     # Use allow_rerender on a dir that already has section_1.html
-    try:
-        write_section_bundle_outputs(
-            document=document,
-            presentation=presentation,
-            audit=audit,
-            output_dir=out,
-            write_pdf=True,
-            allow_rerender=True,
-        )
-    except RuntimeError:
-        pass
-    # Preexisting html may have been overwritten (existed_before=True) — must remain
+    output_errors: list[str] = []
+    paths = write_section_bundle_outputs(
+        document=document,
+        presentation=presentation,
+        audit=audit,
+        output_dir=out,
+        write_pdf=True,
+        allow_rerender=True,
+        output_errors=output_errors,
+    )
+    # PDF presentation failure preserves the valid HTML dossier.
     assert preexisting.exists()
+    assert paths["section_1_html"] == preexisting
+    assert "section_1_pdf" not in paths
+    assert output_errors == ["PDF rendering failed: pdf boom"]
 
 
 def test_stale_png_cleanup_and_multipage_names(tmp_path):

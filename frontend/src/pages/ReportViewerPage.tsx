@@ -28,7 +28,9 @@ export function ReportViewerPage() {
     <div className="fade-in space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-xs text-text-muted">{report.geneSymbol}</p>
+          <p className="text-xs text-text-muted">
+            {report.geneSymbol} · {report.reportOrigin === 'accepted' ? 'Accepted' : 'Generated'}
+          </p>
           <h1 className="mt-1 text-2xl font-medium text-text">{report.title}</h1>
         </div>
         <StatusBadge status={report.status} />

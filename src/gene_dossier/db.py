@@ -188,6 +188,26 @@ class SourceCoverageResultRow(SQLModel, table=True):
     notes: Optional[str] = None
 
 
+class GeneratedReportRow(SQLModel, table=True):
+    """Durable metadata pointer for one generated dossier report."""
+
+    __tablename__ = "generated_reports"
+    __table_args__ = (
+        UniqueConstraint("dossier_run_id", name="uq_generated_report_dossier_run"),
+    )
+
+    id: str = Field(primary_key=True)
+    dossier_run_id: str = Field(index=True, foreign_key="dossier_runs.id")
+    gene_symbol: str = Field(index=True)
+    title: str
+    status: str = Field(index=True)
+    created_at: datetime = Field(index=True)
+    sections: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    html_path: str
+    pdf_path: Optional[str] = None
+    job_id: Optional[str] = Field(default=None, index=True)
+
+
 # --------------------------------------------------------------------------------------
 # Engine / session
 # --------------------------------------------------------------------------------------
@@ -469,6 +489,69 @@ def list_source_coverage(
     return [coverage_from_row(r) for r in rows]
 
 
+def canonical_generated_report_id(dossier_run_id: str) -> str:
+    """Return the only valid generated-report id for a dossier run."""
+    return f"report-{dossier_run_id}"
+
+
+def _copy_generated_report(row: GeneratedReportRow) -> GeneratedReportRow:
+    return GeneratedReportRow.model_validate(row.model_dump())
+
+
+def save_generated_report(
+    session: Session, report: GeneratedReportRow
+) -> GeneratedReportRow:
+    """Idempotently upsert generated-report metadata for one dossier run."""
+    expected_id = canonical_generated_report_id(report.dossier_run_id)
+    if report.id != expected_id:
+        raise ValueError(
+            f"Generated report id must be {expected_id!r} for dossier run "
+            f"{report.dossier_run_id!r}."
+        )
+    existing = session.exec(
+        select(GeneratedReportRow).where(
+            GeneratedReportRow.dossier_run_id == report.dossier_run_id
+        )
+    ).first()
+    if existing is not None and existing.id != report.id:
+        raise ValueError(
+            f"Dossier run {report.dossier_run_id!r} already belongs to "
+            f"generated report {existing.id!r}."
+        )
+    merged = session.merge(report)
+    session.flush()
+    session.refresh(merged)
+    return _copy_generated_report(merged)
+
+
+def get_generated_report(
+    session: Session, report_id: str
+) -> GeneratedReportRow | None:
+    """Load one generated report by its exact canonical id."""
+    row = session.get(GeneratedReportRow, report_id)
+    return _copy_generated_report(row) if row else None
+
+
+def get_generated_report_for_run(
+    session: Session, dossier_run_id: str
+) -> GeneratedReportRow | None:
+    """Load generated-report metadata for one exact dossier run."""
+    row = session.exec(
+        select(GeneratedReportRow).where(
+            GeneratedReportRow.dossier_run_id == dossier_run_id
+        )
+    ).first()
+    return _copy_generated_report(row) if row else None
+
+
+def list_generated_reports(session: Session) -> list[GeneratedReportRow]:
+    """Return generated reports newest first."""
+    rows = session.exec(
+        select(GeneratedReportRow).order_by(GeneratedReportRow.created_at.desc())
+    ).all()
+    return [_copy_generated_report(row) for row in rows]
+
+
 __all__ = [
     "DossierRunRow",
     "ApiRunRow",
@@ -478,6 +561,7 @@ __all__ = [
     "ClaimRow",
     "VerificationResultRow",
     "SourceCoverageResultRow",
+    "GeneratedReportRow",
     "is_sqlite_url",
     "is_postgres_url",
     "normalize_database_url",
@@ -507,4 +591,9 @@ __all__ = [
     "get_evidence_by_source_id",
     "save_source_coverage",
     "list_source_coverage",
+    "canonical_generated_report_id",
+    "save_generated_report",
+    "get_generated_report",
+    "get_generated_report_for_run",
+    "list_generated_reports",
 ]

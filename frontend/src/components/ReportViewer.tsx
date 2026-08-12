@@ -42,13 +42,20 @@ export function ReportViewer({
 
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <a
-            href={report.pdfUrl || '#'}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm text-text transition hover:border-accent/40"
-          >
-            <Download className="size-3.5" />
-            Download PDF
-          </a>
+          {report.pdfUrl ? (
+            <a
+              href={report.pdfUrl}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm text-text transition hover:border-accent/40"
+            >
+              <Download className="size-3.5" />
+              Download PDF
+            </a>
+          ) : (
+            <span className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm text-text-muted">
+              <Download className="size-3.5" />
+              {report.reportOrigin === 'generated' ? 'PDF not generated' : 'PDF unavailable'}
+            </span>
+          )}
           <button
             type="button"
             className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm text-text-secondary"
@@ -74,12 +81,14 @@ export function ReportViewer({
             />
           ) : (
             <div className="flex h-80 items-center justify-center text-sm text-text-muted">
-              Report HTML URL not available in mock data.
+              Report HTML is unavailable.
             </div>
           )}
         </div>
         <p className="text-xs text-text-muted">
-          Embedded Rancho HTML report artifact — backed by live FastAPI backend.
+          {report.reportOrigin === 'generated'
+            ? `Generated report artifact · dossier run ${report.dossierRunId}`
+            : 'Accepted report artifact'}
         </p>
       </div>
     </div>

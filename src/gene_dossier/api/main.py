@@ -28,12 +28,17 @@ from gene_dossier.config import PROJECT_ROOT, Settings, get_settings
 from gene_dossier.db import (
     DossierRunRow,
     EvidenceRecordRow,
+    GeneratedReportRow,
     RawArtifactRow,
+    canonical_generated_report_id,
     evidence_from_row,
     get_dossier_run,
+    get_generated_report,
     init_db,
     list_evidence_for_run,
+    list_generated_reports,
     list_source_coverage,
+    save_generated_report,
     session_scope,
 )
 from gene_dossier.models import EvidenceRecord, new_id
@@ -44,7 +49,11 @@ from gene_dossier.retrieval import (
     search_evidence_keyword,
     vector_id_for_record,
 )
-from gene_dossier.section_bundle import SUPPORTED_SECTION_BUNDLE_KEYS, run_section_bundle
+from gene_dossier.section_bundle import (
+    SUPPORTED_SECTION_BUNDLE_KEYS,
+    run_section_bundle,
+    sanitize_credentials,
+)
 from gene_dossier.source_registry import get_all_sources, get_source, registry_summary
 from gene_dossier.workflow import DossierPassResult, run_gene_dossier_full_api_pass
 from sqlmodel import select
@@ -347,6 +356,8 @@ class ReportArtifactOut(BaseModel):
     sections: list[str]
     htmlUrl: str | None = None
     pdfUrl: str | None = None
+    reportOrigin: Literal["accepted", "generated"]
+    dossierRunId: str
 
 
 class ArtifactOut(BaseModel):
@@ -366,6 +377,145 @@ class JobArtifactsResponseOut(BaseModel):
 # Runtime-generated reports share the in-memory lifetime of frontend jobs.
 # Structure: {report_id: {"report": ReportArtifactOut, "html_path": Path, "pdf_path": Path | None}}
 _GENERATED_REPORT_STORE: dict[str, dict[str, Any]] = {}
+
+
+def _generated_artifact_root() -> Path:
+    return get_settings().output_path.resolve()
+
+
+def _validate_generated_artifact(
+    path: str | Path,
+    *,
+    dossier_run_id: str,
+    artifact_type: Literal["html", "pdf"],
+    stored_relative: bool,
+) -> tuple[Path, str]:
+    """Resolve and validate one exact-run generated report artifact."""
+    root = _generated_artifact_root()
+    raw = Path(path)
+    if stored_relative and raw.is_absolute():
+        raise ValueError("Persisted generated artifact paths must be relative.")
+    candidate = root / raw if stored_relative else raw
+    try:
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError("Generated report artifact is outside the output root or missing.") from exc
+
+    expected_name = f"section_1.{artifact_type}"
+    if resolved.name != expected_name or not resolved.is_file():
+        raise ValueError(f"Generated report artifact must be a regular {expected_name} file.")
+    if dossier_run_id not in relative.parts:
+        raise ValueError("Generated report artifact does not belong to the exact dossier run.")
+    return resolved, relative.as_posix()
+
+
+def _resolve_generated_artifact(
+    stored_path: str | None,
+    *,
+    dossier_run_id: str,
+    artifact_type: Literal["html", "pdf"],
+) -> Path | None:
+    if not stored_path:
+        return None
+    try:
+        resolved, _ = _validate_generated_artifact(
+            stored_path,
+            dossier_run_id=dossier_run_id,
+            artifact_type=artifact_type,
+            stored_relative=True,
+        )
+        return resolved
+    except ValueError:
+        return None
+
+
+def _generated_report_from_row(
+    row: GeneratedReportRow,
+) -> tuple[ReportArtifactOut, Path | None, Path | None]:
+    html_path = _resolve_generated_artifact(
+        row.html_path,
+        dossier_run_id=row.dossier_run_id,
+        artifact_type="html",
+    )
+    pdf_path = _resolve_generated_artifact(
+        row.pdf_path,
+        dossier_run_id=row.dossier_run_id,
+        artifact_type="pdf",
+    )
+    report = ReportArtifactOut(
+        id=row.id,
+        geneSymbol=row.gene_symbol,
+        title=row.title,
+        status=row.status,
+        createdAt=row.created_at.isoformat(),
+        sections=list(row.sections),
+        htmlUrl=f"/api/reports/{row.id}/html" if html_path else None,
+        pdfUrl=f"/api/reports/{row.id}/pdf" if pdf_path else None,
+        reportOrigin="generated",
+        dossierRunId=row.dossier_run_id,
+    )
+    return report, html_path, pdf_path
+
+
+def _load_generated_report_entry(report_id: str) -> dict[str, Any] | None:
+    init_db()
+    with session_scope() as session:
+        row = get_generated_report(session, report_id)
+    if row is None:
+        return None
+    report, html_path, pdf_path = _generated_report_from_row(row)
+    return {"report": report, "html_path": html_path, "pdf_path": pdf_path}
+
+
+def _persist_generated_report(
+    *,
+    dossier_run_id: str,
+    gene_symbol: str,
+    status: str,
+    created_at: datetime,
+    sections: list[str],
+    html_path: Path,
+    pdf_path: Path | None,
+    job_id: str | None,
+) -> dict[str, Any]:
+    report_id = canonical_generated_report_id(dossier_run_id)
+    resolved_html, relative_html = _validate_generated_artifact(
+        html_path,
+        dossier_run_id=dossier_run_id,
+        artifact_type="html",
+        stored_relative=False,
+    )
+    resolved_pdf: Path | None = None
+    relative_pdf: str | None = None
+    if pdf_path is not None:
+        resolved_pdf, relative_pdf = _validate_generated_artifact(
+            pdf_path,
+            dossier_run_id=dossier_run_id,
+            artifact_type="pdf",
+            stored_relative=False,
+        )
+    row = GeneratedReportRow(
+        id=report_id,
+        dossier_run_id=dossier_run_id,
+        gene_symbol=gene_symbol,
+        title=f"HD Gene Dossier — {gene_symbol}",
+        status=status,
+        created_at=created_at,
+        sections=list(sections),
+        html_path=relative_html,
+        pdf_path=relative_pdf,
+        job_id=job_id,
+    )
+    init_db()
+    with session_scope() as session:
+        saved = save_generated_report(session, row)
+    report, _, _ = _generated_report_from_row(saved)
+    return {
+        "report": report,
+        "html_path": resolved_html,
+        "pdf_path": resolved_pdf,
+    }
 
 
 class CitationOut(BaseModel):
@@ -1019,7 +1169,7 @@ def _report_timestamp_from_file(path: Path) -> str:
 
 
 def handle_list_reports() -> list[ReportArtifactOut]:
-    """Build report list from the demo registry using actual filesystem timestamps."""
+    """Return accepted reports followed by durable generated reports."""
     sections = [
         "Section 1: Identity & Structure",
         "Section 2: Expression Profile",
@@ -1047,21 +1197,25 @@ def handle_list_reports() -> list[ReportArtifactOut]:
                 sections=sections,
                 htmlUrl=f"/api/reports/{report_id}/html" if html_p.exists() else None,
                 pdfUrl=f"/api/reports/{report_id}/pdf" if pdf_p.exists() else None,
+                reportOrigin="accepted",
+                dossierRunId=demo["report_run_id"],
             )
         )
+    init_db()
+    with session_scope() as session:
+        generated_rows = list_generated_reports(session)
+    out.extend(_generated_report_from_row(row)[0] for row in generated_rows)
     return out
 
 
 def handle_get_report(report_id: str) -> ReportArtifactOut:
-    with _JOB_STORE_LOCK:
-        generated = _GENERATED_REPORT_STORE.get(report_id)
-    if generated:
-        return generated["report"]
+    for report in handle_list_reports()[: len(_DEMO_REPORT_REGISTRY)]:
+        if report.id == report_id:
+            return report
 
-    reports = handle_list_reports()
-    for r in reports:
-        if r.id.lower() == report_id.lower() or r.geneSymbol.lower() in report_id.lower():
-            return r
+    durable = _load_generated_report_entry(report_id)
+    if durable:
+        return durable["report"]
 
     raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
 
@@ -1091,24 +1245,15 @@ def handle_get_report_html(report_id: str):
                 headers=_ACCEPTED_REPORT_CACHE_HEADERS,
             )
 
-    with _JOB_STORE_LOCK:
-        generated = _GENERATED_REPORT_STORE.get(report_id)
-    if generated:
-        html_p = generated["html_path"]
-        if html_p.exists():
-            return FileResponse(html_p, media_type="text/html")
-
-    outputs_dir = get_settings().project_root / "data" / "outputs"
-    html_p = outputs_dir / f"{report_id}_rancho_report.html"
-    if html_p.exists():
-        return FileResponse(html_p, media_type="text/html")
+    durable = _load_generated_report_entry(report_id)
+    if durable and durable["html_path"]:
+        return FileResponse(durable["html_path"], media_type="text/html")
 
     raise HTTPException(status_code=404, detail=f"Report HTML not found: {report_id}")
 
 
 def handle_get_report_pdf(report_id: str):
     rid = report_id.lower()
-    project_root = PROJECT_ROOT
     if rid in {"rep-srebf2", "srebf2"}:
         _, _, pdf_p = _find_report_files("SREBF2")
         if pdf_p and pdf_p.exists():
@@ -1128,23 +1273,14 @@ def handle_get_report_pdf(report_id: str):
                 headers=_ACCEPTED_REPORT_CACHE_HEADERS,
             )
 
-    with _JOB_STORE_LOCK:
-        generated = _GENERATED_REPORT_STORE.get(report_id)
-    if generated:
-        pdf_p = generated["pdf_path"]
-        if pdf_p and pdf_p.exists():
-            report: ReportArtifactOut = generated["report"]
-            return FileResponse(
-                pdf_p,
-                media_type="application/pdf",
-                filename=f"{report.geneSymbol}_HD_Dossier.pdf",
-            )
-        raise HTTPException(status_code=404, detail=f"Report PDF not found: {report_id}")
-
-    outputs_dir = project_root / "data" / "outputs"
-    pdf_p = outputs_dir / f"{report_id}_rancho_report.pdf"
-    if pdf_p.exists():
-        return FileResponse(pdf_p, media_type="application/pdf", filename=f"{report_id}.pdf")
+    durable = _load_generated_report_entry(report_id)
+    if durable and durable["pdf_path"]:
+        report: ReportArtifactOut = durable["report"]
+        return FileResponse(
+            durable["pdf_path"],
+            media_type="application/pdf",
+            filename=f"{report.geneSymbol}_HD_Dossier.pdf",
+        )
 
     raise HTTPException(status_code=404, detail=f"Report PDF not found: {report_id}")
 
@@ -1972,39 +2108,43 @@ def _run_section_bundle_job(job_id: str, gene: str, section_keys: list[str]) -> 
             section_keys=section_keys,
             settings=get_settings(),
             persist_db=True,
-            write_pdf=False,  # PDF generation is slow; skip for background jobs
+            write_pdf=True,
         )
 
         final_status = (result.status or "failed").lower()
         output_paths_str = {k: str(v) for k, v in result.output_paths.items()}
-        completed_at = datetime.now(tz=timezone.utc).isoformat()
+        completed_at_dt = datetime.now(tz=timezone.utc)
+        completed_at = completed_at_dt.isoformat()
+        job_errors = list(result.errors) if result.errors else []
 
         generated_report_id: str | None = None
         generated_report_entry: dict[str, Any] | None = None
         html_value = result.output_paths.get("section_1_html")
         html_path = Path(html_value) if html_value else None
         if final_status in {"completed", "partial"} and html_path and html_path.is_file():
-            generated_report_id = f"report-{result.dossier_run_id}"
             pdf_value = result.output_paths.get("section_1_pdf")
             pdf_path = Path(pdf_value) if pdf_value and Path(pdf_value).is_file() else None
             report_status = "Completed" if final_status == "completed" else "Partial"
-            generated_report = ReportArtifactOut(
-                id=generated_report_id,
-                geneSymbol=result.gene_symbol,
-                title=f"HD Gene Dossier — {result.gene_symbol}",
-                status=report_status,
-                createdAt=completed_at,
-                sections=[f"Section {key}" for key in section_keys],
-                htmlUrl=f"/api/reports/{generated_report_id}/html",
-                pdfUrl=(
-                    f"/api/reports/{generated_report_id}/pdf" if pdf_path else None
-                ),
-            )
-            generated_report_entry = {
-                "report": generated_report,
-                "html_path": html_path,
-                "pdf_path": pdf_path,
-            }
+            try:
+                generated_report_entry = _persist_generated_report(
+                    dossier_run_id=result.dossier_run_id,
+                    gene_symbol=result.gene_symbol,
+                    status=report_status,
+                    created_at=completed_at_dt,
+                    sections=[f"Section {key}" for key in section_keys],
+                    html_path=html_path,
+                    pdf_path=pdf_path,
+                    job_id=job_id,
+                )
+                generated_report_id = generated_report_entry["report"].id
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("job %s report registration failed", job_id)
+                registration_error = sanitize_credentials(
+                    f"Generated report registration failed: {exc}"
+                )
+                job_errors.append(str(registration_error))
+                generated_report_entry = None
+                generated_report_id = None
 
         artifact_ids = [generated_report_id] if generated_report_id else []
 
@@ -2024,7 +2164,7 @@ def _run_section_bundle_job(job_id: str, gene: str, section_keys: list[str]) -> 
                 job_out.completedAt = completed_at
                 job_out.artifactIds = artifact_ids
                 job_out.dossierRunId = result.dossier_run_id
-                job_out.errors = list(result.errors) if result.errors else []
+                job_out.errors = job_errors
                 _JOB_STORE[job_id]["dossier_run_id"] = result.dossier_run_id
                 _JOB_STORE[job_id]["output_paths"] = output_paths_str
 
@@ -2248,11 +2388,23 @@ def list_history_endpoint():
 @api_router.get("/recent")
 @app.get("/recent")
 def list_recent_endpoint():
-    return [
+    init_db()
+    with session_scope() as session:
+        generated = list_generated_reports(session)
+    generated_items = [
+        {
+            "id": f"rw-{row.id}",
+            "label": f"{row.gene_symbol} Generated Dossier",
+            "href": f"/reports/{row.id}",
+        }
+        for row in generated
+    ]
+    accepted_items = [
         {"id": "rw-1", "label": "SREBF2 Target Dossier", "href": "/genes/SREBF2"},
         {"id": "rw-2", "label": "CDH10 Target Dossier", "href": "/genes/CDH10"},
         {"id": "rw-3", "label": "SREBF2 HD Report", "href": "/reports/rep-srebf2"},
     ]
+    return [*generated_items, *accepted_items][:5]
 
 
 @api_router.post("/ask", response_model=AskResponseOut)

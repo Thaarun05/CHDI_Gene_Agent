@@ -97,6 +97,8 @@ export interface ReportArtifact {
   sections: string[]
   htmlUrl?: string
   pdfUrl?: string
+  reportOrigin: 'accepted' | 'generated'
+  dossierRunId: string
 }
 
 export interface WorkflowJobStage {

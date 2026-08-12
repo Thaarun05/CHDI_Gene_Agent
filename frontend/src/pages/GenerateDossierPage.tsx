@@ -34,7 +34,8 @@ function sectionKeysFor(selectedSections: string[]) {
 }
 
 export function GenerateDossierPage() {
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
+  const initialJobId = params.get('job')
   const [gene, setGene] = useState(params.get('gene')?.toUpperCase() || 'SREBF2')
   const [selected, setSelected] = useState<string[]>([...SECTIONS])
   const [useAccepted, setUseAccepted] = useState(true)
@@ -42,18 +43,55 @@ export function GenerateDossierPage() {
   const [artifact, setArtifact] = useState<ReportArtifact | null>(null)
   const [artifactResolved, setArtifactResolved] = useState(false)
   const [starting, setStarting] = useState(false)
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null)
 
   async function loadArtifacts(jobId: string) {
     setArtifactResolved(false)
     try {
       const artifacts = await getJobArtifacts(jobId)
       setArtifact(artifacts.report)
+      if (artifacts.report?.reportOrigin === 'generated') {
+        window.dispatchEvent(new Event('generated-report-updated'))
+      }
     } catch {
       setArtifact(null)
     } finally {
       setArtifactResolved(true)
     }
   }
+
+  useEffect(() => {
+    if (!initialJobId) return
+    let active = true
+    void getJob(initialJobId)
+      .then(async (restoredJob) => {
+        if (!active) return
+        setJob(restoredJob)
+        setSessionMessage(null)
+        if (restoredJob.status === 'Completed' || restoredJob.status === 'Partial') {
+          await loadArtifacts(restoredJob.id)
+        }
+      })
+      .catch((error: Error) => {
+        if (!active) return
+        setJob(null)
+        setArtifact(null)
+        setArtifactResolved(false)
+        if (error.message.startsWith('API 404:')) {
+          setSessionMessage(
+            'This job session has expired. Completed generated dossiers remain available in Reports.',
+          )
+          const next = new URLSearchParams(params)
+          next.delete('job')
+          setParams(next, { replace: true })
+        } else {
+          setSessionMessage(error.message)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [initialJobId, params, setParams])
 
   useEffect(() => {
     if (
@@ -78,18 +116,35 @@ export function GenerateDossierPage() {
     setStarting(true)
     setArtifact(null)
     setArtifactResolved(false)
+    setSessionMessage(null)
     try {
       const j = await startDossierJob(gene, {
         sectionKeys: sectionKeysFor(selected),
         useExistingAccepted: useAccepted,
       })
       setJob(j)
+      const next = new URLSearchParams(params)
+      next.set('gene', gene)
+      next.set('job', j.id)
+      setParams(next, { replace: true })
       if (j.status === 'Completed' || j.status === 'Partial') {
         await loadArtifacts(j.id)
       }
     } finally {
       setStarting(false)
     }
+  }
+
+  function changeGene(nextGene: string) {
+    setGene(nextGene)
+    setJob(null)
+    setArtifact(null)
+    setArtifactResolved(false)
+    setSessionMessage(null)
+    const next = new URLSearchParams(params)
+    next.set('gene', nextGene)
+    next.delete('job')
+    setParams(next, { replace: true })
   }
 
   function toggle(section: string) {
@@ -115,7 +170,7 @@ export function GenerateDossierPage() {
           <span className="mb-1.5 block text-xs text-text-muted">Gene</span>
           <select
             value={gene}
-            onChange={(e) => setGene(e.target.value)}
+            onChange={(e) => changeGene(e.target.value)}
             className="w-full rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm text-text outline-none"
           >
             <option value="SREBF2">SREBF2</option>
@@ -168,6 +223,15 @@ export function GenerateDossierPage() {
         </button>
       </div>
 
+      {sessionMessage && (
+        <div className="surface-card flex flex-wrap items-center justify-between gap-3 p-4 text-sm text-text-secondary">
+          <span>{sessionMessage}</span>
+          <Link to="/reports" className="text-accent hover:underline">
+            Open Reports
+          </Link>
+        </div>
+      )}
+
       {job && <JobProgress job={job} />}
 
       {(job?.status === 'Completed' || job?.status === 'Partial') && (
@@ -196,6 +260,11 @@ export function GenerateDossierPage() {
               Download PDF
             </a>
           )}
+          {artifactResolved && artifact && !artifact.pdfUrl && (
+            <span className="px-1 py-2.5 text-sm text-text-muted">
+              {artifact.reportOrigin === 'generated' ? 'PDF not generated' : 'PDF unavailable'}
+            </span>
+          )}
           <button
             type="button"
             className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-secondary"
@@ -203,7 +272,7 @@ export function GenerateDossierPage() {
             Supplementary Files
           </button>
           <Link
-            to="/evidence"
+            to={`/evidence?gene=${encodeURIComponent(job.geneSymbol)}`}
             className="rounded-xl border border-border bg-bg-secondary px-4 py-2.5 text-sm text-text-secondary"
           >
             Inspect Provenance

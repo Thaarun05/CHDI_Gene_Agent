@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import inspect
 
 from gene_dossier import models as m
 from gene_dossier.db import (
+    GeneratedReportRow,
     SourceCoverageResultRow,
     get_engine,
     get_evidence_by_source_id,
+    get_generated_report,
+    get_generated_report_for_run,
     init_db,
     is_postgres_url,
     is_sqlite_url,
     list_evidence_for_run,
+    list_generated_reports,
     list_source_coverage,
     normalize_database_url,
     save_api_run,
     save_dossier_run,
     save_evidence_record,
+    save_generated_report,
     save_raw_artifact,
     save_source_coverage,
     session_scope,
@@ -34,6 +41,7 @@ EXPECTED_TABLES = {
     "claims",
     "verification_results",
     "source_coverage_results",
+    "generated_reports",
 }
 
 
@@ -75,6 +83,57 @@ def test_init_db_creates_all_tables(engine):
     names = set(inspect(engine).get_table_names())
     assert EXPECTED_TABLES <= names
     assert SourceCoverageResultRow.__tablename__ == "source_coverage_results"
+
+
+def test_generated_report_upsert_is_canonical_and_idempotent(engine):
+    run = m.DossierRun(gene_symbol="SREBF2")
+    report = GeneratedReportRow(
+        id=f"report-{run.id}",
+        dossier_run_id=run.id,
+        gene_symbol="SREBF2",
+        title="HD Gene Dossier — SREBF2",
+        status="Completed",
+        created_at=datetime.now(tz=timezone.utc),
+        sections=["Section 1a"],
+        html_path=f"section_validation/SREBF2/{run.id}/section_1.html",
+        pdf_path=None,
+        job_id="job-test",
+    )
+    with session_scope(engine) as session:
+        save_dossier_run(session, run)
+        save_generated_report(session, report)
+        save_generated_report(
+            session,
+            report.model_copy(update={"status": "Partial"}),
+        )
+
+    with session_scope(engine) as session:
+        rows = list_generated_reports(session)
+        assert len(rows) == 1
+        assert rows[0].id == f"report-{run.id}"
+        assert rows[0].status == "Partial"
+        assert get_generated_report(session, rows[0].id) is not None
+        by_run = get_generated_report_for_run(session, run.id)
+        assert by_run is not None
+        assert by_run.id == rows[0].id
+
+
+def test_generated_report_rejects_noncanonical_identity(engine):
+    run = m.DossierRun(gene_symbol="CDH10")
+    report = GeneratedReportRow(
+        id="report-wrong",
+        dossier_run_id=run.id,
+        gene_symbol="CDH10",
+        title="HD Gene Dossier — CDH10",
+        status="Completed",
+        created_at=datetime.now(tz=timezone.utc),
+        sections=[],
+        html_path=f"section_validation/CDH10/{run.id}/section_1.html",
+    )
+    with session_scope(engine) as session:
+        save_dossier_run(session, run)
+        with pytest.raises(ValueError, match="Generated report id must be"):
+            save_generated_report(session, report)
 
 
 def test_dossier_run_and_evidence_round_trip(engine):

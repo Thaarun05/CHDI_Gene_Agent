@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { listAllEvidence } from '@/api/client'
 import type { EvidenceRecord } from '@/api/types'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -6,11 +7,12 @@ import { useEvidenceDrawer } from '@/context/EvidenceDrawerContext'
 import { ErrorState, LoadingSkeleton } from '@/components/EmptyState'
 
 export function EvidencePage() {
+  const [params] = useSearchParams()
   const { openEvidence } = useEvidenceDrawer()
   const [rows, setRows] = useState<EvidenceRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [gene, setGene] = useState('')
+  const [gene, setGene] = useState(params.get('gene')?.toUpperCase() || '')
   const [source, setSource] = useState('')
   const [type, setType] = useState('')
   const [section, setSection] = useState('')

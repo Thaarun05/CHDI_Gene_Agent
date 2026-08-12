@@ -10,7 +10,21 @@ import pytest
 
 from gene_dossier.api import main as api_main
 from gene_dossier import synthesis
-from gene_dossier.models import AssertionType, EvidenceGrade, EvidenceRecord, SourceType
+from gene_dossier.config import Settings
+from gene_dossier.db import (
+    get_engine,
+    get_generated_report,
+    init_db,
+    save_dossier_run,
+    session_scope,
+)
+from gene_dossier.models import (
+    AssertionType,
+    DossierRun,
+    EvidenceGrade,
+    EvidenceRecord,
+    SourceType,
+)
 from gene_dossier.section_bundle import SectionBundleResult
 
 
@@ -108,17 +122,23 @@ def _run_fake_section_bundle_job(
     run_id: str,
     status: str,
     include_html: bool,
+    include_pdf: bool = False,
+    registration_failure: bool = False,
     gene: str = "CDH10",
 ) -> dict[str, object]:
-    output_dir = tmp_path / run_id
-    output_dir.mkdir()
+    output_root = tmp_path / "outputs"
+    output_dir = output_root / "section_validation" / gene / run_id
+    output_dir.mkdir(parents=True)
     presentation_path = output_dir / "section_1.json"
     audit_path = output_dir / "section_1_audit.json"
     html_path = output_dir / "section_1.html"
+    pdf_path = output_dir / "section_1.pdf"
     presentation_path.write_text("{}\n", encoding="utf-8")
     audit_path.write_text("{}\n", encoding="utf-8")
     if include_html:
         html_path.write_text("<html><body>Fresh report</body></html>", encoding="utf-8")
+    if include_pdf:
+        pdf_path.write_bytes(b"%PDF-1.4\n% exact run\n")
 
     output_paths = {
         "section_1_json": presentation_path,
@@ -126,6 +146,22 @@ def _run_fake_section_bundle_job(
     }
     if include_html:
         output_paths["section_1_html"] = html_path
+    if include_pdf:
+        output_paths["section_1_pdf"] = pdf_path
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'api-test.db'}",
+        output_dir=output_root,
+    )
+    engine = get_engine(settings.database_url)
+    init_db(engine)
+    run = DossierRun(gene_symbol=gene, run_type="section_bundle", status=status)
+    run.id = run_id
+    with session_scope(engine) as session:
+        save_dossier_run(session, run)
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "init_db", lambda: init_db(engine))
+    monkeypatch.setattr(api_main, "session_scope", lambda: session_scope(engine))
 
     result = SectionBundleResult(
         gene_symbol=gene,
@@ -156,17 +192,28 @@ def _run_fake_section_bundle_job(
         }
         api_main._GENERATED_REPORT_STORE.pop(report_id, None)
 
-    monkeypatch.setattr(
-        api_main,
-        "run_section_bundle",
-        lambda *_args, **_kwargs: result,
-    )
+    run_kwargs: dict[str, object] = {}
+
+    def fake_run(*_args, **kwargs):
+        run_kwargs.update(kwargs)
+        return result
+
+    monkeypatch.setattr(api_main, "run_section_bundle", fake_run)
+    if registration_failure:
+        monkeypatch.setattr(
+            api_main,
+            "_persist_generated_report",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("metadata boom")),
+        )
     api_main._run_section_bundle_job(job_id, gene, ["1a", "5a", "5b"])
     return {
         "job_id": job_id,
         "report_id": report_id,
         "run_id": run_id,
         "html_path": html_path,
+        "pdf_path": pdf_path if include_pdf else None,
+        "run_kwargs": run_kwargs,
+        "engine": engine,
     }
 
 
@@ -201,6 +248,7 @@ def test_fresh_job_uses_generated_report_id(completed_fresh_job) -> None:
     assert job.dossierRunId == "fresh-run-test-123"
     assert job.artifactIds == ["report-fresh-run-test-123"]
     assert not any(key.startswith("section_1_") for key in job.artifactIds)
+    assert completed_fresh_job["run_kwargs"]["write_pdf"] is True
 
 
 def test_fresh_job_artifacts_returns_generated_report(completed_fresh_job) -> None:
@@ -228,11 +276,229 @@ def test_generated_report_metadata_and_exact_html_resolve(completed_fresh_job) -
     assert response.media_type == "text/html"
 
 
+def test_generated_report_survives_runtime_cache_loss(completed_fresh_job) -> None:
+    report_id = str(completed_fresh_job["report_id"])
+    with api_main._JOB_STORE_LOCK:
+        api_main._GENERATED_REPORT_STORE.clear()
+
+    report = api_main.handle_get_report(report_id)
+    response = api_main.handle_get_report_html(report_id)
+
+    assert report.id == report_id
+    assert report.reportOrigin == "generated"
+    assert report.dossierRunId == completed_fresh_job["run_id"]
+    assert response.path == completed_fresh_job["html_path"]
+    with session_scope(completed_fresh_job["engine"]) as session:
+        row = get_generated_report(session, report_id)
+        assert row is not None
+        assert not Path(row.html_path).is_absolute()
+        assert row.html_path.endswith(
+            f"/{completed_fresh_job['run_id']}/section_1.html"
+        )
+
+
+def test_missing_generated_html_is_truthfully_unavailable(completed_fresh_job) -> None:
+    report_id = str(completed_fresh_job["report_id"])
+    Path(completed_fresh_job["html_path"]).unlink()
+    with api_main._JOB_STORE_LOCK:
+        api_main._GENERATED_REPORT_STORE.clear()
+
+    report = api_main.handle_get_report(report_id)
+    assert report.htmlUrl is None
+    assert report.pdfUrl is None
+    with pytest.raises(api_main.HTTPException) as exc_info:
+        api_main.handle_get_report_html(report_id)
+    assert exc_info.value.status_code == 404
+    with session_scope(completed_fresh_job["engine"]) as session:
+        assert get_generated_report(session, report_id) is not None
+
+
+def test_generated_artifact_validation_rejects_unsafe_paths(
+    completed_fresh_job,
+    tmp_path: Path,
+) -> None:
+    run_id = str(completed_fresh_job["run_id"])
+    root = api_main.get_settings().output_path
+
+    with pytest.raises(ValueError, match="must be relative"):
+        api_main._validate_generated_artifact(
+            completed_fresh_job["html_path"],
+            dossier_run_id=run_id,
+            artifact_type="html",
+            stored_relative=True,
+        )
+
+    sibling = root / "section_validation" / "CDH10" / f"{run_id}-other"
+    sibling.mkdir(parents=True)
+    sibling_html = sibling / "section_1.html"
+    sibling_html.write_text("wrong run", encoding="utf-8")
+    with pytest.raises(ValueError, match="exact dossier run"):
+        api_main._validate_generated_artifact(
+            sibling_html.relative_to(root),
+            dossier_run_id=run_id,
+            artifact_type="html",
+            stored_relative=True,
+        )
+
+    outside = tmp_path / "outside" / "section_1.html"
+    outside.parent.mkdir()
+    outside.write_text("outside", encoding="utf-8")
+    symlink_dir = root / "section_validation" / "CDH10" / run_id / "linked"
+    symlink_dir.mkdir(parents=True)
+    symlink = symlink_dir / "section_1.html"
+    symlink.symlink_to(outside)
+    with pytest.raises(ValueError, match="outside the output root"):
+        api_main._validate_generated_artifact(
+            symlink.relative_to(root),
+            dossier_run_id=run_id,
+            artifact_type="html",
+            stored_relative=True,
+        )
+
+    wrong_type = root / "section_validation" / "CDH10" / run_id / "report.html"
+    wrong_type.write_text("wrong name", encoding="utf-8")
+    with pytest.raises(ValueError, match="section_1.html"):
+        api_main._validate_generated_artifact(
+            wrong_type.relative_to(root),
+            dossier_run_id=run_id,
+            artifact_type="html",
+            stored_relative=True,
+        )
+
+
+def test_generated_report_id_never_falls_back_to_accepted(completed_fresh_job) -> None:
+    with pytest.raises(api_main.HTTPException) as exc_info:
+        api_main.handle_get_report("report-SREBF2-not-a-run")
+    assert exc_info.value.status_code == 404
+
+
+def test_reports_and_recent_include_durable_generated_report(completed_fresh_job) -> None:
+    reports = api_main.handle_list_reports()
+    by_id = {report.id: report for report in reports}
+    assert by_id["rep-srebf2"].reportOrigin == "accepted"
+    generated = by_id[str(completed_fresh_job["report_id"])]
+    assert generated.reportOrigin == "generated"
+    assert generated.dossierRunId == completed_fresh_job["run_id"]
+    recent = api_main.list_recent_endpoint()
+    assert any(
+        item["href"] == f"/reports/{completed_fresh_job['report_id']}"
+        for item in recent
+    )
+    assert generated.id != "rep-srebf2"
+
+
+def test_recovery_report_resolves_durably_with_exact_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_id = "3b599459b3da4af8afcee4bf5891ad6d"
+    report_id = f"report-{run_id}"
+    output_root = api_main.PROJECT_ROOT / "data" / "outputs"
+    exact_html = (
+        output_root
+        / "section_validation"
+        / "SREBF2"
+        / run_id
+        / "section_1.html"
+    )
+    assert exact_html.is_file()
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'recovery-test.db'}",
+        output_dir=output_root,
+    )
+    engine = get_engine(settings.database_url)
+    init_db(engine)
+    run = DossierRun(gene_symbol="SREBF2", run_type="section_bundle", status="completed")
+    run.id = run_id
+    with session_scope(engine) as session:
+        save_dossier_run(session, run)
+    monkeypatch.setattr(api_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(api_main, "init_db", lambda: init_db(engine))
+    monkeypatch.setattr(api_main, "session_scope", lambda: session_scope(engine))
+
+    api_main._persist_generated_report(
+        dossier_run_id=run_id,
+        gene_symbol="SREBF2",
+        status="Completed",
+        created_at=run.started_at,
+        sections=["Section 1a", "Section 7a"],
+        html_path=exact_html,
+        pdf_path=None,
+        job_id="job-srebf2-7c461679",
+    )
+    with api_main._JOB_STORE_LOCK:
+        api_main._GENERATED_REPORT_STORE.clear()
+
+    report = api_main.handle_get_report(report_id)
+    html_response = api_main.handle_get_report_html(report_id)
+    reports = {item.id: item for item in api_main.handle_list_reports()}
+    recent = api_main.list_recent_endpoint()
+
+    assert report.id == report_id
+    assert report.dossierRunId == run_id
+    assert report.reportOrigin == "generated"
+    assert report.htmlUrl == f"/api/reports/{report_id}/html"
+    assert report.pdfUrl is None
+    assert html_response.path == exact_html
+    assert reports["rep-srebf2"].reportOrigin == "accepted"
+    assert reports[report_id].reportOrigin == "generated"
+    assert any(item["href"] == f"/reports/{report_id}" for item in recent)
+    with pytest.raises(api_main.HTTPException):
+        api_main.handle_get_report_pdf(report_id)
+
+
 def test_generated_report_pdf_is_unavailable(completed_fresh_job) -> None:
     with pytest.raises(api_main.HTTPException) as exc_info:
         api_main.handle_get_report_pdf(str(completed_fresh_job["report_id"]))
 
     assert exc_info.value.status_code == 404
+
+
+def test_future_generated_pdf_uses_exact_run_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="future-pdf-run-123",
+        status="completed",
+        include_html=True,
+        include_pdf=True,
+    )
+    try:
+        report = api_main.handle_get_report(str(info["report_id"]))
+        html_response = api_main.handle_get_report_html(str(info["report_id"]))
+        pdf_response = api_main.handle_get_report_pdf(str(info["report_id"]))
+        assert report.htmlUrl == "/api/reports/report-future-pdf-run-123/html"
+        assert report.pdfUrl == "/api/reports/report-future-pdf-run-123/pdf"
+        assert html_response.path == info["html_path"]
+        assert pdf_response.path == info["pdf_path"]
+        assert pdf_response.media_type == "application/pdf"
+    finally:
+        _clean_fake_section_bundle_job(info)
+
+
+def test_generated_report_registration_failure_preserves_scientific_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    info = _run_fake_section_bundle_job(
+        monkeypatch,
+        tmp_path,
+        run_id="registration-failure-run",
+        status="completed",
+        include_html=True,
+        registration_failure=True,
+    )
+    try:
+        job = api_main.get_job_endpoint(str(info["job_id"]))
+        assert job.status == "Completed"
+        assert job.artifactIds == []
+        assert job.errors and "metadata boom" in job.errors[0]
+        assert Path(info["html_path"]).is_file()
+    finally:
+        _clean_fake_section_bundle_job(info)
 
 
 def test_generated_primary_html_is_not_supplementary(completed_fresh_job) -> None:
@@ -777,12 +1043,30 @@ def test_accepted_cdh10_job_keeps_registered_report_id() -> None:
 
 
 def test_generate_page_has_no_accepted_report_fallback() -> None:
+    frontend_root = api_main.PROJECT_ROOT / "frontend" / "src"
     source = (
-        api_main.PROJECT_ROOT / "frontend" / "src" / "pages" / "GenerateDossierPage.tsx"
+        frontend_root / "pages" / "GenerateDossierPage.tsx"
     ).read_text(encoding="utf-8")
+    reports_source = (frontend_root / "pages" / "ReportsPage.tsx").read_text(
+        encoding="utf-8"
+    )
+    viewer_source = (frontend_root / "components" / "ReportViewer.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "artifact?.id ?? 'rep-srebf2'" not in source
     assert "Report artifact is not available." in source
+    assert "const initialJobId = params.get('job')" in source
+    assert "getJob(initialJobId)" in source
+    assert "This job session has expired." in source
+    assert "next.delete('job')" in source
+    assert "startDossierJob" not in source.split("useEffect(() => {", 1)[1].split(
+        "}, [initialJobId, params, setParams])", 1
+    )[0]
+    assert "PDF not generated" in source
+    assert "href={report.pdfUrl || '#'}" not in reports_source
+    assert "href={report.pdfUrl || '#'}" not in viewer_source
+    assert "report.reportOrigin === 'generated'" in reports_source
 
 
 def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:

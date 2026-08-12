@@ -35,7 +35,10 @@ export function Sidebar({
   const [query, setQuery] = useState('')
 
   useEffect(() => {
-    void listRecentWork().then(setRecent)
+    const refresh = () => void listRecentWork().then(setRecent)
+    refresh()
+    window.addEventListener('generated-report-updated', refresh)
+    return () => window.removeEventListener('generated-report-updated', refresh)
   }, [])
 
   return (

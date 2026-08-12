@@ -1608,6 +1608,7 @@ def write_section_bundle_outputs(
     dpi: int = 150,
     allow_rerender: bool = False,
     include_major_heading: bool = True,
+    output_errors: list[str] | None = None,
 ) -> dict[str, Path]:
     """Write presentation/audit JSON, HTML, PDF, and all PDF page PNGs.
 
@@ -1674,6 +1675,7 @@ def write_section_bundle_outputs(
         paths["section_1_html"] = html_path
 
         if write_pdf:
+            pdf_attempt_paths: list[Path] = []
             section_one_keys = [
                 sub.key
                 for sec in document.sections
@@ -1685,32 +1687,65 @@ def write_section_bundle_outputs(
             # visual preview matches the Rancho body-page chrome without changing
             # assembled 1a/1b output.
             # Omit HTML chrome to avoid one-shot header/footer and stacked print padding.
-            pdf_html = render_section_bundle_html(
-                document,
-                include_page_chrome=False,
-                include_major_heading=include_major_heading,
-            )
-            pdf_html = redact_api_key(pdf_html)
-            rendered = render_rancho_pdf(
-                pdf_html,
-                pdf_path,
-                page_size="letter",
-                stamp_page_chrome=True,
-                stamp_cover=stamp_first_page,
-            )
-            if rendered is not None:
-                _mark_written(Path(rendered))
-                paths["section_1_pdf"] = Path(rendered)
-                pngs = rasterize_pdf_pages_to_pngs(
-                    rendered, out, stem="section_1", dpi=dpi
+            try:
+                pdf_html = render_section_bundle_html(
+                    document,
+                    include_page_chrome=False,
+                    include_major_heading=include_major_heading,
                 )
-                for index, png in enumerate(pngs):
-                    if not existed_before.get(png, False):
-                        newly_created.append(png)
-                    if len(pngs) == 1:
-                        paths["section_1_png"] = png
-                    else:
-                        paths[f"section_1_page_{index + 1}_png"] = png
+                pdf_html = redact_api_key(pdf_html)
+                rendered = render_rancho_pdf(
+                    pdf_html,
+                    pdf_path,
+                    page_size="letter",
+                    stamp_page_chrome=True,
+                    stamp_cover=stamp_first_page,
+                )
+                if rendered is None or not Path(rendered).is_file():
+                    if output_errors is not None:
+                        output_errors.append(
+                            "PDF rendering did not produce a report artifact."
+                        )
+                else:
+                    rendered_path = Path(rendered)
+                    _mark_written(rendered_path)
+                    pdf_attempt_paths.append(rendered_path)
+                    paths["section_1_pdf"] = rendered_path
+                    try:
+                        pngs = rasterize_pdf_pages_to_pngs(
+                            rendered_path, out, stem="section_1", dpi=dpi
+                        )
+                        for index, png in enumerate(pngs):
+                            if not existed_before.get(png, False):
+                                newly_created.append(png)
+                                pdf_attempt_paths.append(png)
+                            if len(pngs) == 1:
+                                paths["section_1_png"] = png
+                            else:
+                                paths[f"section_1_page_{index + 1}_png"] = png
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("PDF preview rendering failed: %s", exc)
+                        if output_errors is not None:
+                            output_errors.append(
+                                f"PDF preview rendering failed: {exc}"
+                            )
+                        for png in list(out.glob("section_1.png")) + list(
+                            out.glob("section_1_page_*.png")
+                        ):
+                            if not existed_before.get(png, False):
+                                _cleanup_attempt_outputs([png])
+                                paths = {
+                                    key: value
+                                    for key, value in paths.items()
+                                    if value != png
+                                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PDF rendering failed: %s", exc)
+                if output_errors is not None:
+                    output_errors.append(f"PDF rendering failed: {exc}")
+                if not existed_before.get(pdf_path, False):
+                    _cleanup_attempt_outputs([pdf_path, *pdf_attempt_paths])
+                paths.pop("section_1_pdf", None)
         return paths
     except Exception:
         _cleanup_attempt_outputs(newly_created)
@@ -2167,6 +2202,7 @@ def run_section_bundle(
             audit["errors"] = list(dict.fromkeys([*audit["errors"], *errors]))
         audit = sanitize_credentials(audit)
 
+        output_errors: list[str] = []
         created_outputs = write_section_bundle_outputs(
             document=document,
             presentation=presentation,
@@ -2176,7 +2212,9 @@ def run_section_bundle(
             dpi=dpi,
             allow_rerender=allow_rerender,
             include_major_heading=include_major_heading,
+            output_errors=output_errors,
         )
+        errors.extend(output_errors)
 
         if "1d" in keys and acceptance_profile == "section_1d_reference_genes":
             section_status = dict(state.get("section_1d_status") or {})
@@ -2976,6 +3014,7 @@ def run_section_bundle(
             dossier_run_id=run_id,
             status="completed",
             selected_section_keys=keys,
+            errors=errors,
             persist_db=persist_db,
         )
         return SectionBundleResult(

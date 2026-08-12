@@ -192,6 +192,8 @@ export const reports: ReportArtifact[] = [
       'http://127.0.0.1:8901/data/outputs/section_validation/SREBF2_full_1a7a/407e1a4293c6424e8b6b830a1f0a7c60/section_1.html',
     pdfUrl:
       '/Users/thaarun/Desktop/Gene_Dossier/CHDI_Gene_Agent/data/outputs/section_validation/full_1a7a_delivery/SREBF2_sections_1a-7a.pdf',
+    reportOrigin: 'accepted',
+    dossierRunId: 'cb9030ab81dc42db80b81dd15d48e653',
   },
   {
     id: 'rep-cdh10',
@@ -204,6 +206,8 @@ export const reports: ReportArtifact[] = [
       'http://127.0.0.1:8901/data/outputs/section_validation/CDH10_full_1a7a/d94f392f4a3941d5a59f697f58d18234/section_1.html',
     pdfUrl:
       '/Users/thaarun/Desktop/Gene_Dossier/CHDI_Gene_Agent/data/outputs/section_validation/full_1a7a_delivery/CDH10_sections_1a-7a.pdf',
+    reportOrigin: 'accepted',
+    dossierRunId: 'ae97cb43e4d94732b72ef86cecc3f40d',
   },
 ]
 
