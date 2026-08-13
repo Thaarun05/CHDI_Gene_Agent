@@ -10,7 +10,9 @@ import { SearchComposer } from '@/components/SearchComposer'
 import { TopBar } from '@/components/TopBar'
 
 const CONTEXT_GENE_RE = /^[A-Z0-9][A-Z0-9-]{1,14}$/
-const REQUEST_TIMEOUT_MS = 120_000
+// Ask can include planner + retrieval + optional acquisition + grounded synthesis.
+// Prior live runs exceeded 2 minutes (e.g. acquisition-heavy comparisons ~4–5 min).
+const REQUEST_TIMEOUT_MS = 360_000
 
 function parseContextGene(value: string | null): string | null {
   const normalized = value?.trim().toUpperCase() ?? ''
@@ -196,7 +198,7 @@ export function AskPage() {
             ]}
           />
           <p className="text-center text-xs text-text-muted">
-            The request can be cancelled. It will stop automatically if the backend does not respond in time.
+            This can take several minutes. You can cancel anytime; the request stops automatically after 6 minutes.
           </p>
           <LoadingSkeleton rows={4} />
         </div>

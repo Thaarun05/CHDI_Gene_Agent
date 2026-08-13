@@ -1135,7 +1135,7 @@ def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
     assert "const autoSubmitted = useRef(false)" in ask_source
     assert "autoSubmitted.current = true" in ask_source
     assert "const next = new URLSearchParams(current)" in ask_source
-    assert "const REQUEST_TIMEOUT_MS = 120_000" in ask_source
+    assert "const REQUEST_TIMEOUT_MS = 360_000" in ask_source
     assert "backend_unavailable" in ask_source
     assert "provider_failure" in ask_source
     assert "cell.citationOrdinals.slice(0, 3)" in ask_source
