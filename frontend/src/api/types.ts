@@ -22,6 +22,8 @@ export type JobStatus = 'Queued' | 'Running' | 'Completed' | 'Partial' | 'Failed
 
 export type JobStageStatus = 'Complete' | 'Running' | 'Queued' | 'Waiting' | 'Failed'
 
+export type ResearchMode = 'auto' | 'deep_research' | 'stored_only'
+
 export interface Gene {
   symbol: string
   name: string
@@ -139,14 +141,14 @@ export interface WorkflowJob {
 export interface Citation {
   id: string
   label: string
-  evidenceRecordId: string
+  publicEvidenceRef: string
   sourceName: string
 }
 
 export interface AskResponse {
   status: string
   question: string
-  geneSymbol: string
+  geneSymbol: string | null
   contextGene?: string | null
   summary: string
   retrievalMethod: string
@@ -195,6 +197,11 @@ export interface AskResponse {
     minimum_support: number
     status: string
     qualifying_count: number
+    distinct_source_count?: number
+    direct_count?: number
+    supporting_count?: number
+    contextual_count?: number
+    excluded_count?: number
     detail: string
   }>
   evidenceUniverses?: Record<string, EvidenceUniverseMeta>
@@ -212,13 +219,93 @@ export interface AskResponse {
   retrievalTimestamps?: string[]
   failures?: Array<Record<string, unknown>>
   metadata?: Record<string, unknown>
+  answerSections?: AnswerSection[]
+  comparisonDecision?: ComparisonDecision | null
+  evidenceItems?: PublicEvidenceItem[]
+  contextualEvidence?: PublicEvidenceItem[]
+  activitySummary?: ActivitySummary
+  costSummary?: CostSummary
+  baseEvidenceRef?: string | null
+  reusedToolRunRefs?: string[]
+  createdToolRunRefs?: string[]
+  toolRunRefs?: string[]
+  dossierRunRefs?: string[]
+  evidenceUniverseRefs?: Record<string, PublicEvidenceUniverse>
+}
+
+export interface AnswerSection {
+  key: 'status' | 'direct_answer' | 'conditional_conclusion' | 'key_findings' | 'evidence_by_dimension'
+  title: string
+  paragraphs: string[]
+}
+
+export interface ComparisonDecision {
+  outcome: 'not_rankable' | 'dimension_specific_difference' | 'conditional_preference' | 'supported_preference'
+  summary: string
+  preferred_gene?: string | null
+  criterion?: string | null
+  limitations: string[]
+}
+
+export interface PublicEvidenceItem {
+  public_evidence_ref: string
+  gene_symbol: string
+  source_name: string
+  public_identifier?: string | null
+  title?: string | null
+  source_url?: string | null
+  evidence_need: string
+  designation: 'direct' | 'supporting' | 'contextual' | 'excluded'
+  display_text: string
+  retrieved_at?: string | null
+  backing_record_count: number
+  exclusion_reason?: string | null
+}
+
+export interface ActivitySummary {
+  requirements_planned: number
+  persisted_retrieval_completed: boolean
+  tools_executed: number
+  tools_failed: number
+  runs_reused: number
+  tools_skipped: number
+  accepted_evidence: number
+  rejected_evidence: number
+  skip_reasons: Record<string, number>
+  rejection_reasons: Record<string, number>
+}
+
+export interface CostSummary {
+  estimated_model_cost_usd?: number | null
+  external_tool_cost_usd?: number | null
+  actual_billed_cost_usd?: number | null
+  cost_basis: string[]
+  provider_reported_usage: Record<string, unknown>
+}
+
+export interface PublicEvidenceUniverse {
+  geneSymbol: string
+  baseEvidenceRef?: string | null
+  explicitRunRefs: string[]
+  reusedToolRunRefs: string[]
+  createdToolRunRefs: string[]
+  toolRunRefs: string[]
+  dossierRunRefs: string[]
+  evidenceUniverse: EvidenceUniverseName
 }
 
 export interface AgentComparisonCell {
   status: ComparisonStrength
   summary: string
   evidenceCount: number
-  evidenceRecordIds: string[]
+  publicEvidenceRefs: string[]
+  citationOrdinals: number[]
+  distinctSourceCount: number
+  directCount: number
+  supportingCount: number
+  excludedCount: number
+  directionalityKnown: boolean
+  hasConflict: boolean
 }
 
 export interface ComparisonCell {

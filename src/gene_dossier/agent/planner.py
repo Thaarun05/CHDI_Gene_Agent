@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from gene_dossier.config import Settings, get_settings
+from gene_dossier.source_registry import list_source_names
 
 from .capabilities import CAPABILITY_REGISTRY, NEED_CONTRIBUTORS, validated_capability_ids
 from .models import (
@@ -21,6 +22,7 @@ from .models import (
     ScientificIntent,
     ScientificQuestionPlan,
     ScientificQuestionPlanDraft,
+    ScientificQueryPolicy,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,11 +106,108 @@ EVIDENCE_NEED_METADATA: dict[EvidenceNeed, EvidenceNeedMetadata] = {
         label="Therapeutic / Perturbability Evidence",
         description="Chemical tool, perturbability, or therapeutic-modulation evidence.",
     ),
+    EvidenceNeed.safety_tolerability: EvidenceNeedMetadata(
+        label="Safety / Tolerability Evidence",
+        description="Safety, tolerability, toxicity, or adverse-effect evidence.",
+    ),
+    EvidenceNeed.clinical_translational: EvidenceNeedMetadata(
+        label="Clinical / Translational Evidence",
+        description="Clinical development, translational biomarker, or human intervention evidence.",
+    ),
 }
 
 
+def _registered_source_lookup() -> dict[str, str]:
+    return {name.casefold(): name for name in list_source_names()}
+
+
+def _explicit_registered_sources(question: str) -> list[str]:
+    """Return only server-registered sources literally named by the scientist."""
+    lower = question.casefold()
+    matches = [
+        canonical
+        for normalized, canonical in _registered_source_lookup().items()
+        if re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", lower)
+    ]
+    return list(dict.fromkeys(matches))
+
+
+def _validated_query_policy(
+    policy: ScientificQueryPolicy,
+    *,
+    question: str,
+) -> ScientificQueryPolicy:
+    """Canonicalize planner policy without granting the model new source access."""
+    registered = _registered_source_lookup()
+    explicit = _explicit_registered_sources(question)
+    sources: list[str] = []
+    for requested in policy.source_restrictions:
+        canonical = registered.get(requested.casefold())
+        if canonical is None:
+            raise ValueError(f"Unknown source restriction: {requested!r}.")
+        if canonical not in explicit:
+            raise ValueError(
+                f"Source restriction {requested!r} was not explicitly named in the question."
+            )
+        sources.append(canonical)
+    sources = list(dict.fromkeys([*sources, *explicit]))
+
+    lower = question.casefold()
+    ranking_requested = bool(
+        re.search(
+            r"\b(rank|ranking|winner|best|better|stronger|strongest|prefer|priority|prioritize)\b",
+            lower,
+        )
+    )
+    causal_required = bool(
+        re.search(r"\b(caus(?:e|al|ality)|driv(?:e|er)|responsible for)\b", lower)
+    )
+    analyze_conflicts = bool(
+        re.search(r"\b(conflict(?:ing)?|contradict(?:ory|ion)?|disagree(?:ment)?)\b", lower)
+    )
+    provenance_focus = bool(
+        re.search(r"\b(source|provenance|where did|retriev(?:ed|al)|trace)\b", lower)
+    )
+    species_scope = policy.species_scope
+    if re.search(r"\b(human|patient|clinical|people|participant)\b", lower):
+        species_scope = "human"
+    elif re.search(r"\b(mouse|mice|murine|model organism|drosophila|zebrafish)\b", lower):
+        species_scope = "model_organism"
+
+    criteria = list(policy.comparison_criteria)
+    criterion_terms: tuple[tuple[tuple[str, ...], EvidenceNeed], ...] = (
+        (("safety", "tolerability", "toxicity", "adverse"), EvidenceNeed.safety_tolerability),
+        (("clinical", "translational", "biomarker"), EvidenceNeed.clinical_translational),
+        (
+            ("therapeutic", "tractability", "perturbability", "drug"),
+            EvidenceNeed.therapeutic_perturbability,
+        ),
+        (("human genetic", "genetic modifier", "gwas"), EvidenceNeed.human_genetic_association),
+        (
+            ("repeat instability", "somatic cag", "somatic expansion"),
+            EvidenceNeed.repeat_instability_mechanism,
+        ),
+        (("mechanism", "pathway"), EvidenceNeed.pathway_membership),
+    )
+    for terms, need in criterion_terms:
+        if any(term in lower for term in terms):
+            criteria.append(need)
+
+    return ScientificQueryPolicy(
+        source_restrictions=sources,
+        species_scope=species_scope,
+        provenance_focus=policy.provenance_focus or provenance_focus,
+        analyze_conflicts=policy.analyze_conflicts or analyze_conflicts,
+        causal_evidence_required=policy.causal_evidence_required or causal_required,
+        ranking_requested=policy.ranking_requested or ranking_requested,
+        comparison_criteria=list(dict.fromkeys(criteria)),
+    )
+
+
 def _gene_is_explicit(question: str, gene: str) -> bool:
-    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(gene)}(?![A-Za-z0-9])", question, re.IGNORECASE))
+    return bool(
+        re.search(rf"(?<![A-Za-z0-9]){re.escape(gene)}(?![A-Za-z0-9])", question, re.IGNORECASE)
+    )
 
 
 _BIOMEDICAL_ACRONYM_STOPLIST = {
@@ -195,7 +294,9 @@ def _validate_plan(
     if len(genes) > 1 and any(not _gene_is_explicit(question, gene) for gene in genes):
         raise ValueError("Every multi-gene entity must appear explicitly in the question.")
     if len(genes) == 1 and not _gene_is_explicit(question, genes[0]) and genes[0] != context:
-        raise ValueError("The planned gene is neither explicit in the question nor the context gene.")
+        raise ValueError(
+            "The planned gene is neither explicit in the question nor the context gene."
+        )
     if _possible_unresolved_gene_tokens(
         question,
         resolved_genes=genes,
@@ -229,8 +330,12 @@ def _validate_plan(
         raise ValueError("A supported biomedical plan requires a resolved gene.")
     if draft.intent is not ScientificIntent.out_of_scope and not requirements:
         raise ValueError("A supported biomedical plan requires at least one evidence requirement.")
-    if draft.intent is not ScientificIntent.out_of_scope and not any(item.required for item in requirements):
-        raise ValueError("A supported biomedical plan requires at least one required evidence requirement.")
+    if draft.intent is not ScientificIntent.out_of_scope and not any(
+        item.required for item in requirements
+    ):
+        raise ValueError(
+            "A supported biomedical plan requires at least one required evidence requirement."
+        )
     if draft.analysis_lens not in {"general", "hd_modifier_relevance"}:
         raise ValueError("Unknown analysis lens.")
     if draft.analysis_lens == "hd_modifier_relevance" and len(genes) < 2:
@@ -239,12 +344,27 @@ def _validate_plan(
     primary = (draft.primary_gene or "").strip().upper() or None
     if primary and primary not in genes:
         raise ValueError("primary_gene must be one of the resolved genes.")
-    entities = draft.entities.model_copy(update={"genes": genes})
+    diseases = list(draft.entities.diseases)
+    if re.search(r"\b(huntington(?:'s)?(?: disease)?|hd)\b", question, re.IGNORECASE):
+        diseases.append("Huntington disease")
+    entities = draft.entities.model_copy(
+        update={"genes": genes, "diseases": list(dict.fromkeys(diseases))}
+    )
+    query_policy = _validated_query_policy(draft.query_policy, question=question)
     return ScientificQuestionPlan(
-        **draft.model_dump(exclude={"entities", "primary_gene", "evidence_requirements", "requires_multi_gene"}),
+        **draft.model_dump(
+            exclude={
+                "entities",
+                "primary_gene",
+                "evidence_requirements",
+                "query_policy",
+                "requires_multi_gene",
+            }
+        ),
         entities=entities,
         primary_gene=primary or (genes[0] if len(genes) == 1 else None),
         evidence_requirements=requirements,
+        query_policy=query_policy,
         requires_multi_gene=len(genes) > 1,
         planner_method=PlannerMethod.llm_structured,
     )
@@ -264,6 +384,9 @@ Do not answer the scientific question. Return only the strict structured plan.
 Identify explicit biomedical entities and what scientific evidence is needed.
 Capability IDs are abstract evidence mechanisms. Never output function names, section keys, APIs, URLs,
 endpoints, query parameters, or sources outside the supplied vocabulary.
+Populate source_restrictions only when the user explicitly names a registered source. Never invent a source.
+Represent explicit species, provenance, conflict, causality, ranking, and comparison-criterion requests in
+query_policy. A request for the strongest or best evidence is a ranking request; it does not authorize a winner.
 Do not invent a gene symbol. For a multi-gene plan every gene must occur literally in the question.
 For multi-gene comparisons set primary_gene to null.
 The context gene is only a hint when the question contains no explicit gene.
@@ -271,6 +394,7 @@ Every evidence requirement must explicitly set required true or false. Supportin
 Use analysis_lens=hd_modifier_relevance only for an explicit HD modifier comparison; otherwise use general.
 Keep disease_association separate from human_genetic_association. Generic disease, expression, pathway,
 PPI, or literature evidence is not direct human genetic modifier evidence.
+Safety/tolerability and clinical/translational evidence are distinct scientific needs and may be unsupported.
 For HD modifier questions, request evidence needs such as hd_literature, human_genetic_association,
 repeat_instability_mechanism, experimental_evidence, expression_context, pathway_membership, and
 therapeutic_perturbability only when the question asks for them. Do not rank targets or declare a winner.
@@ -282,7 +406,8 @@ Supported capability IDs:
 Supported scientific evidence needs and possible contributors:
 {need_lines}
 
-Context gene: {context_gene or 'none'}
+Context gene: {context_gene or "none"}
+Registered sources that may be used only when literally named: {", ".join(list_source_names())}
 Question: {question}
 """
 
@@ -338,7 +463,9 @@ def _try_structured_llm_plan(
             )
             return _validate_plan(draft, question=question, context_gene=context_gene)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("structured scientific planning failed via %s: %s", candidate.provider, exc)
+            logger.warning(
+                "structured scientific planning failed via %s: %s", candidate.provider, exc
+            )
     return None
 
 
@@ -351,6 +478,7 @@ def _single_requirement_plan(
     need: EvidenceNeed,
     capability: CapabilityId,
     label: str,
+    query_policy: ScientificQueryPolicy | None = None,
 ) -> ScientificQuestionPlan:
     requirement = EvidenceRequirement(
         id=need.value,
@@ -372,6 +500,7 @@ def _single_requirement_plan(
         answer_mode=answer_mode,
         evidence_requirements=[requirement],
         requires_multi_gene=False,
+        query_policy=query_policy or ScientificQueryPolicy(),
         planner_method=PlannerMethod.deterministic_fallback,
     )
 
@@ -393,13 +522,30 @@ def deterministic_fallback_plan(
     ]
     explicit_known = list(dict.fromkeys(explicit_known))
     if len(explicit_known) > 1:
-        return PlanResult(None, AnswerStatus.clarification_required, "Structured planning is required to resolve multiple explicit genes safely.")
+        return PlanResult(
+            None,
+            AnswerStatus.clarification_required,
+            "Structured planning is required to resolve multiple explicit genes safely.",
+        )
     if not q:
-        return PlanResult(None, AnswerStatus.clarification_required, "Please provide a biomedical question.")
-    if any(term in lower for term in ("weather", "sports score", "recipe", "stock price", "write a poem")):
-        return PlanResult(None, AnswerStatus.out_of_scope, "The request is outside supported biomedical research scope.")
+        return PlanResult(
+            None, AnswerStatus.clarification_required, "Please provide a biomedical question."
+        )
+    if any(
+        term in lower
+        for term in ("weather", "sports score", "recipe", "stock price", "write a poem")
+    ):
+        return PlanResult(
+            None,
+            AnswerStatus.out_of_scope,
+            "The request is outside supported biomedical research scope.",
+        )
     if any(term in lower for term in ("compare", "versus", " vs ", "genes")):
-        return PlanResult(None, AnswerStatus.clarification_required, "Structured planning is required to resolve a multi-gene question safely.")
+        return PlanResult(
+            None,
+            AnswerStatus.clarification_required,
+            "Structured planning is required to resolve a multi-gene question safely.",
+        )
     unresolved = _possible_unresolved_gene_tokens(
         q,
         resolved_genes=explicit_known,
@@ -413,18 +559,75 @@ def deterministic_fallback_plan(
         )
     gene = explicit_known[0] if explicit_known else context
     if not gene:
-        return PlanResult(None, AnswerStatus.clarification_required, "Select or name a context gene.")
+        return PlanResult(
+            None, AnswerStatus.clarification_required, "Select or name a context gene."
+        )
+    query_policy = _validated_query_policy(ScientificQueryPolicy(), question=q)
 
     options: list[tuple[tuple[str, ...], EvidenceNeed, CapabilityId, str, AnswerMode]] = [
-        (("interact", "interaction", "ppi", "protein partner"), EvidenceNeed.protein_interaction, CapabilityId.ppi, "Protein interaction", AnswerMode.fact),
-        (("domain", "structure", "alphafold"), EvidenceNeed.structure_domain, CapabilityId.structure_domain, "Structure and domain", AnswerMode.fact),
-        (("brain expression", "expressed in the brain", "brain region"), EvidenceNeed.brain_expression, CapabilityId.brain_expression, "Brain expression", AnswerMode.fact),
-        (("expression", "expressed", "tissue", "cell type"), EvidenceNeed.expression_context, CapabilityId.expression_context, "Expression", AnswerMode.fact),
-        (("transcription factor", " tf "), EvidenceNeed.transcriptional_regulation, CapabilityId.transcriptional_regulation, "Transcriptional regulation", AnswerMode.fact),
-        (("geo", "differential expression", "knockdown"), EvidenceNeed.experimental_evidence, CapabilityId.experimental_expression, "Experimental expression", AnswerMode.synthesis),
-        (("chemical perturbation", "chemical-gene", "ctd"), EvidenceNeed.chemical_perturbation, CapabilityId.chemical_perturbation, "Chemical perturbation", AnswerMode.synthesis),
-        (("pharmacolog", "chemical tool", "compound", "inhibitor", "drug"), EvidenceNeed.therapeutic_perturbability, CapabilityId.chemical_tools, "Therapeutic perturbability", AnswerMode.synthesis),
-        (("identity", "entrez", "uniprot", "alias", "function"), EvidenceNeed.identity_function, CapabilityId.identity_function, "Identity and function", AnswerMode.fact),
+        (
+            ("interact", "interaction", "ppi", "protein partner"),
+            EvidenceNeed.protein_interaction,
+            CapabilityId.ppi,
+            "Protein interaction",
+            AnswerMode.fact,
+        ),
+        (
+            ("domain", "structure", "alphafold"),
+            EvidenceNeed.structure_domain,
+            CapabilityId.structure_domain,
+            "Structure and domain",
+            AnswerMode.fact,
+        ),
+        (
+            ("brain expression", "expressed in the brain", "brain region"),
+            EvidenceNeed.brain_expression,
+            CapabilityId.brain_expression,
+            "Brain expression",
+            AnswerMode.fact,
+        ),
+        (
+            ("expression", "expressed", "tissue", "cell type"),
+            EvidenceNeed.expression_context,
+            CapabilityId.expression_context,
+            "Expression",
+            AnswerMode.fact,
+        ),
+        (
+            ("transcription factor", " tf "),
+            EvidenceNeed.transcriptional_regulation,
+            CapabilityId.transcriptional_regulation,
+            "Transcriptional regulation",
+            AnswerMode.fact,
+        ),
+        (
+            ("geo", "differential expression", "knockdown"),
+            EvidenceNeed.experimental_evidence,
+            CapabilityId.experimental_expression,
+            "Experimental expression",
+            AnswerMode.synthesis,
+        ),
+        (
+            ("chemical perturbation", "chemical-gene", "ctd"),
+            EvidenceNeed.chemical_perturbation,
+            CapabilityId.chemical_perturbation,
+            "Chemical perturbation",
+            AnswerMode.synthesis,
+        ),
+        (
+            ("pharmacolog", "chemical tool", "compound", "inhibitor", "drug"),
+            EvidenceNeed.therapeutic_perturbability,
+            CapabilityId.chemical_tools,
+            "Therapeutic perturbability",
+            AnswerMode.synthesis,
+        ),
+        (
+            ("identity", "entrez", "uniprot", "alias", "function"),
+            EvidenceNeed.identity_function,
+            CapabilityId.identity_function,
+            "Identity and function",
+            AnswerMode.fact,
+        ),
     ]
     for terms, need, capability, label, mode in options:
         if any(term in lower for term in terms):
@@ -437,6 +640,7 @@ def deterministic_fallback_plan(
                     need=need,
                     capability=capability,
                     label=label,
+                    query_policy=query_policy,
                 )
             )
     return PlanResult(
@@ -457,7 +661,11 @@ def plan_scientific_question(
     plan = _try_structured_llm_plan(question, context_gene, cfg)
     if plan is not None:
         if plan.intent is ScientificIntent.out_of_scope:
-            return PlanResult(plan, AnswerStatus.out_of_scope, "The request is outside supported biomedical research scope.")
+            return PlanResult(
+                plan,
+                AnswerStatus.out_of_scope,
+                "The request is outside supported biomedical research scope.",
+            )
         return PlanResult(plan)
     return deterministic_fallback_plan(question, context_gene, known_genes=known_genes)
 

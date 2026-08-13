@@ -15,21 +15,32 @@ from gene_dossier.agent.capabilities import (
     validate_source_capabilities,
 )
 from gene_dossier.agent.audit import audit_evidence_overlap, scientific_fingerprint
-from gene_dossier.agent.comparison import grade_hd_modifier_cell
+from gene_dossier.agent.comparison import build_comparison_decision, grade_hd_modifier_cell
+from gene_dossier.agent.evidence import (
+    canonicalize_requirement_evidence,
+    contains_private_value,
+    is_public_evidence_reference,
+    public_evidence_reference,
+    public_run_reference,
+)
 from gene_dossier.agent.models import (
     AnswerMode,
     AnswerStatus,
     CapabilityId,
+    ComparisonCell,
+    ComparisonRow,
     EvidenceNeed,
     EvidenceRequirement,
     EvidenceRequirementAssessment,
     EvidenceSelection,
     PlannerMethod,
+    ResearchMode,
     RequirementStatus,
     ScientificEntities,
     ScientificIntent,
     ScientificQuestionPlan,
     ScientificQuestionPlanDraft,
+    ScientificQueryPolicy,
 )
 from gene_dossier.agent.orchestrator import (
     ScientificAgentRequest,
@@ -88,6 +99,7 @@ from gene_dossier.retrieval import (
     collection_name_for_embedding,
     EmbeddingIndexIdentity,
 )
+from gene_dossier.source_ids import make_source_id
 from gene_dossier.workflow import normalize_tool_result
 
 
@@ -122,10 +134,11 @@ def _record(
     source_type: SourceType = SourceType.curated_database,
     grade: EvidenceGrade = EvidenceGrade.C,
     fact_type: str = "test_fact",
+    value: dict[str, Any] | None = None,
 ) -> EvidenceRecord:
     return EvidenceRecord(
         id=new_id(),
-        source_id=f"{source.lower()}:{gene.lower()}:{new_id()}",
+        source_id=make_source_id(source, gene, assertion, new_id()),
         dossier_run_id=run_id,
         gene_symbol=gene,
         official_symbol=gene,
@@ -135,12 +148,14 @@ def _record(
         assertion_type=assertion,
         fact_type=fact_type,
         evidence_grade=grade,
-        value={"text": text},
+        value={"text": text, **(value or {})},
         display_text=text,
     )
 
 
-def _persist_run(service: ScientificAgentService, gene: str, run_id: str, records: list[EvidenceRecord]) -> None:
+def _persist_run(
+    service: ScientificAgentService, gene: str, run_id: str, records: list[EvidenceRecord]
+) -> None:
     now = datetime.now(timezone.utc)
     with session_scope(service.engine) as session:
         save_dossier_run(
@@ -213,12 +228,18 @@ def _requirement(
     )
 
 
-def _plan(genes: list[str], requirements: list[EvidenceRequirement], *, lens: str = "general") -> ScientificQuestionPlan:
+def _plan(
+    genes: list[str], requirements: list[EvidenceRequirement], *, lens: str = "general"
+) -> ScientificQuestionPlan:
     return ScientificQuestionPlan(
-        intent=ScientificIntent.comparison if len(genes) > 1 else ScientificIntent.single_gene_question,
+        intent=ScientificIntent.comparison
+        if len(genes) > 1
+        else ScientificIntent.single_gene_question,
         entities=ScientificEntities(genes=genes),
         primary_gene=genes[0] if len(genes) == 1 else None,
-        objective="hd_modifier_relevance" if lens == "hd_modifier_relevance" else "offline evidence objective",
+        objective="hd_modifier_relevance"
+        if lens == "hd_modifier_relevance"
+        else "offline evidence objective",
         analysis_lens=lens,
         answer_mode=AnswerMode.comparison if len(genes) > 1 else AnswerMode.synthesis,
         evidence_requirements=requirements,
@@ -252,7 +273,14 @@ def _assessment_for(
     )
 
 
-def _service(tmp_path: Path, *, planner=None, baselines: dict[str, str] | None = None, section_executor=None, source_executor=None) -> ScientificAgentService:
+def _service(
+    tmp_path: Path,
+    *,
+    planner=None,
+    baselines: dict[str, str] | None = None,
+    section_executor=None,
+    source_executor=None,
+) -> ScientificAgentService:
     kwargs: dict[str, Any] = {
         "accepted_baselines": baselines or {},
         "settings": _settings(tmp_path),
@@ -272,32 +300,143 @@ def _service(tmp_path: Path, *, planner=None, baselines: dict[str, str] | None =
 def test_cdh10_ppi_uses_sufficient_baseline_without_acquisition(tmp_path: Path) -> None:
     service = _service(tmp_path, baselines={"CDH10": "cdh10-base"})
     records = [
-        _record(gene="CDH10", run_id="cdh10-base", source="STRING", assertion=AssertionType.ppi, text="CDH10 protein interaction partner A.", source_type=SourceType.interaction_database),
-        _record(gene="CDH10", run_id="cdh10-base", source="BioGRID", assertion=AssertionType.ppi, text="CDH10 protein interaction partner B.", source_type=SourceType.interaction_database),
+        _record(
+            gene="CDH10",
+            run_id="cdh10-base",
+            source="STRING",
+            assertion=AssertionType.ppi,
+            text="CDH10 protein interaction partner A.",
+            source_type=SourceType.interaction_database,
+        ),
+        _record(
+            gene="CDH10",
+            run_id="cdh10-base",
+            source="BioGRID",
+            assertion=AssertionType.ppi,
+            text="CDH10 protein interaction partner B.",
+            source_type=SourceType.interaction_database,
+        ),
     ]
     _persist_run(service, "CDH10", "cdh10-base", records)
+    historical = _record(
+        gene="CDH10",
+        run_id="cdh10-historical-ppi",
+        source="STRING",
+        assertion=AssertionType.ppi,
+        text="CDH10 historical interaction evidence.",
+        source_type=SourceType.interaction_database,
+    )
+    _persist_run(service, "CDH10", "cdh10-historical-ppi", [historical])
+    service._tag_acquisition_run(
+        gene="CDH10",
+        run_id="cdh10-historical-ppi",
+        executor_kind="section_bundle",
+        capabilities=[CapabilityId.ppi],
+        section_keys=["5a", "5b"],
+        sources=[],
+        status="completed",
+        successful=True,
+    )
 
-    result = service.execute(ScientificAgentRequest(question="What proteins interact with CDH10?", context_gene="SREBF2"))
+    result = service.execute(
+        ScientificAgentRequest(question="What proteins interact with CDH10?", context_gene="SREBF2")
+    )
 
     assert result.status is AnswerStatus.answered
     assert result.plan is not None and result.plan.entities.genes == ["CDH10"]
     assert result.evidence_universes["CDH10"].dossier_run_ids == ["cdh10-base"]
     assert not result.tool_activity
+    assert result.activity_summary.tools_executed == 0
+    assert result.activity_summary.tools_failed == 0
+    assert result.cost_summary.external_tool_cost_usd == 0.0
+    assert result.cost_summary.actual_billed_cost_usd is None
+
+
+def test_general_comparison_builds_deterministic_matrix_and_decision(tmp_path: Path) -> None:
+    genes = ["GENE1", "GENE2"]
+    requirement = _requirement(
+        EvidenceNeed.protein_interaction,
+        genes,
+        CapabilityId.ppi,
+        minimum=1,
+    )
+    plan = _plan(genes, [requirement]).model_copy(
+        update={
+            "query_policy": ScientificQueryPolicy(
+                comparison_criteria=[EvidenceNeed.protein_interaction]
+            )
+        }
+    )
+    service = _service(
+        tmp_path,
+        planner=_planner(plan),
+        baselines={"GENE1": "gene1-base", "GENE2": "gene2-base"},
+    )
+    for gene, run_id in (("GENE1", "gene1-base"), ("GENE2", "gene2-base")):
+        _persist_run(
+            service,
+            gene,
+            run_id,
+            [
+                _record(
+                    gene=gene,
+                    run_id=run_id,
+                    source="STRING",
+                    assertion=AssertionType.ppi,
+                    text=f"{gene} protein interaction evidence.",
+                    source_type=SourceType.interaction_database,
+                )
+            ],
+        )
+
+    result = service.execute(
+        ScientificAgentRequest(
+            question="Compare GENE1 and GENE2 protein interaction evidence.",
+            context_gene=None,
+            allow_tool_acquisition=False,
+        )
+    )
+
+    assert result.comparison_dimensions == [requirement.label]
+    assert len(result.comparison_matrix) == 1
+    assert set(result.comparison_matrix[0].cells) == set(genes)
+    assert result.comparison_decision is not None
+    assert result.comparison_decision.outcome.value == "not_rankable"
 
 
 def test_optional_gap_does_not_make_answer_insufficient(tmp_path: Path) -> None:
-    required = _requirement(EvidenceNeed.identity_function, ["GENE1"], CapabilityId.identity_function, minimum=1)
-    optional = _requirement(EvidenceNeed.protein_interaction, ["GENE1"], CapabilityId.ppi, required=False, minimum=2)
-    service = _service(tmp_path, planner=_planner(_plan(["GENE1"], [required, optional])), baselines={"GENE1": "base"})
+    required = _requirement(
+        EvidenceNeed.identity_function, ["GENE1"], CapabilityId.identity_function, minimum=1
+    )
+    optional = _requirement(
+        EvidenceNeed.protein_interaction, ["GENE1"], CapabilityId.ppi, required=False, minimum=2
+    )
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(["GENE1"], [required, optional])),
+        baselines={"GENE1": "base"},
+    )
     _persist_run(
         service,
         "GENE1",
         "base",
-        [_record(gene="GENE1", run_id="base", source="NCBI Gene", assertion=AssertionType.gene_identity, text="GENE1 identity record.")],
+        [
+            _record(
+                gene="GENE1",
+                run_id="base",
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text="GENE1 identity record.",
+            )
+        ],
     )
 
     result = service.execute(
-        ScientificAgentRequest(question="Summarize GENE1 with optional interaction context.", context_gene="GENE1", allow_tool_acquisition=False)
+        ScientificAgentRequest(
+            question="Summarize GENE1 with optional interaction context.",
+            context_gene="GENE1",
+            allow_tool_acquisition=False,
+        )
     )
 
     assert result.status is AnswerStatus.answered
@@ -306,10 +445,18 @@ def test_optional_gap_does_not_make_answer_insufficient(tmp_path: Path) -> None:
 
 def test_open_ended_srebf2_question_combines_cross_category_evidence(tmp_path: Path) -> None:
     requirements = [
-        _requirement(EvidenceNeed.identity_function, ["SREBF2"], CapabilityId.identity_function, minimum=1),
+        _requirement(
+            EvidenceNeed.identity_function, ["SREBF2"], CapabilityId.identity_function, minimum=1
+        ),
         _requirement(EvidenceNeed.pathway_membership, ["SREBF2"], CapabilityId.pathway, minimum=1),
         _requirement(EvidenceNeed.hd_literature, ["SREBF2"], CapabilityId.hd_literature, minimum=2),
-        _requirement(EvidenceNeed.brain_expression, ["SREBF2"], CapabilityId.brain_expression, required=False, minimum=1),
+        _requirement(
+            EvidenceNeed.brain_expression,
+            ["SREBF2"],
+            CapabilityId.brain_expression,
+            required=False,
+            minimum=1,
+        ),
     ]
     service = _service(
         tmp_path,
@@ -317,10 +464,39 @@ def test_open_ended_srebf2_question_combines_cross_category_evidence(tmp_path: P
         baselines={"SREBF2": "srebf2-base"},
     )
     records = [
-        _record(gene="SREBF2", run_id="srebf2-base", source="UniProt", assertion=AssertionType.protein_function, text="SREBF2 protein function includes cholesterol biology."),
-        _record(gene="SREBF2", run_id="srebf2-base", source="Reactome", assertion=AssertionType.pathway_membership, text="SREBF2 Reactome cholesterol biosynthesis pathway.", source_type=SourceType.pathway_database),
-        _record(gene="SREBF2", run_id="srebf2-base", source="PubMed", assertion=AssertionType.literature_summary, text="SREBF2 cholesterol biology in a Huntington disease study.", source_type=SourceType.literature, grade=EvidenceGrade.F),
-        _record(gene="SREBF2", run_id="srebf2-base", source="PubMed", assertion=AssertionType.literature_summary, text="SREBF2 pathway context in Huntington disease literature.", source_type=SourceType.literature, grade=EvidenceGrade.F),
+        _record(
+            gene="SREBF2",
+            run_id="srebf2-base",
+            source="UniProt",
+            assertion=AssertionType.protein_function,
+            text="SREBF2 protein function includes cholesterol biology.",
+        ),
+        _record(
+            gene="SREBF2",
+            run_id="srebf2-base",
+            source="Reactome",
+            assertion=AssertionType.pathway_membership,
+            text="SREBF2 Reactome cholesterol biosynthesis pathway.",
+            source_type=SourceType.pathway_database,
+        ),
+        _record(
+            gene="SREBF2",
+            run_id="srebf2-base",
+            source="PubMed",
+            assertion=AssertionType.literature_summary,
+            text="SREBF2 cholesterol biology in a Huntington disease study.",
+            source_type=SourceType.literature,
+            grade=EvidenceGrade.F,
+        ),
+        _record(
+            gene="SREBF2",
+            run_id="srebf2-base",
+            source="PubMed",
+            assertion=AssertionType.literature_summary,
+            text="SREBF2 pathway context in Huntington disease literature.",
+            source_type=SourceType.literature,
+            grade=EvidenceGrade.F,
+        ),
     ]
     _persist_run(service, "SREBF2", "srebf2-base", records)
 
@@ -333,10 +509,64 @@ def test_open_ended_srebf2_question_combines_cross_category_evidence(tmp_path: P
     )
 
     assert result.status is AnswerStatus.answered
-    assert {record.source_name for record in result.selected_records} == {"UniProt", "Reactome", "PubMed"}
+    assert {record.source_name for record in result.selected_records} == {
+        "UniProt",
+        "Reactome",
+        "PubMed",
+    }
     assert len(result.assessments) == 4
-    assert any(item.evidence_need is EvidenceNeed.brain_expression and not item.required for item in result.assessments)
-    assert "[Evidence gap]" in result.summary
+    assert any(
+        item.evidence_need is EvidenceNeed.brain_expression and not item.required
+        for item in result.assessments
+    )
+    assert "Evidence gap for" in result.summary
+
+
+def test_citation_registry_contains_complete_public_provenance(tmp_path: Path) -> None:
+    requirement = _requirement(
+        EvidenceNeed.hd_literature,
+        ["GENE1"],
+        CapabilityId.hd_literature,
+        minimum=1,
+    )
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(["GENE1"], [requirement])),
+        baselines={"GENE1": "gene1-base"},
+    )
+    record = _record(
+        gene="GENE1",
+        run_id="gene1-base",
+        source="PubMed",
+        assertion=AssertionType.literature_summary,
+        source_type=SourceType.literature,
+        text="GENE1 evidence in Huntington disease.",
+        value={
+            "pmid": "12345678",
+            "title": "GENE1 evidence in Huntington disease",
+            "url": "https://pubmed.ncbi.nlm.nih.gov/12345678/",
+        },
+    )
+    _persist_run(service, "GENE1", "gene1-base", [record])
+
+    result = service.execute(
+        ScientificAgentRequest(
+            question="What evidence links GENE1 to Huntington disease?",
+            context_gene=None,
+            allow_tool_acquisition=False,
+        )
+    )
+    citation = result.citation_registry[0]
+
+    assert citation.ordinal == 1
+    assert is_public_evidence_reference(citation.public_evidence_ref)
+    assert citation.source_id == record.source_id
+    assert citation.source_name == "PubMed"
+    assert citation.public_identifier == "PMID: 12345678"
+    assert citation.source_url == "https://pubmed.ncbi.nlm.nih.gov/12345678/"
+    assert citation.evidence_need is EvidenceNeed.hd_literature
+    assert citation.designation.value == "supporting"
+    assert citation.retrieved_at is not None
 
 
 def test_disease_association_never_satisfies_human_genetic_modifier_need(tmp_path: Path) -> None:
@@ -346,7 +576,9 @@ def test_disease_association_never_satisfies_human_genetic_modifier_need(tmp_pat
         CapabilityId.human_genetic_association,
         minimum=1,
     )
-    service = _service(tmp_path, planner=_planner(_plan(["GENE2"], [requirement])), baselines={"GENE2": "base"})
+    service = _service(
+        tmp_path, planner=_planner(_plan(["GENE2"], [requirement])), baselines={"GENE2": "base"}
+    )
     disease_record = _record(
         gene="GENE2",
         run_id="base",
@@ -359,7 +591,11 @@ def test_disease_association_never_satisfies_human_genetic_modifier_need(tmp_pat
     _persist_run(service, "GENE2", "base", [disease_record])
 
     result = service.execute(
-        ScientificAgentRequest(question="Is GENE2 a human genetic HD modifier?", context_gene="GENE2", allow_tool_acquisition=False)
+        ScientificAgentRequest(
+            question="Is GENE2 a human genetic HD modifier?",
+            context_gene="GENE2",
+            allow_tool_acquisition=False,
+        )
     )
 
     assert result.status is AnswerStatus.insufficient_evidence
@@ -474,9 +710,7 @@ def test_structured_plan_replaces_invalid_capability_with_server_mapping() -> No
         context_gene="SREBF2",
     )
 
-    assert plan.evidence_requirements[0].capability_ids == [
-        CapabilityId.human_genetic_association
-    ]
+    assert plan.evidence_requirements[0].capability_ids == [CapabilityId.human_genetic_association]
 
 
 def test_structured_plan_canonicalizes_expression_requirement_metadata() -> None:
@@ -626,16 +860,9 @@ def test_gemini_planner_schema_preserves_canonical_model_contract() -> None:
     assert canonical["properties"]["evidence_requirements"]["maxItems"] == 10
     assert "maxItems" not in gemini_schema["properties"]["evidence_requirements"]
     assert ScientificQuestionPlanDraft.model_json_schema() == canonical
+    assert gemini_schema["$defs"]["EvidenceRequirement"]["properties"]["genes"]["maxItems"] == 6
     assert (
-        gemini_schema["$defs"]["EvidenceRequirement"]["properties"]["genes"][
-            "maxItems"
-        ]
-        == 6
-    )
-    assert (
-        gemini_schema["$defs"]["EvidenceRequirement"]["properties"]["capability_ids"][
-            "maxItems"
-        ]
+        gemini_schema["$defs"]["EvidenceRequirement"]["properties"]["capability_ids"]["maxItems"]
         == 8
     )
 
@@ -829,8 +1056,7 @@ def test_overlong_gemini_requirement_list_still_fails_canonical_validation(
                 "analysis_lens": "hd_modifier_relevance",
                 "answer_mode": "comparison",
                 "evidence_requirements": [
-                    {**requirement, "id": f"human_genetic_association_{idx}"}
-                    for idx in range(11)
+                    {**requirement, "id": f"human_genetic_association_{idx}"} for idx in range(11)
                 ],
                 "requires_multi_gene": True,
             }
@@ -873,10 +1099,14 @@ def test_ordinal_citation_validation_rejects_raw_and_out_of_range_ids() -> None:
     assert citations_are_valid("Supported evidence [[1]] and [[2]].", evidence_ids)
     assert not citations_are_valid("Unsupported marker [[3]].", evidence_ids)
     assert not citations_are_valid("EvidenceRecord ID: abc123 [[1]].", evidence_ids)
-    assert citations_are_valid("Public identifier abcdef123456abcdef123456abcdef12 [[1]].", evidence_ids)
+    assert citations_are_valid(
+        "Public identifier abcdef123456abcdef123456abcdef12 [[1]].", evidence_ids
+    )
 
 
-def _grounding_fixture() -> tuple[EvidenceRecord, ScientificQuestionPlan, EvidenceRequirementAssessment]:
+def _grounding_fixture() -> tuple[
+    EvidenceRecord, ScientificQuestionPlan, EvidenceRequirementAssessment
+]:
     record = _record(
         gene="FAN1",
         run_id="private-run-id",
@@ -942,12 +1172,18 @@ def _fake_grounded_result(
     return result, captured
 
 
-def test_grounded_model_schema_is_fragments_only_and_prompt_excludes_private_ids(monkeypatch) -> None:
+def test_grounded_model_schema_is_fragments_only_and_prompt_excludes_private_ids(
+    monkeypatch,
+) -> None:
     result, captured = _fake_grounded_result(
         monkeypatch,
         fragments=[
-            GroundedProseFragment(slot_id="slot_001", text="FAN1 has supplied HD literature evidence."),
-            GroundedProseFragment(slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."),
+            GroundedProseFragment(
+                slot_id="slot_001", text="FAN1 has supplied HD literature evidence."
+            ),
+            GroundedProseFragment(
+                slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."
+            ),
         ],
     )
 
@@ -996,7 +1232,9 @@ def test_unsafe_fragment_falls_back_without_rejecting_complete_answer(
         monkeypatch,
         fragments=[
             GroundedProseFragment(slot_id="slot_001", text=unsafe_text),
-            GroundedProseFragment(slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."),
+            GroundedProseFragment(
+                slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."
+            ),
         ],
     )
 
@@ -1014,16 +1252,24 @@ def test_actual_private_id_falls_back_but_public_hex_identifier_is_allowed(monke
     private_result, _ = _fake_grounded_result(
         monkeypatch,
         fragments=[
-            GroundedProseFragment(slot_id="slot_001", text="FAN1 record private-record-id supports HD."),
-            GroundedProseFragment(slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."),
+            GroundedProseFragment(
+                slot_id="slot_001", text="FAN1 record private-record-id supports HD."
+            ),
+            GroundedProseFragment(
+                slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."
+            ),
         ],
     )
     public_hex = "abcdef123456abcdef123456abcdef12"
     public_result, _ = _fake_grounded_result(
         monkeypatch,
         fragments=[
-            GroundedProseFragment(slot_id="slot_001", text=f"FAN1 public identifier {public_hex} is reported."),
-            GroundedProseFragment(slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."),
+            GroundedProseFragment(
+                slot_id="slot_001", text=f"FAN1 public identifier {public_hex} is reported."
+            ),
+            GroundedProseFragment(
+                slot_id="slot_002", text="The supplied literature discusses FAN1 in HD."
+            ),
         ],
     )
 
@@ -1053,16 +1299,24 @@ def test_missing_duplicate_and_unknown_slots_are_handled_independently(monkeypat
 def test_final_validation_is_structural_only() -> None:
     record, _plan_value, _assessment = _grounding_fixture()
     registry = [
-        SimpleNamespace(ordinal=1, evidence_record_id=record.id, source_id=record.source_id, source_name=record.source_name)
+        SimpleNamespace(
+            ordinal=1,
+            evidence_record_id=record.id,
+            source_id=record.source_id,
+            source_name=record.source_name,
+        )
     ]
 
-    assert validate_rendered_answer(
-        "A causal directional conflict claim is structurally cited [[1]].",
-        citation_registry=registry,
-        actual_record_ids={record.id},
-        rendered_slot_ids=["slot_001"],
-        expected_slot_ids=["slot_001"],
-    ) == []
+    assert (
+        validate_rendered_answer(
+            "A causal directional conflict claim is structurally cited [[1]].",
+            citation_registry=registry,
+            actual_record_ids={record.id},
+            rendered_slot_ids=["slot_001"],
+            expected_slot_ids=["slot_001"],
+        )
+        == []
+    )
 
 
 def test_fragment_validator_uses_server_policy_not_model_metadata() -> None:
@@ -1168,11 +1422,11 @@ def test_gap_ids_are_stable_and_recommendations_reference_existing_gaps(
     assert gap_ids
     assert all(gap_id.startswith("msh3:") for gap_id in gap_ids)
     assert {
-        gap_id
-        for recommendation in result.recommendations
-        for gap_id in recommendation.gap_ids
+        gap_id for recommendation in result.recommendations for gap_id in recommendation.gap_ids
     } <= set(gap_ids)
-    assert all(recommendation.label == "Recommendation" for recommendation in result.recommendations)
+    assert all(
+        recommendation.label == "Recommendation" for recommendation in result.recommendations
+    )
 
 
 def test_zero_base_bootstrap_then_exact_run_reuse(tmp_path: Path) -> None:
@@ -1185,16 +1439,40 @@ def test_zero_base_bootstrap_then_exact_run_reuse(tmp_path: Path) -> None:
         calls.append(list(section_keys))
         run_id = f"novel-run-{len(calls)}"
         records = [
-            _record(gene=gene, run_id=run_id, source="NCBI Gene", assertion=AssertionType.gene_identity, text=f"{gene} identity record."),
-            _record(gene=gene, run_id=run_id, source="STRING", assertion=AssertionType.ppi, text=f"{gene} interaction partner A.", source_type=SourceType.interaction_database),
-            _record(gene=gene, run_id=run_id, source="BioGRID", assertion=AssertionType.ppi, text=f"{gene} interaction partner B.", source_type=SourceType.interaction_database),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text=f"{gene} identity record.",
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="STRING",
+                assertion=AssertionType.ppi,
+                text=f"{gene} interaction partner A.",
+                source_type=SourceType.interaction_database,
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="BioGRID",
+                assertion=AssertionType.ppi,
+                text=f"{gene} interaction partner B.",
+                source_type=SourceType.interaction_database,
+            ),
         ]
         _persist_run(holder["service"], gene, run_id, records)
         return SimpleNamespace(status="completed", dossier_run_id=run_id, errors=[])
 
     service = _service(tmp_path, planner=_planner(plan), section_executor=section_executor)
     holder["service"] = service
-    first = service.execute(ScientificAgentRequest(question="What proteins interact with NOVEL1?", context_gene="SREBF2"))
+    first = service.execute(
+        ScientificAgentRequest(
+            question="What proteins interact with NOVEL1?", context_gene="SREBF2"
+        )
+    )
 
     assert first.status is AnswerStatus.answered
     assert calls == [["1a", "5a", "5b"]]
@@ -1205,7 +1483,11 @@ def test_zero_base_bootstrap_then_exact_run_reuse(tmp_path: Path) -> None:
         raise AssertionError("qualifying tagged evidence should have been reused")
 
     second_service = _service(tmp_path, planner=_planner(plan), section_executor=must_not_execute)
-    second = second_service.execute(ScientificAgentRequest(question="Which proteins interact with NOVEL1?", context_gene="CDH10"))
+    second = second_service.execute(
+        ScientificAgentRequest(
+            question="Which proteins interact with NOVEL1?", context_gene="CDH10"
+        )
+    )
 
     assert second.status is AnswerStatus.answered
     assert second.evidence_universes["NOVEL1"].reused_tool_run_ids == ["novel-run-1"]
@@ -1331,6 +1613,7 @@ def test_manifest_verifies_executed_capability_not_triggering_requirement(tmp_pa
                 text="SREBP2 gene therapy targeting striatal astrocytes ameliorates Huntington disease phenotypes.",
                 source_type=SourceType.literature,
                 grade=EvidenceGrade.F,
+                value={"aliases_used": ["SREBP2"]},
             )
         ]
         _persist_run(holder["service"], gene, run_id, records)
@@ -1381,11 +1664,14 @@ def test_manifest_verifies_executed_capability_not_triggering_requirement(tmp_pa
         CapabilityId.pathway,
         minimum=1,
     )
-    assert service._find_reusable_run(
-        gene="SREBF2",
-        requirement=unrelated_requirement,
-        excluded_run_ids=set(),
-    ) is None
+    assert (
+        service._find_reusable_run(
+            gene="SREBF2",
+            requirement=unrelated_requirement,
+            excluded_run_ids=set(),
+        )
+        is None
+    )
 
 
 def test_partial_generated_dossier_does_not_imply_missing_capability_exists(tmp_path: Path) -> None:
@@ -1396,7 +1682,15 @@ def test_partial_generated_dossier_does_not_imply_missing_capability_exists(tmp_
         service,
         "PARTIAL1",
         run_id,
-        [_record(gene="PARTIAL1", run_id=run_id, source="NCBI Gene", assertion=AssertionType.gene_identity, text="PARTIAL1 identity evidence.")],
+        [
+            _record(
+                gene="PARTIAL1",
+                run_id=run_id,
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text="PARTIAL1 identity evidence.",
+            )
+        ],
     )
     with session_scope(service.engine) as session:
         save_generated_report(
@@ -1428,13 +1722,23 @@ def test_partial_generated_dossier_does_not_imply_missing_capability_exists(tmp_
 
 
 def test_explicit_run_ownership_mismatch_is_rejected(tmp_path: Path) -> None:
-    requirement = _requirement(EvidenceNeed.identity_function, ["RIGHT1"], CapabilityId.identity_function, minimum=1)
+    requirement = _requirement(
+        EvidenceNeed.identity_function, ["RIGHT1"], CapabilityId.identity_function, minimum=1
+    )
     service = _service(tmp_path, planner=_planner(_plan(["RIGHT1"], [requirement])))
     _persist_run(
         service,
         "WRONG1",
         "wrong-run",
-        [_record(gene="WRONG1", run_id="wrong-run", source="NCBI Gene", assertion=AssertionType.gene_identity, text="WRONG1 identity.")],
+        [
+            _record(
+                gene="WRONG1",
+                run_id="wrong-run",
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text="WRONG1 identity.",
+            )
+        ],
     )
 
     result = service.execute(
@@ -1462,9 +1766,31 @@ def test_hd_modifier_lens_keeps_four_independent_zero_base_universes(tmp_path: P
         section_calls.append((gene, list(section_keys)))
         run_id = f"section-{gene}"
         records = [
-            _record(gene=gene, run_id=run_id, source="NCBI Gene", assertion=AssertionType.gene_identity, text=f"{gene} identity record."),
-            _record(gene=gene, run_id=run_id, source="GEO", assertion=AssertionType.perturbation, text=f"{gene} GEO experimental perturbation evidence.", source_type=SourceType.expression_database, grade=EvidenceGrade.D),
-            _record(gene=gene, run_id=run_id, source="Allen Brain Atlas", assertion=AssertionType.expression, text=f"{gene} expression in human brain cortex.", source_type=SourceType.expression_database, grade=EvidenceGrade.B),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text=f"{gene} identity record.",
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="GEO",
+                assertion=AssertionType.perturbation,
+                text=f"{gene} GEO experimental perturbation evidence.",
+                source_type=SourceType.expression_database,
+                grade=EvidenceGrade.D,
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="Allen Brain Atlas",
+                assertion=AssertionType.expression,
+                text=f"{gene} expression in human brain cortex.",
+                source_type=SourceType.expression_database,
+                grade=EvidenceGrade.B,
+            ),
         ]
         _persist_run(holder["service"], gene, run_id, records)
         return SimpleNamespace(status="completed", dossier_run_id=run_id, errors=[])
@@ -1473,9 +1799,32 @@ def test_hd_modifier_lens_keeps_four_independent_zero_base_universes(tmp_path: P
         source_calls.append((gene, list(sources)))
         run_id = f"source-{gene}"
         records = [
-            _record(gene=gene, run_id=run_id, source="PubMed", assertion=AssertionType.literature_summary, text=f"{gene} Huntington disease CAG repeat expansion study A.", source_type=SourceType.literature, grade=EvidenceGrade.F),
-            _record(gene=gene, run_id=run_id, source="PubMed", assertion=AssertionType.literature_summary, text=f"{gene} somatic CAG repeat instability study B.", source_type=SourceType.literature, grade=EvidenceGrade.F),
-            _record(gene=gene, run_id=run_id, source="Reactome", assertion=AssertionType.pathway_membership, text=f"{gene} Reactome DNA repair pathway.", source_type=SourceType.pathway_database),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="PubMed",
+                assertion=AssertionType.literature_summary,
+                text=f"{gene} Huntington disease CAG repeat expansion study A.",
+                source_type=SourceType.literature,
+                grade=EvidenceGrade.F,
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="PubMed",
+                assertion=AssertionType.literature_summary,
+                text=f"{gene} somatic CAG repeat instability study B.",
+                source_type=SourceType.literature,
+                grade=EvidenceGrade.F,
+            ),
+            _record(
+                gene=gene,
+                run_id=run_id,
+                source="Reactome",
+                assertion=AssertionType.pathway_membership,
+                text=f"{gene} Reactome DNA repair pathway.",
+                source_type=SourceType.pathway_database,
+            ),
         ]
         _persist_run(holder["service"], gene, run_id, records)
         return SimpleNamespace(status="completed", dossier_run_id=run_id, errors=[])
@@ -1498,15 +1847,16 @@ def test_hd_modifier_lens_keeps_four_independent_zero_base_universes(tmp_path: P
     assert set(result.evidence_universes) == set(genes)
     assert "SREBF2" not in result.evidence_universes
     assert len([item for item in result.tool_activity if not item.reused]) == 4
-    assert len({capability for item in result.tool_activity for capability in item.capability_ids}) <= 4
+    assert (
+        len({capability for item in result.tool_activity for capability in item.capability_ids})
+        <= 4
+    )
     assert section_calls == []
     assert {gene for gene, _ in source_calls} == set(genes)
     readiness = result.metadata["readiness"]
-    assert {
-        row["operational_state"]
-        for row in readiness
-        if row["required"] is False
-    } == {"not_required"}
+    assert {row["operational_state"] for row in readiness if row["required"] is False} == {
+        "not_required"
+    }
     assert result.status is AnswerStatus.insufficient_evidence
     assert result.comparison_dimensions[0] == "Human Genetic Modifier Evidence"
     assert len(result.comparison_matrix) == 7
@@ -1549,7 +1899,10 @@ def test_hd_modifier_lens_drops_general_extras_already_covered_by_rubric(tmp_pat
     assert "planner_expression_context" not in requirement_ids
     assert "planner_ppi_context" not in requirement_ids
     assert "planner_structure_context" in requirement_ids
-    assert len([req for req in augmented.evidence_requirements if req.id.startswith("hd_modifier_")]) == 7
+    assert (
+        len([req for req in augmented.evidence_requirements if req.id.startswith("hd_modifier_")])
+        == 7
+    )
 
 
 def test_hd_matrix_uses_full_final_evidence_not_synthesis_context(tmp_path: Path) -> None:
@@ -1566,10 +1919,11 @@ def test_hd_matrix_uses_full_final_evidence_not_synthesis_context(tmp_path: Path
             _record(
                 gene=gene,
                 run_id=run_id,
-                source=f"Reactome-{index}",
+                source="Reactome",
                 assertion=AssertionType.pathway_membership,
                 text=f"{gene} DNA repair pathway record {index}.",
                 source_type=SourceType.pathway_database,
+                value={"st_id": f"R-HSA-{gene}-{index}"},
             )
             for index in range(35 if gene == "GENE1" else 6)
         ]
@@ -1583,9 +1937,7 @@ def test_hd_matrix_uses_full_final_evidence_not_synthesis_context(tmp_path: Path
         )
     )
 
-    pathway_row = next(
-        row for row in result.comparison_matrix if row.dimension == "Pathway / PPI"
-    )
+    pathway_row = next(row for row in result.comparison_matrix if row.dimension == "Pathway / PPI")
     assert len(result.selected_records) == 20
     assert pathway_row.cells["GENE1"].evidence_count == 35
     assert len(pathway_row.cells["GENE1"].evidence_record_ids) == 35
@@ -1699,52 +2051,78 @@ def test_hd_modifier_grading_is_dimension_aware_and_conservative() -> None:
         for index in range(4)
     ]
 
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.human_genetic_association,
-        human_records,
-        _assessment_for(EvidenceNeed.human_genetic_association, count=2),
-    ) == "Strong"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.hd_literature,
-        hd_literature,
-        _assessment_for(EvidenceNeed.hd_literature),
-    ) == "Strong"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.repeat_instability_mechanism,
-        generic_cag,
-        _assessment_for(EvidenceNeed.repeat_instability_mechanism, count=1),
-    ) == "Weak"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.repeat_instability_mechanism,
-        mechanistic,
-        _assessment_for(EvidenceNeed.repeat_instability_mechanism),
-    ) == "Strong"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.experimental_evidence,
-        experimental,
-        _assessment_for(EvidenceNeed.experimental_evidence),
-    ) == "Strong"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.brain_expression,
-        expression,
-        _assessment_for(EvidenceNeed.brain_expression, count=4),
-    ) == "Moderate"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.pathway_membership,
-        pathways,
-        _assessment_for(EvidenceNeed.pathway_membership, count=4),
-    ) == "Moderate"
-    assert grade_hd_modifier_cell(
-        EvidenceNeed.therapeutic_perturbability,
-        therapeutic,
-        _assessment_for(EvidenceNeed.therapeutic_perturbability, count=4),
-    ) == "Moderate"
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.human_genetic_association,
+            human_records,
+            _assessment_for(EvidenceNeed.human_genetic_association, count=2),
+        )
+        == "Strong"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.hd_literature,
+            hd_literature,
+            _assessment_for(EvidenceNeed.hd_literature),
+        )
+        == "Strong"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.repeat_instability_mechanism,
+            generic_cag,
+            _assessment_for(EvidenceNeed.repeat_instability_mechanism, count=1),
+        )
+        == "Weak"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.repeat_instability_mechanism,
+            mechanistic,
+            _assessment_for(EvidenceNeed.repeat_instability_mechanism),
+        )
+        == "Strong"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.experimental_evidence,
+            experimental,
+            _assessment_for(EvidenceNeed.experimental_evidence),
+        )
+        == "Strong"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.brain_expression,
+            expression,
+            _assessment_for(EvidenceNeed.brain_expression, count=4),
+        )
+        == "Moderate"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.pathway_membership,
+            pathways,
+            _assessment_for(EvidenceNeed.pathway_membership, count=4),
+        )
+        == "Moderate"
+    )
+    assert (
+        grade_hd_modifier_cell(
+            EvidenceNeed.therapeutic_perturbability,
+            therapeutic,
+            _assessment_for(EvidenceNeed.therapeutic_perturbability, count=4),
+        )
+        == "Moderate"
+    )
 
 
 def test_enabled_source_capabilities_normalize_persist_and_index_offline(tmp_path: Path) -> None:
     assert validate_source_capabilities() == []
     settings = _settings(tmp_path)
-    service = ScientificAgentService(accepted_baselines={}, settings=settings, index_factory=lambda: _NoSemanticIndex())
+    service = ScientificAgentService(
+        accepted_baselines={}, settings=settings, index_factory=lambda: _NoSemanticIndex()
+    )
     init_db(service.engine)
     run_id = "source-contract-run"
     tool_results = [
@@ -1754,7 +2132,11 @@ def test_enabled_source_capabilities_normalize_persist_and_index_offline(tmp_pat
             success=True,
             gene_symbol="FAN1",
             request_url="https://example.invalid/pubmed",
-            data={"pmids": ["123"], "search_term": "FAN1 Huntington", "esummary": {"result": {"123": {"uid": "123", "title": "FAN1 and CAG expansion"}}}},
+            data={
+                "pmids": ["123"],
+                "search_term": "FAN1 Huntington",
+                "esummary": {"result": {"123": {"uid": "123", "title": "FAN1 and CAG expansion"}}},
+            },
         ),
         ToolResult(
             source_name="Reactome",
@@ -1762,7 +2144,16 @@ def test_enabled_source_capabilities_normalize_persist_and_index_offline(tmp_pat
             success=True,
             gene_symbol="FAN1",
             request_url="https://example.invalid/reactome",
-            data={"uniprot_accession": "Q9Y2M0", "pathway_summaries": [{"st_id": "R-HSA-1", "display_name": "DNA repair", "species_name": "Homo sapiens"}]},
+            data={
+                "uniprot_accession": "Q9Y2M0",
+                "pathway_summaries": [
+                    {
+                        "st_id": "R-HSA-1",
+                        "display_name": "DNA repair",
+                        "species_name": "Homo sapiens",
+                    }
+                ],
+            },
         ),
         ToolResult(
             source_name="MouseMine",
@@ -1770,10 +2161,20 @@ def test_enabled_source_capabilities_normalize_persist_and_index_offline(tmp_pat
             success=True,
             gene_symbol="FAN1",
             request_url="https://example.invalid/mousemine",
-            data={"mgi_id": "MGI:1", "gene_summaries": [{"mgi_id": "MGI:1", "symbol": "Fan1"}], "allele_rows": [], "phenotype_rows": [], "stock_rows": []},
+            data={
+                "mgi_id": "MGI:1",
+                "gene_summaries": [{"mgi_id": "MGI:1", "symbol": "Fan1"}],
+                "allele_rows": [],
+                "phenotype_rows": [],
+                "stock_rows": [],
+            },
         ),
     ]
-    records = [record for result in tool_results for record in normalize_tool_result(result, dossier_run_id=run_id)]
+    records = [
+        record
+        for result in tool_results
+        for record in normalize_tool_result(result, dossier_run_id=run_id)
+    ]
     _persist_run(service, "FAN1", run_id, records)
 
     with session_scope(service.engine) as session:
@@ -1792,7 +2193,9 @@ def test_enabled_source_capabilities_normalize_persist_and_index_offline(tmp_pat
     assert index.upsert_evidence(persisted) == len(persisted)
 
 
-def test_pubmed_controlled_source_uses_validated_hd_request_contract(monkeypatch, tmp_path: Path) -> None:
+def test_pubmed_controlled_source_uses_validated_hd_request_contract(
+    monkeypatch, tmp_path: Path
+) -> None:
     from gene_dossier.tools import pubmed
 
     captured: dict[str, Any] = {}
@@ -1832,7 +2235,10 @@ def test_pubmed_gene_title_abstract_clause_uses_validated_aliases() -> None:
         ["SREBP2", "SREBP-2"],
     )
 
-    assert clause == '("SREBF2"[Title/Abstract] OR "SREBP2"[Title/Abstract] OR "SREBP-2"[Title/Abstract])'
+    assert (
+        clause
+        == '("SREBF2"[Title/Abstract] OR "SREBP2"[Title/Abstract] OR "SREBP-2"[Title/Abstract])'
+    )
     assert terms.canonical_symbol == "SREBF2"
     assert terms.aliases_used == ("SREBP2", "SREBP-2")
 
@@ -1845,7 +2251,10 @@ def test_pubmed_gene_title_abstract_clause_deduplicates_aliases() -> None:
         ["srebp2", "SREBP2", "SREBF2", "HD", "SREBP-2"],
     )
 
-    assert clause == '("SREBF2"[Title/Abstract] OR "srebp2"[Title/Abstract] OR "SREBP-2"[Title/Abstract])'
+    assert (
+        clause
+        == '("SREBF2"[Title/Abstract] OR "srebp2"[Title/Abstract] OR "SREBP-2"[Title/Abstract])'
+    )
     assert terms.aliases_used == ("srebp2", "SREBP-2")
 
 
@@ -1925,7 +2334,9 @@ def test_chroma_collection_name_is_scoped_to_embedding_identity() -> None:
         dimension=1536,
     )
 
-    assert collection_name_for_embedding("scientific_agent", identity_64) != collection_name_for_embedding(
+    assert collection_name_for_embedding(
+        "scientific_agent", identity_64
+    ) != collection_name_for_embedding(
         "scientific_agent",
         identity_1536,
     )
@@ -1999,6 +2410,12 @@ def test_warm_reuse_uses_tagged_runs_without_external_source_execution(tmp_path:
         assertion=AssertionType.literature_summary,
         source_type=SourceType.literature,
         text="MSH3 Huntington disease CAG repeat instability and somatic expansion evidence.",
+        value={
+            "evidence_categories": [
+                "hd_literature",
+                "repeat_instability_mechanism",
+            ]
+        },
     )
     _persist_run(service, "MSH3", "msh3-hd-lit-run", [record])
     service._tag_acquisition_run(
@@ -2029,14 +2446,65 @@ def test_warm_reuse_uses_tagged_runs_without_external_source_execution(tmp_path:
     assert result.context_gene is None
     assert result.evidence_universes["MSH3"].reused_tool_run_ids == ["msh3-hd-lit-run"]
     assert result.tool_activity[0].reused is True
-    assert summary["reusedToolRunIds"] == ["msh3-hd-lit-run"]
-    assert summary["createdToolRunIds"] == []
+    assert summary["reusedToolRunRefs"] == [public_run_reference("msh3-hd-lit-run")]
+    assert summary["createdToolRunRefs"] == []
     timings = result.metadata["timings"]
     assert timings
     assert all(value >= 0 for value in timings.values())
 
 
-def test_readiness_table_prevents_unsupported_optional_and_sufficient_acquisition(tmp_path: Path) -> None:
+def test_reuse_selects_only_newest_qualifying_run_per_capability(tmp_path: Path) -> None:
+    requirement = _requirement(
+        EvidenceNeed.hd_literature,
+        ["GENE1"],
+        CapabilityId.hd_literature,
+        minimum=2,
+    )
+    plan = _plan(["GENE1"], [requirement])
+    service = _service(tmp_path, planner=_planner(plan))
+    for run_id in ("older-hd-literature", "newer-hd-literature"):
+        _persist_run(
+            service,
+            "GENE1",
+            run_id,
+            [
+                _record(
+                    gene="GENE1",
+                    run_id=run_id,
+                    source="PubMed",
+                    assertion=AssertionType.literature_summary,
+                    text="GENE1 Huntington disease literature evidence.",
+                    source_type=SourceType.literature,
+                    value={"pmid": "12345678" if run_id.startswith("older") else "87654321"},
+                )
+            ],
+        )
+        service._tag_acquisition_run(
+            gene="GENE1",
+            run_id=run_id,
+            executor_kind="source_workflow",
+            capabilities=[CapabilityId.hd_literature],
+            section_keys=[],
+            sources=["PubMed"],
+            status="completed",
+            successful=True,
+        )
+
+    reusable = service._find_reusable_runs(
+        gene="GENE1",
+        requirement=requirement,
+        excluded_run_ids=set(),
+        plan=plan,
+    )
+
+    assert len(reusable) == 1
+    assert reusable[0][0] == "newer-hd-literature"
+    assert reusable[0][1] == [CapabilityId.hd_literature]
+
+
+def test_readiness_table_prevents_unsupported_optional_and_sufficient_acquisition(
+    tmp_path: Path,
+) -> None:
     genes = ["FAN1"]
     required_sufficient = _requirement(
         EvidenceNeed.hd_literature,
@@ -2094,14 +2562,17 @@ def test_readiness_table_prevents_unsupported_optional_and_sufficient_acquisitio
             allow_tool_acquisition=True,
         )
     )
-    readiness = {
-        (row["requirement_id"], row["gene"]): row
-        for row in result.metadata["readiness"]
-    }
+    readiness = {(row["requirement_id"], row["gene"]): row for row in result.metadata["readiness"]}
 
-    assert readiness[("required_hd_lit", "FAN1")]["operational_state"] == "sufficient_persisted_evidence"
+    assert (
+        readiness[("required_hd_lit", "FAN1")]["operational_state"]
+        == "sufficient_persisted_evidence"
+    )
     assert readiness[("required_hd_lit", "FAN1")]["acquisition_needed"] is False
-    assert readiness[("required_human_genetic", "FAN1")]["operational_state"] == "unsupported_capability"
+    assert (
+        readiness[("required_human_genetic", "FAN1")]["operational_state"]
+        == "unsupported_capability"
+    )
     assert readiness[("required_human_genetic", "FAN1")]["acquisition_needed"] is False
     assert readiness[("optional_brain_expression", "FAN1")]["operational_state"] == "not_required"
     assert readiness[("optional_brain_expression", "FAN1")]["acquisition_needed"] is False
@@ -2384,7 +2855,9 @@ def test_read_only_service_skips_init_and_never_upserts(
 
     monkeypatch.setattr(
         "gene_dossier.agent.orchestrator.init_db",
-        lambda _engine: (_ for _ in ()).throw(AssertionError("read-only execution must not initialize the database")),
+        lambda _engine: (_ for _ in ()).throw(
+            AssertionError("read-only execution must not initialize the database")
+        ),
     )
     reader = ScientificAgentService(
         accepted_baselines={"FAN1": "fan1-base"},
@@ -2498,3 +2971,707 @@ def test_chroma_read_only_does_not_create_missing_directory(tmp_path: Path) -> N
 
     assert not index.available
     assert not missing.exists()
+
+
+def test_canonical_evidence_deduplicates_publications_and_pathways() -> None:
+    literature_requirement = _requirement(
+        EvidenceNeed.hd_literature,
+        ["GENE1"],
+        CapabilityId.hd_literature,
+        minimum=2,
+    )
+    duplicate_publications = [
+        _record(
+            gene="GENE1",
+            run_id=run_id,
+            source="PubMed",
+            assertion=AssertionType.literature_summary,
+            source_type=SourceType.literature,
+            text="GENE1 evidence in Huntington disease.",
+            value={"pmid": "12345678", "title": "GENE1 evidence in Huntington disease"},
+        )
+        for run_id in ("old-run", "new-run")
+    ]
+    literature = canonicalize_requirement_evidence(
+        duplicate_publications,
+        literature_requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+
+    pathway_requirement = _requirement(
+        EvidenceNeed.pathway_membership,
+        ["GENE1"],
+        CapabilityId.pathway,
+        minimum=2,
+    )
+    duplicate_pathways = [
+        _record(
+            gene="GENE1",
+            run_id=run_id,
+            source="Reactome",
+            assertion=AssertionType.pathway_membership,
+            source_type=SourceType.pathway_database,
+            text="GENE1 is present in a DNA repair pathway.",
+            value={"st_id": "R-HSA-123"},
+        )
+        for run_id in ("old-run", "new-run")
+    ]
+    pathways = canonicalize_requirement_evidence(
+        duplicate_pathways,
+        pathway_requirement,
+        gene="GENE1",
+    )
+    reversed_literature = canonicalize_requirement_evidence(
+        list(reversed(duplicate_publications)),
+        literature_requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+
+    assert len(literature.qualifying) == 1
+    assert len(literature.qualifying[0].backing_records) == 2
+    assert (
+        literature.qualifying[0].canonical_record.source_id
+        == reversed_literature.qualifying[0].canonical_record.source_id
+    )
+    assert len(pathways.qualifying) == 1
+    assert len(pathways.qualifying[0].backing_records) == 2
+
+
+def test_cross_category_mapping_requires_structured_metadata() -> None:
+    requirement = _requirement(
+        EvidenceNeed.repeat_instability_mechanism,
+        ["GENE1"],
+        CapabilityId.hd_literature,
+        minimum=1,
+    )
+    unclassified = _record(
+        gene="GENE1",
+        run_id="run",
+        source="PubMed",
+        assertion=AssertionType.literature_summary,
+        source_type=SourceType.literature,
+        text="GENE1 Huntington disease somatic CAG repeat expansion mechanism.",
+        value={"pmid": "123"},
+    )
+    classified = unclassified.model_copy(
+        update={
+            "id": new_id(),
+            "value": {
+                **unclassified.value,
+                "evidence_categories": [
+                    "hd_literature",
+                    "repeat_instability_mechanism",
+                ],
+            },
+        }
+    )
+
+    without_mapping = canonicalize_requirement_evidence(
+        [unclassified],
+        requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+    with_mapping = canonicalize_requirement_evidence(
+        [classified],
+        requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+
+    assert not without_mapping.qualifying
+    assert without_mapping.contextual[0][1].reason_code == "cross_category_mapping_not_validated"
+    assert len(with_mapping.qualifying) == 1
+
+
+def test_off_gene_off_topic_and_expression_records_do_not_support_requirements() -> None:
+    requirement = _requirement(
+        EvidenceNeed.experimental_evidence,
+        ["FAN1"],
+        CapabilityId.experimental_expression,
+        minimum=1,
+    )
+    off_gene = _record(
+        gene="MSH3",
+        run_id="run",
+        source="GEO",
+        assertion=AssertionType.perturbation,
+        source_type=SourceType.expression_database,
+        text="MSH3 perturbation in Huntington disease.",
+        value={"evidence_categories": ["experimental_evidence"]},
+    )
+    wrong_disease = _record(
+        gene="FAN1",
+        run_id="run",
+        source="GEO",
+        assertion=AssertionType.perturbation,
+        source_type=SourceType.expression_database,
+        text="FAN1 perturbation in an HIV encephalitis model.",
+        value={"evidence_categories": ["experimental_evidence"]},
+    )
+    expression_only = _record(
+        gene="FAN1",
+        run_id="run",
+        source="Allen Brain Atlas",
+        assertion=AssertionType.expression,
+        source_type=SourceType.expression_database,
+        text="FAN1 expression visualization in cortex.",
+    )
+
+    result = canonicalize_requirement_evidence(
+        [off_gene, wrong_disease, expression_only],
+        requirement,
+        gene="FAN1",
+        disease_contexts=["Huntington disease"],
+    )
+    reasons = {
+        eligibility.reason_code
+        for _record, eligibility in [*result.contextual, *result.excluded]
+    }
+
+    assert not result.qualifying
+    assert {"off_gene_record", "disease_context_not_validated", "category_or_claim_mismatch"} <= reasons
+
+
+def test_species_policy_and_pathway_context_cannot_satisfy_incompatible_needs() -> None:
+    experiment = _requirement(
+        EvidenceNeed.experimental_evidence,
+        ["GENE1"],
+        CapabilityId.experimental_expression,
+        minimum=1,
+    )
+    mouse_record = _record(
+        gene="GENE1",
+        run_id="run",
+        source="GEO",
+        assertion=AssertionType.perturbation,
+        source_type=SourceType.expression_database,
+        text="GENE1 perturbation in a mouse Huntington disease model.",
+        value={"evidence_categories": ["experimental_evidence"]},
+    ).model_copy(update={"organism": "Mus musculus", "taxon_id": 10090})
+    human_only = canonicalize_requirement_evidence(
+        [mouse_record],
+        experiment,
+        gene="GENE1",
+        query_policy=ScientificQueryPolicy(species_scope="human"),
+        disease_contexts=["Huntington disease"],
+    )
+
+    therapeutic = _requirement(
+        EvidenceNeed.therapeutic_perturbability,
+        ["GENE1"],
+        CapabilityId.chemical_tools,
+        minimum=1,
+    )
+    pathway = _record(
+        gene="GENE1",
+        run_id="run",
+        source="Reactome",
+        assertion=AssertionType.pathway_membership,
+        source_type=SourceType.pathway_database,
+        text="GENE1 belongs to a DNA repair pathway.",
+        value={"st_id": "R-HSA-123"},
+    )
+    pathway_only = canonicalize_requirement_evidence(
+        [pathway],
+        therapeutic,
+        gene="GENE1",
+    )
+
+    assert not human_only.qualifying
+    assert human_only.contextual[0][1].reason_code == "nonhuman_context"
+    assert not pathway_only.qualifying
+    assert pathway_only.excluded[0][1].reason_code == "category_or_claim_mismatch"
+
+
+def test_human_genetic_association_requires_structured_metadata() -> None:
+    requirement = _requirement(
+        EvidenceNeed.human_genetic_association,
+        ["GENE1"],
+        CapabilityId.human_genetic_association,
+        minimum=1,
+    )
+    incomplete = _record(
+        gene="GENE1",
+        run_id="run",
+        source="ClinVar",
+        assertion=AssertionType.variant_association,
+        source_type=SourceType.genetic_database,
+        text="GENE1 human modifier association in Huntington disease.",
+    )
+    complete = incomplete.model_copy(
+        update={
+            "id": new_id(),
+            "value": {
+                **incomplete.value,
+                "accession": "VCV000000001",
+                "association_role": "modifier",
+            },
+        }
+    )
+
+    incomplete_result = canonicalize_requirement_evidence(
+        [incomplete],
+        requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+    complete_result = canonicalize_requirement_evidence(
+        [complete],
+        requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+
+    assert not incomplete_result.qualifying
+    assert incomplete_result.contextual[0][1].reason_code == "human_genetic_metadata_incomplete"
+    assert len(complete_result.qualifying) == 1
+
+
+def test_public_evidence_handles_are_stable_and_private_ids_are_detected_recursively() -> None:
+    record = _record(
+        gene="GENE1",
+        run_id="private-run-id",
+        source="PubMed",
+        assertion=AssertionType.literature_summary,
+        source_type=SourceType.literature,
+        text="GENE1 evidence in Huntington disease.",
+        value={"pmid": "12345678"},
+    )
+    reference = public_evidence_reference(record)
+
+    assert reference == public_evidence_reference(record.model_copy(update={"id": new_id()}))
+    assert is_public_evidence_reference(reference)
+    assert record.id not in reference
+    assert record.dossier_run_id not in reference
+    assert contains_private_value({"nested": [{"reference": reference}]}, [record.id]) is None
+    assert contains_private_value({"nested": [{"id": record.id}]}, [record.id]) == record.id
+
+
+def test_server_ranking_policy_refuses_winner_with_required_gap() -> None:
+    genes = ["GENE1", "GENE2"]
+    requirement = _requirement(
+        EvidenceNeed.therapeutic_perturbability,
+        genes,
+        CapabilityId.chemical_tools,
+        minimum=1,
+    )
+    plan = _plan(genes, [requirement]).model_copy(
+        update={
+            "query_policy": ScientificQueryPolicy(
+                ranking_requested=True,
+                comparison_criteria=[EvidenceNeed.therapeutic_perturbability],
+            )
+        }
+    )
+    matrix = [
+        ComparisonRow(
+            dimension=requirement.label,
+            cells={
+                "GENE1": ComparisonCell(
+                    status="Strong",
+                    summary="Two direct items.",
+                    evidence_count=2,
+                    direct_count=2,
+                    distinct_source_count=2,
+                ),
+                "GENE2": ComparisonCell(
+                    status="Limited",
+                    summary="One supporting item.",
+                    evidence_count=1,
+                    supporting_count=1,
+                    distinct_source_count=1,
+                ),
+            },
+        )
+    ]
+    assessments = [
+        EvidenceRequirementAssessment(
+            requirement_id=requirement.id,
+            gene_symbol=gene,
+            evidence_need=requirement.evidence_need,
+            required=True,
+            minimum_support=1,
+            status=status,
+            qualifying_count=2 if status is RequirementStatus.sufficient else 0,
+            detail="Fixture assessment.",
+        )
+        for gene, status in (
+            ("GENE1", RequirementStatus.sufficient),
+            ("GENE2", RequirementStatus.missing),
+        )
+    ]
+
+    decision = build_comparison_decision(plan=plan, matrix=matrix, assessments=assessments)
+
+    assert decision.outcome.value == "dimension_specific_difference"
+    assert decision.preferred_gene is None
+    assert "prevents an overall preference" in decision.summary
+
+
+@pytest.mark.parametrize(
+    ("leading_cell", "other_conflict", "expected"),
+    [
+        (
+            ComparisonCell(
+                status="Strong",
+                summary="Two direct independent items.",
+                evidence_count=2,
+                direct_count=2,
+                distinct_source_count=2,
+                directionality_known=True,
+            ),
+            False,
+            "supported_preference",
+        ),
+        (
+            ComparisonCell(
+                status="Strong",
+                summary="Two direct independent items.",
+                evidence_count=2,
+                direct_count=2,
+                distinct_source_count=2,
+                directionality_known=True,
+            ),
+            True,
+            "conditional_preference",
+        ),
+        (
+            ComparisonCell(
+                status="Moderate",
+                summary="One qualifying evidence dimension.",
+                evidence_count=2,
+                direct_count=1,
+                distinct_source_count=1,
+            ),
+            False,
+            "conditional_preference",
+        ),
+    ],
+)
+def test_server_ranking_policy_exercises_supported_and_conditional_outcomes(
+    leading_cell: ComparisonCell,
+    other_conflict: bool,
+    expected: str,
+) -> None:
+    genes = ["GENE1", "GENE2"]
+    requirement = _requirement(
+        EvidenceNeed.therapeutic_perturbability,
+        genes,
+        CapabilityId.chemical_tools,
+        minimum=1,
+    )
+    plan = _plan(genes, [requirement]).model_copy(
+        update={
+            "query_policy": ScientificQueryPolicy(
+                ranking_requested=True,
+                comparison_criteria=[EvidenceNeed.therapeutic_perturbability],
+            )
+        }
+    )
+    matrix = [
+        ComparisonRow(
+            dimension=requirement.label,
+            cells={
+                "GENE1": leading_cell,
+                "GENE2": ComparisonCell(
+                    status="Limited",
+                    summary="One supporting item.",
+                    evidence_count=1,
+                    supporting_count=1,
+                    distinct_source_count=1,
+                    has_conflict=other_conflict,
+                ),
+            },
+        )
+    ]
+    assessments = [
+        EvidenceRequirementAssessment(
+            requirement_id=requirement.id,
+            gene_symbol=gene,
+            evidence_need=requirement.evidence_need,
+            required=True,
+            minimum_support=1,
+            status=RequirementStatus.sufficient,
+            qualifying_count=1,
+            detail="Fixture assessment.",
+        )
+        for gene in genes
+    ]
+
+    decision = build_comparison_decision(plan=plan, matrix=matrix, assessments=assessments)
+
+    assert decision.outcome.value == expected
+    assert decision.preferred_gene == "GENE1"
+
+
+def test_therapeutic_ranking_requires_safety_and_clinical_evidence(tmp_path: Path) -> None:
+    genes = ["GENE1", "GENE2"]
+    therapeutic = _requirement(
+        EvidenceNeed.therapeutic_perturbability,
+        genes,
+        CapabilityId.chemical_tools,
+        required=False,
+        minimum=1,
+    )
+    plan = _plan(genes, [therapeutic]).model_copy(
+        update={
+            "query_policy": ScientificQueryPolicy(
+                ranking_requested=True,
+                comparison_criteria=[EvidenceNeed.therapeutic_perturbability],
+            )
+        }
+    )
+    service = _service(tmp_path, planner=_planner(plan))
+
+    augmented = service._augment_hd_plan(plan)
+    requirements = {item.evidence_need: item for item in augmented.evidence_requirements}
+
+    assert requirements[EvidenceNeed.therapeutic_perturbability].required is True
+    assert requirements[EvidenceNeed.safety_tolerability].required is True
+    assert requirements[EvidenceNeed.clinical_translational].required is True
+
+
+def test_stored_only_mode_blocks_acquisition_even_when_legacy_flag_is_true(
+    tmp_path: Path,
+) -> None:
+    requirement = _requirement(
+        EvidenceNeed.protein_interaction,
+        ["GENE1"],
+        CapabilityId.ppi,
+        minimum=1,
+    )
+
+    def fail_executor(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Stored Evidence Only must not execute an acquisition tool")
+
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(["GENE1"], [requirement])),
+        section_executor=fail_executor,
+    )
+    result = service.execute(
+        ScientificAgentRequest(
+            question="Which proteins interact with GENE1?",
+            context_gene=None,
+            research_mode=ResearchMode.stored_only,
+            allow_tool_acquisition=True,
+        )
+    )
+
+    assert result.status is AnswerStatus.insufficient_evidence
+    assert result.tool_activity == []
+    assert result.activity_summary.tools_executed == 0
+
+
+def test_deep_research_executes_only_planned_capabilities_within_bounds(tmp_path: Path) -> None:
+    genes = ["GENE1"]
+    requirements = [
+        _requirement(
+            EvidenceNeed.identity_function,
+            genes,
+            CapabilityId.identity_function,
+            minimum=1,
+        ),
+        _requirement(
+            EvidenceNeed.protein_interaction,
+            genes,
+            CapabilityId.ppi,
+            required=False,
+            minimum=1,
+        ),
+    ]
+    calls: list[list[str]] = []
+
+    def section_executor(gene: str, *, section_keys: list[str], **_kwargs: Any) -> Any:
+        calls.append(section_keys)
+        run_id = "deep-research-run"
+        _persist_run(service, gene, run_id, [])
+        return SimpleNamespace(status="completed", dossier_run_id=run_id, errors=[])
+
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(genes, requirements)),
+        baselines={"GENE1": "gene1-base"},
+        section_executor=section_executor,
+    )
+    _persist_run(
+        service,
+        "GENE1",
+        "gene1-base",
+        [
+            _record(
+                gene="GENE1",
+                run_id="gene1-base",
+                source="NCBI Gene",
+                assertion=AssertionType.gene_identity,
+                text="GENE1 identity evidence.",
+            )
+        ],
+    )
+
+    result = service.execute(
+        ScientificAgentRequest(
+            question="Investigate GENE1 interactions with deep research.",
+            context_gene=None,
+            research_mode=ResearchMode.deep_research,
+        )
+    )
+
+    assert calls == [["1a", "5a", "5b"]]
+    assert result.activity_summary.tools_executed == 1
+    assert result.activity_summary.tools_failed == 0
+    assert set(result.tool_activity[0].capability_ids) == {
+        CapabilityId.identity_function,
+        CapabilityId.ppi,
+    }
+
+
+def test_failed_tool_execution_is_distinct_from_scientific_gap(tmp_path: Path) -> None:
+    requirement = _requirement(
+        EvidenceNeed.protein_interaction,
+        ["GENE1"],
+        CapabilityId.ppi,
+        minimum=1,
+    )
+
+    def fail_executor(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("offline fixture failure")
+
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(["GENE1"], [requirement])),
+        section_executor=fail_executor,
+    )
+    result = service.execute(
+        ScientificAgentRequest(
+            question="Which proteins interact with GENE1?",
+            context_gene=None,
+            research_mode=ResearchMode.auto,
+        )
+    )
+
+    assert result.status is AnswerStatus.insufficient_evidence
+    assert result.tool_activity[0].status == "failed"
+    assert result.tool_activity[0].execution_succeeded is False
+    assert result.tool_activity[0].scientific_retrieval_succeeded is False
+    assert result.activity_summary.tools_executed == 1
+    assert result.activity_summary.tools_failed == 1
+    assert result.cost_summary.external_tool_cost_usd is None
+    assert result.cost_summary.actual_billed_cost_usd is None
+
+
+def test_completed_tool_with_zero_qualifying_evidence_preserves_required_gap(
+    tmp_path: Path,
+) -> None:
+    requirement = _requirement(
+        EvidenceNeed.protein_interaction,
+        ["GENE1"],
+        CapabilityId.ppi,
+        minimum=1,
+    )
+    holder: dict[str, ScientificAgentService] = {}
+
+    def section_executor(gene: str, **_kwargs: Any) -> Any:
+        run_id = "completed-with-no-ppi"
+        _persist_run(
+            holder["service"],
+            gene,
+            run_id,
+            [
+                _record(
+                    gene=gene,
+                    run_id=run_id,
+                    source="NCBI Gene",
+                    assertion=AssertionType.gene_identity,
+                    text=f"{gene} identity evidence.",
+                )
+            ],
+        )
+        return SimpleNamespace(status="completed", dossier_run_id=run_id, errors=[])
+
+    service = _service(
+        tmp_path,
+        planner=_planner(_plan(["GENE1"], [requirement])),
+        section_executor=section_executor,
+    )
+    holder["service"] = service
+    result = service.execute(
+        ScientificAgentRequest(
+            question="Which proteins interact with GENE1?",
+            context_gene=None,
+            research_mode=ResearchMode.auto,
+        )
+    )
+
+    assert result.status is AnswerStatus.insufficient_evidence
+    assert result.assessments[0].status is RequirementStatus.missing
+    assert result.tool_activity[0].execution_succeeded is True
+    assert result.tool_activity[0].scientific_retrieval_succeeded is False
+    assert result.tool_activity[0].qualifying_evidence_count == 0
+    assert result.cost_summary.external_tool_cost_usd is None
+    assert result.cost_summary.actual_billed_cost_usd is None
+
+
+def test_planner_source_restrictions_are_explicit_and_server_validated() -> None:
+    requirement = _requirement(
+        EvidenceNeed.hd_literature,
+        ["GENE1"],
+        CapabilityId.hd_literature,
+        minimum=1,
+    )
+    explicit = ScientificQuestionPlanDraft(
+        intent=ScientificIntent.single_gene_question,
+        entities=ScientificEntities(genes=["GENE1"]),
+        primary_gene="GENE1",
+        objective="Inspect PubMed evidence.",
+        answer_mode=AnswerMode.synthesis,
+        evidence_requirements=[requirement],
+        requires_multi_gene=False,
+        query_policy=ScientificQueryPolicy(source_restrictions=["PubMed"]),
+    )
+    validated = _validate_plan(
+        explicit,
+        question="What PubMed evidence links GENE1 to Huntington disease?",
+        context_gene=None,
+    )
+
+    assert validated.query_policy.source_restrictions == ["PubMed"]
+    with pytest.raises(ValueError, match="not explicitly named"):
+        _validate_plan(
+            explicit,
+            question="What evidence links GENE1 to Huntington disease?",
+            context_gene=None,
+        )
+
+
+def test_planner_derives_conflict_causal_and_ranking_policy_from_question() -> None:
+    requirement = _requirement(
+        EvidenceNeed.experimental_evidence,
+        ["GENE1", "GENE2"],
+        CapabilityId.experimental_expression,
+        minimum=1,
+    )
+    draft = ScientificQuestionPlanDraft(
+        intent=ScientificIntent.comparison,
+        entities=ScientificEntities(genes=["GENE1", "GENE2"]),
+        primary_gene=None,
+        objective="Compare causal evidence.",
+        answer_mode=AnswerMode.comparison,
+        evidence_requirements=[requirement],
+        requires_multi_gene=True,
+    )
+    plan = _validate_plan(
+        draft,
+        question=(
+            "Which is the better target, GENE1 or GENE2, based on conflicting causal "
+            "experimental evidence?"
+        ),
+        context_gene=None,
+    )
+
+    assert plan.query_policy.ranking_requested is True
+    assert plan.query_policy.analyze_conflicts is True
+    assert plan.query_policy.causal_evidence_required is True

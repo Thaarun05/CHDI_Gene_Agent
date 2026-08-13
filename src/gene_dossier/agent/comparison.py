@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from gene_dossier.models import EvidenceRecord
 
-from .capabilities import NEED_CONTRIBUTORS, qualifying_records, record_matches_need
+from .capabilities import NEED_CONTRIBUTORS
+from .evidence import canonicalize_requirement_evidence, public_evidence_reference
 from .models import (
     ComparisonCell,
+    ComparisonDecision,
+    ComparisonDecisionOutcome,
     ComparisonRow,
     ComparisonStrength,
     EvidenceNeed,
     EvidenceRequirement,
     EvidenceRequirementAssessment,
     RequirementStatus,
+    ScientificQuestionPlan,
 )
 
 
@@ -86,8 +90,7 @@ def grade_hd_modifier_cell(
         direct = [
             record
             for record in matched_records
-            if record_matches_need(record, EvidenceNeed.human_genetic_association)
-            and _source_type(record) == "genetic_database"
+            if _source_type(record) == "genetic_database"
             and any(
                 term in _record_text(record)
                 for term in ("modifier", "gwas", "age at onset", "somatic expansion")
@@ -106,7 +109,7 @@ def grade_hd_modifier_cell(
         return "Weak"
 
     if evidence_need is EvidenceNeed.hd_literature:
-        distinct_papers = {record.source_id for record in matched_records}
+        distinct_papers = {public_evidence_reference(record) for record in matched_records}
         if _is_sufficient(assessment) and len(distinct_papers) >= 3:
             return "Strong"
         if len(distinct_papers) >= 2:
@@ -174,6 +177,8 @@ def build_hd_modifier_matrix(
     requirements: list[EvidenceRequirement],
     assessments: list[EvidenceRequirementAssessment],
     records: list[EvidenceRecord],
+    plan: ScientificQuestionPlan | None = None,
+    ordinal_by_id: dict[str, int] | None = None,
 ) -> tuple[list[str], list[ComparisonRow]]:
     assessment_map = {
         (assessment.requirement_id, assessment.gene_symbol): assessment
@@ -184,28 +189,202 @@ def build_hd_modifier_matrix(
         cells: dict[str, ComparisonCell] = {}
         for gene in genes:
             gene_requirement = requirement.model_copy(update={"genes": [gene]})
-            matched = qualifying_records(records, gene_requirement)
+            canonical = canonicalize_requirement_evidence(
+                records,
+                gene_requirement,
+                gene=gene,
+                query_policy=plan.query_policy if plan else None,
+                disease_contexts=plan.entities.diseases if plan else (),
+            )
+            groups = list(canonical.qualifying)
+            matched = [group.canonical_record for group in groups]
             assessment = assessment_map.get((requirement.id, gene))
             status = grade_hd_modifier_cell(requirement.evidence_need, matched, assessment)
-            source_count = len({record.source_name for record in matched})
+            source_count = len({group.source_namespace for group in groups})
+            directions = {
+                group.eligibility.direction for group in groups if group.eligibility.direction
+            }
             summary = (
-                f"{len(matched)} qualifying record(s) from {source_count} source(s)."
+                f"{len(groups)} unique qualifying item(s) from {source_count} source(s)."
                 if matched
                 else "No qualifying provenance-backed evidence in the selected universe."
             )
+            ordinals = [
+                ordinal_by_id[group.canonical_record.id]
+                for group in groups
+                if ordinal_by_id and group.canonical_record.id in ordinal_by_id
+            ][:3]
             cells[gene] = ComparisonCell(
                 status=status,
                 summary=summary,
-                evidence_count=len(matched),
+                evidence_count=len(groups),
                 evidence_record_ids=[record.id for record in matched],
+                public_evidence_refs=[group.public_reference for group in groups],
+                citation_ordinals=ordinals,
+                distinct_source_count=source_count,
+                direct_count=sum(
+                    group.eligibility.designation.value == "direct" for group in groups
+                ),
+                supporting_count=sum(
+                    group.eligibility.designation.value == "supporting" for group in groups
+                ),
+                excluded_count=len(canonical.contextual) + len(canonical.excluded),
+                directionality_known=bool(directions),
+                has_conflict="increase" in directions and "decrease" in directions,
             )
         rows.append(ComparisonRow(dimension=requirement.label, cells=cells))
     return [requirement.label for requirement in requirements], rows
 
 
+def build_comparison_decision(
+    *,
+    plan: ScientificQuestionPlan,
+    matrix: list[ComparisonRow],
+    assessments: list[EvidenceRequirementAssessment],
+) -> ComparisonDecision:
+    """Apply a conservative, deterministic decision policy to a comparison."""
+    if len(plan.entities.genes) < 2 or not matrix:
+        return ComparisonDecision(
+            outcome=ComparisonDecisionOutcome.not_rankable,
+            summary="No multi-gene comparison decision is available.",
+            limitations=[
+                "A decision requires at least two genes and qualifying comparison dimensions."
+            ],
+        )
+
+    requirement_by_need = {
+        requirement.evidence_need: requirement for requirement in plan.evidence_requirements
+    }
+    row_by_label = {row.dimension: row for row in matrix}
+    criteria = list(plan.query_policy.comparison_criteria)
+    if not criteria:
+        return ComparisonDecision(
+            outcome=ComparisonDecisionOutcome.not_rankable,
+            summary=(
+                "The evidence supports a dimension-by-dimension comparison, but no explicit "
+                "decision criterion supports an overall preference."
+            ),
+            limitations=[
+                "No overall winner or numeric ranking was inferred from mixed evidence dimensions."
+            ],
+        )
+
+    strength = {"Missing": 0, "Weak": 1, "Limited": 2, "Moderate": 3, "Strong": 4}
+    criterion_winners: list[tuple[EvidenceNeed, str, ComparisonCell]] = []
+    unsupported: list[str] = []
+    for criterion in criteria:
+        requirement = requirement_by_need.get(criterion)
+        row = row_by_label.get(requirement.label) if requirement else None
+        if row is None:
+            unsupported.append(criterion.value)
+            continue
+        ranked = sorted(
+            row.cells.items(),
+            key=lambda item: (strength[item[1].status], item[1].evidence_count),
+            reverse=True,
+        )
+        if len(ranked) < 2 or strength[ranked[0][1].status] == strength[ranked[1][1].status]:
+            continue
+        if ranked[0][1].status in {"Missing", "Weak"} or ranked[0][1].has_conflict:
+            continue
+        criterion_winners.append((criterion, ranked[0][0], ranked[0][1]))
+
+    if not criterion_winners:
+        return ComparisonDecision(
+            outcome=ComparisonDecisionOutcome.not_rankable,
+            summary="The requested comparison criteria do not support a defensible preference.",
+            limitations=[
+                *(
+                    [f"Unsupported criteria: {', '.join(sorted(unsupported))}."]
+                    if unsupported
+                    else []
+                ),
+                "Missing, tied, conflicting, or indirect evidence was not converted into a winner.",
+            ],
+        )
+    winners = {winner for _criterion, winner, _cell in criterion_winners}
+    required_complete = all(
+        assessment.status is RequirementStatus.sufficient
+        for assessment in assessments
+        if assessment.required
+    )
+    if not required_complete:
+        if len(winners) == 1:
+            gene = next(iter(winners))
+            criteria_label = ", ".join(
+                criterion.value for criterion, _winner, _cell in criterion_winners
+            )
+            return ComparisonDecision(
+                outcome=ComparisonDecisionOutcome.dimension_specific_difference,
+                summary=(
+                    f"{gene} has stronger qualifying support in {criteria_label}, but missing "
+                    "required evidence prevents an overall preference."
+                ),
+                criterion=criteria_label,
+                limitations=[
+                    "No unconditional winner is supported while required dimensions remain incomplete."
+                ],
+            )
+        return ComparisonDecision(
+            outcome=ComparisonDecisionOutcome.not_rankable,
+            summary="Required evidence gaps prevent a defensible overall preference.",
+            limitations=["No winner was inferred from incomplete required evidence."],
+        )
+    if len(winners) > 1:
+        return ComparisonDecision(
+            outcome=ComparisonDecisionOutcome.dimension_specific_difference,
+            summary="Different genes are better supported on different requested dimensions.",
+            limitations=["No overall winner is supported across the requested criteria."],
+        )
+
+    winner = next(iter(winners))
+    complete = len(criterion_winners) == len(criteria) and not unsupported
+    direction_required = {
+        EvidenceNeed.experimental_evidence,
+        EvidenceNeed.chemical_perturbation,
+        EvidenceNeed.therapeutic_perturbability,
+    }
+    strongest = all(
+        cell.status == "Strong"
+        and cell.direct_count >= 2
+        and cell.distinct_source_count >= 2
+        and not cell.has_conflict
+        and (criterion not in direction_required or cell.directionality_known)
+        for criterion, _gene, cell in criterion_winners
+    )
+    no_required_conflict = True
+    for criterion in criteria:
+        requirement = requirement_by_need.get(criterion)
+        row = row_by_label.get(requirement.label) if requirement else None
+        if row is not None and any(cell.has_conflict for cell in row.cells.values()):
+            no_required_conflict = False
+            break
+    outcome = (
+        ComparisonDecisionOutcome.supported_preference
+        if complete and strongest and no_required_conflict
+        else ComparisonDecisionOutcome.conditional_preference
+    )
+    return ComparisonDecision(
+        outcome=outcome,
+        preferred_gene=winner,
+        criterion=", ".join(criterion.value for criterion, _gene, _cell in criterion_winners),
+        summary=(
+            f"{winner} has stronger qualifying support for the explicit criterion set."
+            if outcome is ComparisonDecisionOutcome.supported_preference
+            else f"{winner} is conditionally better supported for the available requested criterion evidence."
+        ),
+        limitations=(
+            []
+            if outcome is ComparisonDecisionOutcome.supported_preference
+            else ["This is criterion-specific and does not establish an overall biological winner."]
+        ),
+    )
+
+
 __all__ = [
     "HD_MODIFIER_DIMENSIONS",
     "build_hd_modifier_matrix",
+    "build_comparison_decision",
     "grade_hd_modifier_cell",
     "hd_modifier_requirements",
 ]

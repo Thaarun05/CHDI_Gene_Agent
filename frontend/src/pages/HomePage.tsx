@@ -5,9 +5,12 @@ import { TopBar } from '@/components/TopBar'
 import { MolecularHero } from '@/components/MolecularHero'
 import { SearchComposer } from '@/components/SearchComposer'
 import { WorkflowCard } from '@/components/WorkflowCard'
+import type { ResearchMode } from '@/api/types'
 
 export function HomePage() {
   const [query, setQuery] = useState('')
+  const [contextGene, setContextGene] = useState<string | null>(null)
+  const [researchMode, setResearchMode] = useState<ResearchMode>('auto')
   const navigate = useNavigate()
 
   function handleSubmit() {
@@ -18,7 +21,9 @@ export function HomePage() {
       navigate(`/genes/${upper}`)
       return
     }
-    navigate(`/ask?q=${encodeURIComponent(q)}`)
+    const params = new URLSearchParams({ q, research_mode: researchMode })
+    if (contextGene) params.set('gene', contextGene)
+    navigate(`/ask?${params.toString()}`)
   }
 
   return (
@@ -38,7 +43,15 @@ export function HomePage() {
         </p>
 
         <div className="mt-10 w-full max-w-2xl">
-          <SearchComposer value={query} onChange={setQuery} onSubmit={handleSubmit} />
+          <SearchComposer
+            value={query}
+            onChange={setQuery}
+            onSubmit={handleSubmit}
+            selectedGene={contextGene}
+            onSelectGene={setContextGene}
+            researchMode={researchMode}
+            onSelectResearchMode={setResearchMode}
+          />
         </div>
 
         <div className="mt-10 grid w-full max-w-4xl gap-4 sm:grid-cols-3">

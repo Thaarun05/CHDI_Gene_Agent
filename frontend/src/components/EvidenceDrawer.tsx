@@ -97,9 +97,7 @@ export function EvidenceDrawer() {
                   )}
                 </ol>
                 <dl className="mt-4">
-                  <MetaRow label="EvidenceRecord ID" value={record.id} />
-                  <MetaRow label="ApiRun ID" value={record.apiRunId} />
-                  <MetaRow label="RawArtifact ID" value={record.rawArtifactId} />
+                  <MetaRow label="Public evidence reference" value={record.id} />
                 </dl>
               </section>
             </div>
@@ -126,7 +124,11 @@ export function EvidenceDrawer() {
             type="button"
             className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm text-text transition hover:border-accent/40"
             onClick={() => {
-              if (record) void navigator.clipboard.writeText(record.id)
+              if (record) {
+                void navigator.clipboard.writeText(
+                  record.sourceIdentifier || record.id,
+                )
+              }
             }}
           >
             <Copy className="size-3.5" />

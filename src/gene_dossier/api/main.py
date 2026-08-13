@@ -24,7 +24,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from gene_dossier import __version__
-from gene_dossier.agent.models import EvidenceSelection
+from gene_dossier.agent.evidence import (
+    contains_private_value,
+    is_public_evidence_reference,
+    public_evidence_reference,
+    public_run_reference,
+)
+from gene_dossier.agent.models import EvidenceSelection, ResearchMode
 from gene_dossier.agent.orchestrator import (
     ScientificAgentRequest,
     ScientificAgentService,
@@ -110,9 +116,7 @@ class DossierRunRequest(BaseModel):
     """Start a full API pass for one gene."""
 
     gene_symbol: str = Field(..., min_length=1, examples=["SREBF2"])
-    run_id: str | None = Field(
-        default=None, description="Optional fixed dossier_run_id"
-    )
+    run_id: str | None = Field(default=None, description="Optional fixed dossier_run_id")
     sources: list[str] | None = Field(
         default=None,
         description="Optional non-identity source filter (identity sources always run).",
@@ -281,11 +285,18 @@ _JOB_STORE_LOCK = threading.Lock()
 
 # Default HD dossier demo section keys (do NOT modify DEFAULT_SECTION_BUNDLE_KEYS)
 _HD_DOSSIER_DEFAULT_SECTIONS: list[str] = [
-    "1a", "1b", "1c", "1d", "1e",
-    "2a", "2b", "2c",
+    "1a",
+    "1b",
+    "1c",
+    "1d",
+    "1e",
+    "2a",
+    "2b",
+    "2c",
     "3a",
     "4a",
-    "5a", "5b",
+    "5a",
+    "5b",
     "6a",
     "7a",
 ]
@@ -414,7 +425,9 @@ def _validate_generated_artifact(
         resolved = candidate.resolve(strict=True)
         relative = resolved.relative_to(root)
     except (FileNotFoundError, OSError, ValueError) as exc:
-        raise ValueError("Generated report artifact is outside the output root or missing.") from exc
+        raise ValueError(
+            "Generated report artifact is outside the output root or missing."
+        ) from exc
 
     expected_name = f"section_1.{artifact_type}"
     if resolved.name != expected_name or not resolved.is_file():
@@ -535,13 +548,13 @@ def _persist_generated_report(
 class CitationOut(BaseModel):
     id: str
     label: str
-    evidenceRecordId: str
+    publicEvidenceRef: str
     sourceName: str
 
 
 class AskRequest(BaseModel):
     question: str
-    gene_symbol: str = "SREBF2"
+    gene_symbol: str | None = None
     context_gene: str | None = None
     dossier_run_id: str | None = None
     dossier_run_ids: dict[str, list[str]] = Field(default_factory=dict)
@@ -549,12 +562,13 @@ class AskRequest(BaseModel):
     tool_run_ids: list[str] | dict[str, list[str]] = Field(default_factory=list)
     allow_tool_acquisition: bool = True
     evidence_selection: EvidenceSelection = EvidenceSelection.accepted_only
+    research_mode: ResearchMode = ResearchMode.auto
 
 
 class AskResponseOut(BaseModel):
     status: str
     question: str
-    geneSymbol: str
+    geneSymbol: str | None
     contextGene: str | None = None
     summary: str
     retrievalMethod: str  # 'semantic' | 'keyword' | 'abstain'
@@ -592,6 +606,18 @@ class AskResponseOut(BaseModel):
     retrievalTimestamps: list[str] = Field(default_factory=list)
     failures: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    answerSections: list[dict[str, Any]] = Field(default_factory=list)
+    comparisonDecision: dict[str, Any] | None = None
+    evidenceItems: list[dict[str, Any]] = Field(default_factory=list)
+    contextualEvidence: list[dict[str, Any]] = Field(default_factory=list)
+    activitySummary: dict[str, Any] = Field(default_factory=dict)
+    costSummary: dict[str, Any] = Field(default_factory=dict)
+    baseEvidenceRef: str | None = None
+    reusedToolRunRefs: list[str] = Field(default_factory=list)
+    createdToolRunRefs: list[str] = Field(default_factory=list)
+    toolRunRefs: list[str] = Field(default_factory=list)
+    dossierRunRefs: list[str] = Field(default_factory=list)
+    evidenceUniverseRefs: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class CompareRequest(BaseModel):
@@ -660,9 +686,7 @@ def _background_dossier_pass(body: DossierRunRequest, dossier_run_id: str) -> No
             len(result.evidence_records),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Background dossier pass failed run_id=%s: %s", dossier_run_id, exc
-        )
+        logger.exception("Background dossier pass failed run_id=%s: %s", dossier_run_id, exc)
 
 
 def _map_evidence_row(row: EvidenceRecordRow, art_map: dict[str, str]) -> EvidenceRecordFrontendOut:
@@ -670,14 +694,14 @@ def _map_evidence_row(row: EvidenceRecordRow, art_map: dict[str, str]) -> Eviden
     if row.raw_artifact_id:
         source_url = art_map.get(row.raw_artifact_id)
     if not source_url and isinstance(row.value, dict):
-        source_url = (
-            row.value.get("url")
-            or row.value.get("source_url")
-            or row.value.get("link")
-        )
+        source_url = row.value.get("url") or row.value.get("source_url") or row.value.get("link")
 
     # evidenceGrade is the provenance quality tier (A/B/C)
-    grade_val = str(getattr(row.evidence_grade, "value", row.evidence_grade)) if row.evidence_grade else None
+    grade_val = (
+        str(getattr(row.evidence_grade, "value", row.evidence_grade))
+        if row.evidence_grade
+        else None
+    )
 
     # evidenceClass is a *scientific* classification distinct from grade.
     # Only expose it when the record's value dict contains an explicit
@@ -734,7 +758,9 @@ def resolve_evidence_universe(
 
     demo = DEMO_GENE_REGISTRY.get(gene)
     if not demo:
-        raise HTTPException(status_code=404, detail=f"No accepted demo evidence baseline for gene: {gene_symbol}")
+        raise HTTPException(
+            status_code=404, detail=f"No accepted demo evidence baseline for gene: {gene_symbol}"
+        )
 
     base_id = str(demo["base_evidence_run_id"])
     overlay_ids = [rid for rid in tool_ids if rid != base_id]
@@ -858,7 +884,9 @@ def _artifact_map_for_rows(rows: list[EvidenceRecordRow]) -> dict[str, str]:
 
 
 def _row_ref(row: EvidenceRecordRow) -> dict[str, Any]:
-    assertion_type = getattr(getattr(row, "assertion_type", None), "value", getattr(row, "assertion_type", ""))
+    assertion_type = getattr(
+        getattr(row, "assertion_type", None), "value", getattr(row, "assertion_type", "")
+    )
     return {
         "id": getattr(row, "id", ""),
         "section": getattr(row, "section", "") or "",
@@ -891,10 +919,19 @@ def _record_ref(record: EvidenceRecord) -> dict[str, Any]:
 
 
 def _text_fields(ref: dict[str, Any]) -> str:
-    return " ".join(str(ref.get(k) or "") for k in (
-        "section", "subsection", "source_name", "source_type",
-        "assertion_type", "fact_type", "source_id", "display_text",
-    )).lower()
+    return " ".join(
+        str(ref.get(k) or "")
+        for k in (
+            "section",
+            "subsection",
+            "source_name",
+            "source_type",
+            "assertion_type",
+            "fact_type",
+            "source_id",
+            "display_text",
+        )
+    ).lower()
 
 
 def _evidence_category(ref: dict[str, Any]) -> str:
@@ -914,14 +951,35 @@ def _evidence_category(ref: dict[str, Any]) -> str:
         or "small molecule" in text
     ):
         return "chemical_tool"
-    if assertion == "ppi" or "protein-protein" in text or "ppi" in text or source in {"string", "biogrid"}:
+    if (
+        assertion == "ppi"
+        or "protein-protein" in text
+        or "ppi" in text
+        or source in {"string", "biogrid"}
+    ):
         return "ppi"
-    if "harmonizome" in source or "transcription factor" in text or assertion == "transcription_factor_association":
+    if (
+        "harmonizome" in source
+        or "transcription factor" in text
+        or assertion == "transcription_factor_association"
+    ):
         return "tf"
-    if "geo profiles" in source or source == "geo" or "section_3a" in text or "geo perturbation" in text:
+    if (
+        "geo profiles" in source
+        or source == "geo"
+        or "section_3a" in text
+        or "geo perturbation" in text
+    ):
         return "geo"
     if assertion in {"expression", "cell_type_expression"} or any(
-        token in text for token in ("expression", "gtex", "allen brain atlas", "brainrnaseq", "human brain transcriptome")
+        token in text
+        for token in (
+            "expression",
+            "gtex",
+            "allen brain atlas",
+            "brainrnaseq",
+            "human brain transcriptome",
+        )
     ):
         return "expression"
     if any(token in text for token in ("structure", "domain", "alphafold", "pdbe", "ucsc", "cdd")):
@@ -951,7 +1009,10 @@ _CATEGORY_DETAILS: dict[str, tuple[str, str]] = {
     "geo": ("GEO perturbation records: {count}", "No GEO perturbation records"),
     "tf": ("TF association records: {count}", "No TF association records"),
     "ppi": ("PPI records: {count}", "No PPI records"),
-    "chemical_perturbation": ("CTD chemical-gene interaction records ({count})", "No CTD perturbation records"),
+    "chemical_perturbation": (
+        "CTD chemical-gene interaction records ({count})",
+        "No CTD perturbation records",
+    ),
     "chemical_tool": ("Chemical tool/bioactivity records ({count})", "No chemical tool records"),
 }
 
@@ -977,7 +1038,9 @@ def _coverage_rows_from_refs(refs: list[dict[str, Any]]) -> list[EvidenceCoverag
     return rows
 
 
-def _filter_records_by_category(records: list[EvidenceRecord], category: str | None) -> list[EvidenceRecord]:
+def _filter_records_by_category(
+    records: list[EvidenceRecord], category: str | None
+) -> list[EvidenceRecord]:
     if not category:
         return records
     return [record for record in records if _evidence_category(_record_ref(record)) == category]
@@ -1100,7 +1163,9 @@ def handle_get_gene(symbol: str) -> GeneOut:
 
     # Prefer DB-derived values; fall back to fixtures (log if using fixture)
     entrez = identity.get("entrez_gene_id") or fixture.get("entrez_gene_id") or "Not available"
-    uniprot = identity.get("uniprot_accession") or fixture.get("uniprot_accession") or "Not available"
+    uniprot = (
+        identity.get("uniprot_accession") or fixture.get("uniprot_accession") or "Not available"
+    )
     name = (
         identity.get("protein_name")
         or identity.get("name")
@@ -1180,7 +1245,15 @@ def handle_list_gene_evidence(
 def handle_get_evidence_record(evidence_id: str) -> EvidenceRecordFrontendOut:
     init_db()
     with session_scope() as session:
-        row = session.get(EvidenceRecordRow, evidence_id)
+        is_public_ref = is_public_evidence_reference(evidence_id)
+        row = None
+        if is_public_ref:
+            for candidate in session.exec(select(EvidenceRecordRow)).all():
+                if public_evidence_reference(evidence_from_row(candidate)) == evidence_id:
+                    row = candidate
+                    break
+        else:
+            row = session.get(EvidenceRecordRow, evidence_id)
         if not row:
             row = session.exec(
                 select(EvidenceRecordRow).where(EvidenceRecordRow.source_id == evidence_id)
@@ -1194,7 +1267,16 @@ def handle_get_evidence_record(evidence_id: str) -> EvidenceRecordFrontendOut:
             if art and art.original_url:
                 art_map[art.id] = art.original_url
 
-        return _map_evidence_row(row, art_map)
+        mapped = _map_evidence_row(row, art_map)
+        if is_public_ref:
+            return mapped.model_copy(
+                update={
+                    "id": evidence_id,
+                    "apiRunId": None,
+                    "rawArtifactId": None,
+                }
+            )
+        return mapped
 
 
 def _report_timestamp_from_file(path: Path) -> str:
@@ -1224,7 +1306,11 @@ def handle_list_reports() -> list[ReportArtifactOut]:
         pdf_p: Path = demo["pdf_path"]
         report_id = demo["report_id"]
         # Use html file mtime as authoritative timestamp
-        created_at = _report_timestamp_from_file(html_p) if html_p.exists() else _report_timestamp_from_file(pdf_p)
+        created_at = (
+            _report_timestamp_from_file(html_p)
+            if html_p.exists()
+            else _report_timestamp_from_file(pdf_p)
+        )
         out.append(
             ReportArtifactOut(
                 id=report_id,
@@ -1406,7 +1492,11 @@ _SEMANTIC_EMBEDDING_BACKENDS = {"local_minilm", "real"}
 
 _CONTROLLED_TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "get_identity": {"category": "identity", "sectionKeys": ["1a"], "label": "identity"},
-    "get_expression": {"category": "expression", "sectionKeys": ["2a", "2b", "2c"], "label": "expression"},
+    "get_expression": {
+        "category": "expression",
+        "sectionKeys": ["2a", "2b", "2c"],
+        "label": "expression",
+    },
     "get_geo": {"category": "geo", "sectionKeys": ["3a"], "label": "GEO"},
     "get_tf": {"category": "tf", "sectionKeys": ["4a"], "label": "transcription factors"},
     "get_ppi": {"category": "ppi", "sectionKeys": ["5a", "5b"], "label": "protein interactions"},
@@ -1415,7 +1505,11 @@ _CONTROLLED_TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "sectionKeys": ["6a"],
         "label": "chemical perturbations",
     },
-    "get_chemical_tools": {"category": "chemical_tool", "sectionKeys": ["7a"], "label": "chemical tools"},
+    "get_chemical_tools": {
+        "category": "chemical_tool",
+        "sectionKeys": ["7a"],
+        "label": "chemical tools",
+    },
     "get_full_dossier": {
         "category": None,
         "sectionKeys": list(_HD_DOSSIER_DEFAULT_SECTIONS),
@@ -1428,11 +1522,15 @@ def _infer_required_category(question: str) -> str | None:
     q = question.lower()
     if any(term in q for term in ("interact", "interaction", "ppi", "protein partner", "binds")):
         return "ppi"
-    if any(term in q for term in ("ctd", "chemical perturbation", "chemical-gene", "chemical gene")):
+    if any(
+        term in q for term in ("ctd", "chemical perturbation", "chemical-gene", "chemical gene")
+    ):
         return "chemical_perturbation"
     if _is_pharmacology_question(question):
         return "chemical_tool"
-    if any(term in q for term in ("expression", "expressed", "tissue", "cell type", "brain region")):
+    if any(
+        term in q for term in ("expression", "expressed", "tissue", "cell type", "brain region")
+    ):
         return "expression"
     if any(term in q for term in ("geo", "differential", "knockdown", "perturbation")):
         return "geo"
@@ -1529,18 +1627,28 @@ def _retrieve_grounded_hits(
                     if semantic_hits:
                         hits = semantic_hits[:limit]
                         retrieval_method = "semantic"
-                    activities.append(f"Semantic retrieval attempted first; indexed/upserted {indexed} records")
+                    activities.append(
+                        f"Semantic retrieval attempted first; indexed/upserted {indexed} records"
+                    )
                 else:
                     embedding_backend = "unavailable"
-                    activities.append("Semantic retrieval unavailable; real embedding upsert failed")
+                    activities.append(
+                        "Semantic retrieval unavailable; real embedding upsert failed"
+                    )
             else:
                 if embedding_backend == "hash_test_fallback":
-                    activities.append("Semantic retrieval skipped; hash embeddings are test fallback only")
+                    activities.append(
+                        "Semantic retrieval skipped; hash embeddings are test fallback only"
+                    )
                 else:
-                    activities.append("Semantic retrieval unavailable; real embedding provider is not available")
+                    activities.append(
+                        "Semantic retrieval unavailable; real embedding provider is not available"
+                    )
         except Exception as exc:  # noqa: BLE001
             embedding_backend = "unavailable"
-            activities.append(f"Semantic retrieval failed; falling back to keyword ({type(exc).__name__})")
+            activities.append(
+                f"Semantic retrieval failed; falling back to keyword ({type(exc).__name__})"
+            )
             logger.warning("ask: semantic retrieval failed: %s", exc)
 
     if len(hits) < 2 and retrieval_records:
@@ -1598,9 +1706,7 @@ def _has_sufficient_evidence(
         return False
     if category is None:
         return len(hits) >= min_hits
-    relevant_hits = [
-        h for h in hits if _evidence_category(_record_ref(h.record)) == category
-    ]
+    relevant_hits = [h for h in hits if _evidence_category(_record_ref(h.record)) == category]
     return len(relevant_hits) >= min_hits
 
 
@@ -1861,7 +1967,9 @@ def _handle_legacy_ask_question(body: AskRequest) -> AskResponseOut:
                 min_hits=MIN_EVIDENCE_FOR_ANSWER,
             )
     elif body.refresh_if_available and not planned_tool:
-        agent_activity.append("Refresh requested but no allowlisted tool matches the question category")
+        agent_activity.append(
+            "Refresh requested but no allowlisted tool matches the question category"
+        )
 
     if not sufficient:
         return AskResponseOut(
@@ -1904,14 +2012,16 @@ def _handle_legacy_ask_question(body: AskRequest) -> AskResponseOut:
             CitationOut(
                 id=cid,
                 label=f"[{idx + 1}]",
-                evidenceRecordId=rec.id,
+                publicEvidenceRef=public_evidence_reference(rec),
                 sourceName=rec.source_name,
             )
         )
-        items.append({
-            "text": rec.display_text,
-            "citationIds": [cid],
-        })
+        items.append(
+            {
+                "text": rec.display_text,
+                "citationIds": [cid],
+            }
+        )
 
     source_set = {h.record.source_name for h in hits if h.record.source_name}
     llm_summary, generation_method = _try_grounded_llm_summary(
@@ -1938,10 +2048,12 @@ def _handle_legacy_ask_question(body: AskRequest) -> AskResponseOut:
         generationMethod=generation_method,
         embeddingBackend=embedding_backend,
         **universe.model_dump(),
-        evidenceBlocks=[{
-            "sourceGroup": f"{gene} Evidence Records",
-            "items": items,
-        }],
+        evidenceBlocks=[
+            {
+                "sourceGroup": f"{gene} Evidence Records",
+                "items": items,
+            }
+        ],
         limitations=[
             "Evidence is derived strictly from normalized provenance records in the dossier database.",
             "Retrieval is scoped to the explicit evidence universe reported with this response.",
@@ -1963,23 +2075,51 @@ def _handle_legacy_ask_question(body: AskRequest) -> AskResponseOut:
 
 
 def _agent_universe_out(universe: Any) -> EvidenceUniverseOut:
+    """Compatibility universe fields intentionally omit private run identifiers."""
     return EvidenceUniverseOut(
-        baseEvidenceRunId=universe.base_evidence_run_id,
-        reusedToolRunIds=list(universe.reused_tool_run_ids),
-        createdToolRunIds=list(universe.created_tool_run_ids),
-        toolRunIds=list(universe.tool_run_ids),
-        dossierRunIds=list(universe.dossier_run_ids),
+        baseEvidenceRunId=None,
         evidenceUniverse=universe.evidence_universe,
     )
 
 
+def _agent_universe_refs(universe: Any) -> dict[str, Any]:
+    def refs(current: list[str], private: list[str]) -> list[str]:
+        return list(current) or [public_run_reference(run_id) for run_id in private]
+
+    return {
+        "geneSymbol": universe.gene_symbol,
+        "baseEvidenceRef": universe.base_evidence_ref
+        or (
+            public_run_reference(universe.base_evidence_run_id)
+            if universe.base_evidence_run_id
+            else None
+        ),
+        "explicitRunRefs": refs(universe.explicit_run_refs, universe.explicit_run_ids),
+        "reusedToolRunRefs": refs(
+            universe.reused_tool_run_refs,
+            universe.reused_tool_run_ids,
+        ),
+        "createdToolRunRefs": refs(
+            universe.created_tool_run_refs,
+            universe.created_tool_run_ids,
+        ),
+        "toolRunRefs": refs(universe.tool_run_refs, universe.tool_run_ids),
+        "dossierRunRefs": refs(universe.dossier_run_refs, universe.dossier_run_ids),
+        "evidenceUniverse": universe.evidence_universe,
+    }
+
+
 def _ask_context_gene(body: AskRequest) -> str | None:
-    if "context_gene" not in body.model_fields_set:
-        return None
-    return (body.context_gene or "").strip().upper() or None
+    if "context_gene" in body.model_fields_set:
+        return (body.context_gene or "").strip().upper() or None
+    if "gene_symbol" in body.model_fields_set:
+        return (body.gene_symbol or "").strip().upper() or None
+    return None
 
 
-def _ask_request_maps(body: AskRequest, context_gene: str | None) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+def _ask_request_maps(
+    body: AskRequest, context_gene: str | None
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     explicit_runs = {
         gene.strip().upper(): _unique_ids(run_ids)
         for gene, run_ids in body.dossier_run_ids.items()
@@ -1994,17 +2134,29 @@ def _ask_request_maps(body: AskRequest, context_gene: str | None) -> tuple[dict[
             if gene.strip()
         }
     else:
-        tool_runs = {context_gene: _unique_ids(body.tool_run_ids)} if body.tool_run_ids and context_gene else {}
+        tool_runs = (
+            {context_gene: _unique_ids(body.tool_run_ids)}
+            if body.tool_run_ids and context_gene
+            else {}
+        )
     return explicit_runs, tool_runs
+
+
+def _ask_research_settings(body: AskRequest) -> tuple[ResearchMode, bool]:
+    """Let an explicit Research Mode supersede the legacy acquisition flag."""
+    if "research_mode" in body.model_fields_set:
+        mode = body.research_mode
+        return mode, mode is not ResearchMode.stored_only
+    return body.research_mode, body.allow_tool_acquisition
 
 
 def handle_ask_question(body: AskRequest) -> AskResponseOut:
     """Run the bounded general scientific agent and adapt it to the public API."""
     context_gene = _ask_context_gene(body)
     explicit_runs, tool_runs = _ask_request_maps(body, context_gene)
+    research_mode, allow_tool_acquisition = _ask_research_settings(body)
     accepted_baselines = {
-        gene: str(spec["base_evidence_run_id"])
-        for gene, spec in DEMO_GENE_REGISTRY.items()
+        gene: str(spec["base_evidence_run_id"]) for gene, spec in DEMO_GENE_REGISTRY.items()
     }
     service = ScientificAgentService(
         accepted_baselines=accepted_baselines,
@@ -2020,33 +2172,24 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
             explicit_run_ids=explicit_runs,
             explicit_tool_run_ids=tool_runs,
             refresh_if_available=body.refresh_if_available,
-            allow_tool_acquisition=body.allow_tool_acquisition,
+            allow_tool_acquisition=allow_tool_acquisition,
+            research_mode=research_mode,
         )
     )
 
     plan = result.plan
     genes = list(plan.entities.genes) if plan else ([context_gene] if context_gene else [])
     public_universes = {
-        gene: _agent_universe_out(universe)
-        for gene, universe in result.evidence_universes.items()
+        gene: _agent_universe_out(universe) for gene, universe in result.evidence_universes.items()
+    }
+    public_universe_refs = {
+        gene: _agent_universe_refs(universe) for gene, universe in result.evidence_universes.items()
     }
     if len(public_universes) == 1:
         legacy_universe = next(iter(public_universes.values()))
     elif public_universes:
         legacy_universe = EvidenceUniverseOut(
             baseEvidenceRunId=None,
-            reusedToolRunIds=_unique_ids([
-                run_id for universe in public_universes.values() for run_id in universe.reusedToolRunIds
-            ]),
-            createdToolRunIds=_unique_ids([
-                run_id for universe in public_universes.values() for run_id in universe.createdToolRunIds
-            ]),
-            toolRunIds=_unique_ids([
-                run_id for universe in public_universes.values() for run_id in universe.toolRunIds
-            ]),
-            dossierRunIds=_unique_ids([
-                run_id for universe in public_universes.values() for run_id in universe.dossierRunIds
-            ]),
             evidenceUniverse="multi_gene",
         )
     else:
@@ -2054,18 +2197,26 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
 
     citations: list[CitationOut] = []
     items_by_gene: dict[str, list[dict[str, Any]]] = {}
+    public_item_by_ref = {item.public_evidence_ref: item for item in result.evidence_items}
     for ordinal, record in enumerate(result.selected_records, start=1):
         citation_id = f"cit-{ordinal}"
+        public_ref = public_evidence_reference(record)
         citations.append(
             CitationOut(
                 id=citation_id,
                 label=f"[{ordinal}]",
-                evidenceRecordId=record.id,
+                publicEvidenceRef=public_ref,
                 sourceName=record.source_name,
             )
         )
         items_by_gene.setdefault(record.gene_symbol.upper(), []).append(
-            {"text": record.display_text, "citationIds": [citation_id]}
+            {
+                "text": public_item_by_ref.get(public_ref).display_text
+                if public_ref in public_item_by_ref
+                else "Qualifying persisted evidence is available.",
+                "citationIds": [citation_id],
+                "publicEvidenceRef": public_ref,
+            }
         )
 
     comparison_matrix = [
@@ -2076,7 +2227,14 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
                     "status": cell.status,
                     "summary": cell.summary,
                     "evidenceCount": cell.evidence_count,
-                    "evidenceRecordIds": cell.evidence_record_ids,
+                    "publicEvidenceRefs": cell.public_evidence_refs,
+                    "citationOrdinals": cell.citation_ordinals,
+                    "distinctSourceCount": cell.distinct_source_count,
+                    "directCount": cell.direct_count,
+                    "supportingCount": cell.supporting_count,
+                    "excludedCount": cell.excluded_count,
+                    "directionalityKnown": cell.directionality_known,
+                    "hasConflict": cell.has_conflict,
                 }
                 for gene, cell in row.cells.items()
             },
@@ -2090,20 +2248,62 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
             "toolName": ", ".join(capability.value for capability in item.capability_ids),
             "executorKind": item.executor_kind,
             "status": item.status,
-            "dossierRunId": item.dossier_run_id,
+            "publicRunRef": item.public_run_ref,
             "sectionKeys": item.section_keys,
             "sources": item.sources,
             "evidenceRecordsPersisted": item.evidence_records_persisted,
+            "qualifyingEvidenceCount": item.qualifying_evidence_count,
+            "rejectedEvidenceCount": item.rejected_evidence_count,
+            "executionSucceeded": item.execution_succeeded,
+            "scientificRetrievalSucceeded": item.scientific_retrieval_succeeded,
             "indexedRecords": item.indexed_records,
             "reused": item.reused,
-            "errors": item.errors,
+            "errors": ["Controlled tool reported an execution error."] if item.errors else [],
         }
         for item in result.tool_activity
     ]
     run_summary = summarize_agent_result_runs(result)
-    source_set = sorted({record.source_name for record in result.selected_records if record.source_name})
-    gene_symbol = plan.primary_gene if plan and plan.primary_gene else (genes[0] if genes else context_gene)
-    return AskResponseOut(
+    source_set = sorted(
+        {record.source_name for record in result.selected_records if record.source_name}
+    )
+    gene_symbol = (
+        plan.primary_gene if plan and plan.primary_gene else (genes[0] if genes else context_gene)
+    )
+    if len(result.evidence_universes) == 1:
+        only_refs = next(iter(public_universe_refs.values()))
+        base_evidence_ref = only_refs["baseEvidenceRef"]
+        reused_tool_run_refs = only_refs["reusedToolRunRefs"]
+        created_tool_run_refs = only_refs["createdToolRunRefs"]
+        tool_run_refs = only_refs["toolRunRefs"]
+        dossier_run_refs = only_refs["dossierRunRefs"]
+    else:
+        base_evidence_ref = None
+        reused_tool_run_refs = _unique_ids(
+            [
+                ref
+                for universe in public_universe_refs.values()
+                for ref in universe["reusedToolRunRefs"]
+            ]
+        )
+        created_tool_run_refs = _unique_ids(
+            [
+                ref
+                for universe in public_universe_refs.values()
+                for ref in universe["createdToolRunRefs"]
+            ]
+        )
+        tool_run_refs = _unique_ids(
+            [ref for universe in public_universe_refs.values() for ref in universe["toolRunRefs"]]
+        )
+        dossier_run_refs = _unique_ids(
+            [
+                ref
+                for universe in public_universe_refs.values()
+                for ref in universe["dossierRunRefs"]
+            ]
+        )
+
+    response = AskResponseOut(
         status=result.status.value,
         question=result.question,
         geneSymbol=gene_symbol,
@@ -2128,9 +2328,12 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
         plannerMethod=plan.planner_method.value if plan else None,
         intent=plan.intent.value if plan else None,
         resolvedEntities=plan.entities.model_dump() if plan else {},
-        evidenceRequirements=[item.model_dump(mode="json") for item in plan.evidence_requirements] if plan else [],
+        evidenceRequirements=[item.model_dump(mode="json") for item in plan.evidence_requirements]
+        if plan
+        else [],
         requirementAssessments=[item.model_dump(mode="json") for item in result.assessments],
         evidenceUniverses=public_universes,
+        evidenceUniverseRefs=public_universe_refs,
         evidenceGaps=result.evidence_gaps,
         comparisonDimensions=result.comparison_dimensions,
         comparisonMatrix=comparison_matrix,
@@ -2141,12 +2344,53 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
         sourceAttempts=[item.model_dump(mode="json") for item in result.source_attempts],
         retrievalTimestamps=result.retrieval_timestamps,
         failures=[item.model_dump(mode="json") for item in result.failures],
+        answerSections=[item.model_dump(mode="json") for item in result.answer_sections],
+        comparisonDecision=(
+            result.comparison_decision.model_dump(mode="json")
+            if result.comparison_decision
+            else None
+        ),
+        evidenceItems=[item.model_dump(mode="json") for item in result.evidence_items],
+        contextualEvidence=[item.model_dump(mode="json") for item in result.contextual_evidence],
+        activitySummary=result.activity_summary.model_dump(mode="json"),
+        costSummary=result.cost_summary.model_dump(mode="json"),
+        baseEvidenceRef=base_evidence_ref,
+        reusedToolRunRefs=reused_tool_run_refs,
+        createdToolRunRefs=created_tool_run_refs,
+        toolRunRefs=tool_run_refs,
+        dossierRunRefs=dossier_run_refs,
         metadata={
             "runSummary": run_summary,
             "timings": result.metadata.get("timings", {}),
             "grounding": result.metadata.get("grounding", {}),
         },
     )
+    private_values = set(result.private_identifiers)
+    private_values.update(
+        value
+        for record in result.selected_records
+        for value in (
+            record.id,
+            record.dossier_run_id,
+            record.api_run_id,
+            record.raw_artifact_id,
+            record.raw_response_pointer,
+        )
+        if value
+    )
+    private_values.update(
+        run_id
+        for universe in result.evidence_universes.values()
+        for run_id in universe.dossier_run_ids
+    )
+    leaked = contains_private_value(response.model_dump(mode="json"), private_values)
+    if leaked:
+        logger.error("Ask response serialization blocked a private identifier leak.")
+        raise HTTPException(
+            status_code=500,
+            detail="The grounded response could not be serialized safely.",
+        )
+    return response
 
 
 def handle_compare_genes(body: CompareRequest) -> ComparisonResponseOut:
@@ -2183,7 +2427,9 @@ def handle_compare_genes(body: CompareRequest) -> ComparisonResponseOut:
             ).all()
             gene_recs[g] = [_row_ref(r) for r in rows]
 
-    def _cell(matched: list[dict[str, Any]], detail_available: str, detail_unavailable: str) -> ComparisonCellOut:
+    def _cell(
+        matched: list[dict[str, Any]], detail_available: str, detail_unavailable: str
+    ) -> ComparisonCellOut:
         count = len(matched)
         ids = [r["id"] for r in matched[:5]]  # up to 5 real IDs
         return ComparisonCellOut(
@@ -2202,45 +2448,59 @@ def handle_compare_genes(body: CompareRequest) -> ComparisonResponseOut:
         for g in genes:
             if dim == "Gene Identity":
                 matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "identity"]
-                cells[g] = _cell(matched,
+                cells[g] = _cell(
+                    matched,
                     "Gene identity records: {count}",
                     "No identity records",
                 )
             elif dim == "Expression":
                 matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "expression"]
-                cells[g] = _cell(matched,
+                cells[g] = _cell(
+                    matched,
                     "Expression records: {count}",
                     "No expression records",
                 )
             elif dim == "GEO Perturbations":
                 matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "geo"]
-                cells[g] = _cell(matched,
+                cells[g] = _cell(
+                    matched,
                     "GEO perturbation records: {count}",
                     "No GEO perturbation records",
                 )
             elif dim == "Protein Interactions":
                 matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "ppi"]
-                cells[g] = _cell(matched,
+                cells[g] = _cell(
+                    matched,
                     "PPI records: {count}",
                     "No PPI records",
                 )
             elif dim == "Chemical Perturbations":
-                matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "chemical_perturbation"]
-                cells[g] = _cell(matched,
+                matched = [
+                    r
+                    for r in gene_recs.get(g, [])
+                    if _evidence_category(r) == "chemical_perturbation"
+                ]
+                cells[g] = _cell(
+                    matched,
                     "CTD chemical-gene interaction records: {count}",
                     "No CTD perturbation records",
                 )
             elif dim == "Chemical Tools":
-                matched = [r for r in gene_recs.get(g, []) if _evidence_category(r) == "chemical_tool"]
-                cells[g] = _cell(matched,
+                matched = [
+                    r for r in gene_recs.get(g, []) if _evidence_category(r) == "chemical_tool"
+                ]
+                cells[g] = _cell(
+                    matched,
                     "Chemical tool records: {count}",
                     "No chemical tool records",
                 )
             else:
                 matched = []
                 cells[g] = ComparisonCellOut(
-                    status="Not available", summary="Dimension not mapped",
-                    evidenceCount=0, evidenceRecordIds=[],
+                    status="Not available",
+                    summary="Dimension not mapped",
+                    evidenceCount=0,
+                    evidenceRecordIds=[],
                 )
 
             gene_dim_counts[g][dim] = cells[g].evidenceCount
@@ -2395,7 +2655,10 @@ def _run_section_bundle_job(job_id: str, gene: str, section_keys: list[str]) -> 
 
         logger.info(
             "job %s finished gene=%s status=%s run_id=%s",
-            job_id, gene, final_status, result.dossier_run_id,
+            job_id,
+            gene,
+            final_status,
+            result.dossier_run_id,
         )
 
     except Exception as exc:
@@ -2513,7 +2776,10 @@ def create_job_endpoint(body: dict[str, Any]) -> WorkflowJobOut:
 
     logger.info(
         "Job %s enqueued gene=%s sections=%s thread=%s",
-        job_id, gene, section_keys, thread.name,
+        job_id,
+        gene,
+        section_keys,
+        thread.name,
     )
     return job_out
 
@@ -2604,7 +2870,9 @@ def list_history_endpoint():
                 "geneLabel": r.gene_symbol,
                 "workflow": r.run_type,
                 "status": "Completed" if r.status in {"completed", "running"} else "Failed",
-                "createdAt": r.started_at.isoformat() if r.started_at else datetime.now().isoformat(),
+                "createdAt": r.started_at.isoformat()
+                if r.started_at
+                else datetime.now().isoformat(),
             }
             for r in runs
         ]
@@ -2788,9 +3056,7 @@ def get_run_evidence(
     with session_scope() as session:
         run = get_dossier_run(session, dossier_run_id)
         if run is None:
-            raise HTTPException(
-                status_code=404, detail=f"Run not found: {dossier_run_id}"
-            )
+            raise HTTPException(status_code=404, detail=f"Run not found: {dossier_run_id}")
         records = list_evidence_for_run(session, dossier_run_id)
     sliced = records[:limit]
     return {
@@ -2808,9 +3074,7 @@ def get_run_coverage(dossier_run_id: str) -> dict[str, Any]:
     with session_scope() as session:
         run = get_dossier_run(session, dossier_run_id)
         if run is None:
-            raise HTTPException(
-                status_code=404, detail=f"Run not found: {dossier_run_id}"
-            )
+            raise HTTPException(status_code=404, detail=f"Run not found: {dossier_run_id}")
         rows = list_source_coverage(session, dossier_run_id)
     return {
         "dossier_run_id": dossier_run_id,
@@ -2832,9 +3096,7 @@ def search_run_evidence(
     with session_scope() as session:
         run = get_dossier_run(session, dossier_run_id)
         if run is None:
-            raise HTTPException(
-                status_code=404, detail=f"Run not found: {dossier_run_id}"
-            )
+            raise HTTPException(status_code=404, detail=f"Run not found: {dossier_run_id}")
         records = list_evidence_for_run(session, dossier_run_id)
 
     hits = search_evidence_keyword(
@@ -2855,12 +3117,8 @@ def search_run_evidence(
             gene_symbol=h.record.gene_symbol,
             section=h.record.section,
             source_name=h.record.source_name,
-            evidence_grade=str(
-                getattr(h.record.evidence_grade, "value", h.record.evidence_grade)
-            ),
-            assertion_type=str(
-                getattr(h.record.assertion_type, "value", h.record.assertion_type)
-            ),
+            evidence_grade=str(getattr(h.record.evidence_grade, "value", h.record.evidence_grade)),
+            assertion_type=str(getattr(h.record.assertion_type, "value", h.record.assertion_type)),
             display_text=h.record.display_text,
         )
         for h in hits

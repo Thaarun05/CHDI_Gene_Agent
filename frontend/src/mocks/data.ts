@@ -322,14 +322,14 @@ export const askResponseSrebf2: AskResponse = {
     'Open Targets small-molecule tractability (section 7b) is not implemented.',
   ],
   citations: [
-    { id: 'c1', label: 'ChEMBL', evidenceRecordId: 'EV-101', sourceName: 'ChEMBL' },
+    { id: 'c1', label: 'ChEMBL', publicEvidenceRef: 'EV-101', sourceName: 'ChEMBL' },
     {
       id: 'c2',
       label: 'PubMed PMID 27756839',
-      evidenceRecordId: 'EV-102',
+      publicEvidenceRef: 'EV-102',
       sourceName: 'PubMed',
     },
-    { id: 'c3', label: 'PubChem', evidenceRecordId: 'EV-103', sourceName: 'PubChem' },
+    { id: 'c3', label: 'PubChem', publicEvidenceRef: 'EV-103', sourceName: 'PubChem' },
   ],
   evidenceUsedCount: 3,
   sourcesCount: 3,

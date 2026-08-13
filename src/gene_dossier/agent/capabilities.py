@@ -9,6 +9,7 @@ from typing import Literal
 from gene_dossier.models import EvidenceRecord
 from gene_dossier.source_registry import get_source
 
+from .evidence import canonicalize_requirement_evidence, evaluate_evidence
 from .models import CapabilityId, EvidenceNeed, EvidenceRequirement
 
 
@@ -29,65 +30,149 @@ class CapabilitySpec:
 
 CAPABILITY_REGISTRY: dict[CapabilityId, CapabilitySpec] = {
     CapabilityId.identity_function: CapabilitySpec(
-        CapabilityId.identity_function, "Identity and function", "section_bundle", ("1a",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.identity_function,
+        "Identity and function",
+        "section_bundle",
+        ("1a",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.orthology_conservation: CapabilitySpec(
-        CapabilityId.orthology_conservation, "Orthology and conservation", "section_bundle", ("1b", "1e"), acquisition_enabled=True, can_refresh=True
+        CapabilityId.orthology_conservation,
+        "Orthology and conservation",
+        "section_bundle",
+        ("1b", "1e"),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.structure_domain: CapabilitySpec(
-        CapabilityId.structure_domain, "Structure and domains", "section_bundle", ("1c", "1d"), acquisition_enabled=True, can_refresh=True
+        CapabilityId.structure_domain,
+        "Structure and domains",
+        "section_bundle",
+        ("1c", "1d"),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.expression_context: CapabilitySpec(
-        CapabilityId.expression_context, "Expression context", "section_bundle", ("2a", "2b", "2c"), acquisition_enabled=True, can_refresh=True
+        CapabilityId.expression_context,
+        "Expression context",
+        "section_bundle",
+        ("2a", "2b", "2c"),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.brain_expression: CapabilitySpec(
-        CapabilityId.brain_expression, "Brain expression", "section_bundle", ("2a", "2b", "2c"), acquisition_enabled=True, can_refresh=True
+        CapabilityId.brain_expression,
+        "Brain expression",
+        "section_bundle",
+        ("2a", "2b", "2c"),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.experimental_expression: CapabilitySpec(
-        CapabilityId.experimental_expression, "Experimental expression", "section_bundle", ("3a",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.experimental_expression,
+        "Experimental expression",
+        "section_bundle",
+        ("3a",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.transcriptional_regulation: CapabilitySpec(
-        CapabilityId.transcriptional_regulation, "Transcriptional regulation", "section_bundle", ("4a",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.transcriptional_regulation,
+        "Transcriptional regulation",
+        "section_bundle",
+        ("4a",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.ppi: CapabilitySpec(
-        CapabilityId.ppi, "Protein interactions", "section_bundle", ("5a", "5b"), acquisition_enabled=True, can_refresh=True
+        CapabilityId.ppi,
+        "Protein interactions",
+        "section_bundle",
+        ("5a", "5b"),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.pathway: CapabilitySpec(
-        CapabilityId.pathway, "Pathways", "source_workflow", sources=("Reactome",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.pathway,
+        "Pathways",
+        "source_workflow",
+        sources=("Reactome",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.hd_literature: CapabilitySpec(
-        CapabilityId.hd_literature, "Huntington disease literature", "source_workflow", sources=("PubMed",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.hd_literature,
+        "Huntington disease literature",
+        "source_workflow",
+        sources=("PubMed",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.disease_association: CapabilitySpec(
-        CapabilityId.disease_association, "Disease association", "retrieval_only", limitations="No controlled disease-association acquisition is enabled in this patch."
+        CapabilityId.disease_association,
+        "Disease association",
+        "retrieval_only",
+        limitations="No controlled disease-association acquisition is enabled in this patch.",
     ),
     CapabilityId.human_genetic_association: CapabilitySpec(
-        CapabilityId.human_genetic_association, "Human genetic association", "retrieval_only", limitations="Generic disease, expression, pathway, and literature records do not establish a human genetic modifier association."
+        CapabilityId.human_genetic_association,
+        "Human genetic association",
+        "retrieval_only",
+        limitations="Generic disease, expression, pathway, and literature records do not establish a human genetic modifier association.",
     ),
     CapabilityId.model_organism: CapabilitySpec(
-        CapabilityId.model_organism, "Model-organism evidence", "source_workflow", sources=("MouseMine",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.model_organism,
+        "Model-organism evidence",
+        "source_workflow",
+        sources=("MouseMine",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.chemical_perturbation: CapabilitySpec(
-        CapabilityId.chemical_perturbation, "Chemical perturbation", "section_bundle", ("6a",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.chemical_perturbation,
+        "Chemical perturbation",
+        "section_bundle",
+        ("6a",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
     CapabilityId.chemical_tools: CapabilitySpec(
-        CapabilityId.chemical_tools, "Chemical tools", "section_bundle", ("7a",), acquisition_enabled=True, can_refresh=True
+        CapabilityId.chemical_tools,
+        "Chemical tools",
+        "section_bundle",
+        ("7a",),
+        acquisition_enabled=True,
+        can_refresh=True,
     ),
 }
 
 
 NEED_CONTRIBUTORS: dict[EvidenceNeed, tuple[CapabilityId, ...]] = {
     EvidenceNeed.identity_function: (CapabilityId.identity_function,),
-    EvidenceNeed.orthology_conservation: (CapabilityId.orthology_conservation, CapabilityId.model_organism),
+    EvidenceNeed.orthology_conservation: (
+        CapabilityId.orthology_conservation,
+        CapabilityId.model_organism,
+    ),
     EvidenceNeed.structure_domain: (CapabilityId.structure_domain,),
-    EvidenceNeed.expression_context: (CapabilityId.expression_context, CapabilityId.brain_expression),
+    EvidenceNeed.expression_context: (
+        CapabilityId.expression_context,
+        CapabilityId.brain_expression,
+    ),
     EvidenceNeed.brain_expression: (CapabilityId.brain_expression, CapabilityId.expression_context),
-    EvidenceNeed.experimental_evidence: (CapabilityId.experimental_expression, CapabilityId.model_organism, CapabilityId.chemical_perturbation),
+    EvidenceNeed.experimental_evidence: (
+        CapabilityId.experimental_expression,
+        CapabilityId.model_organism,
+        CapabilityId.chemical_perturbation,
+    ),
     EvidenceNeed.transcriptional_regulation: (CapabilityId.transcriptional_regulation,),
     EvidenceNeed.protein_interaction: (CapabilityId.ppi,),
     EvidenceNeed.pathway_membership: (CapabilityId.pathway, CapabilityId.ppi),
     EvidenceNeed.hd_literature: (CapabilityId.hd_literature,),
-    EvidenceNeed.disease_association: (CapabilityId.disease_association, CapabilityId.hd_literature),
+    EvidenceNeed.disease_association: (
+        CapabilityId.disease_association,
+        CapabilityId.hd_literature,
+    ),
     EvidenceNeed.human_genetic_association: (CapabilityId.human_genetic_association,),
     EvidenceNeed.repeat_instability_mechanism: (
         CapabilityId.hd_literature,
@@ -98,7 +183,12 @@ NEED_CONTRIBUTORS: dict[EvidenceNeed, tuple[CapabilityId, ...]] = {
     ),
     EvidenceNeed.model_organism: (CapabilityId.model_organism,),
     EvidenceNeed.chemical_perturbation: (CapabilityId.chemical_perturbation,),
-    EvidenceNeed.therapeutic_perturbability: (CapabilityId.chemical_tools, CapabilityId.chemical_perturbation),
+    EvidenceNeed.therapeutic_perturbability: (
+        CapabilityId.chemical_tools,
+        CapabilityId.chemical_perturbation,
+    ),
+    EvidenceNeed.safety_tolerability: (),
+    EvidenceNeed.clinical_translational: (),
 }
 
 
@@ -148,7 +238,16 @@ def _record_text(record: EvidenceRecord) -> str:
     source_type = str(getattr(record.source_type, "value", record.source_type)).lower()
     value = " ".join(f"{key} {val}" for key, val in (record.value or {}).items())
     return " ".join(
-        [record.section, record.subsection or "", record.source_name, source_type, assertion, record.fact_type, value, record.display_text]
+        [
+            record.section,
+            record.subsection or "",
+            record.source_name,
+            source_type,
+            assertion,
+            record.fact_type,
+            value,
+            record.display_text,
+        ]
     ).lower()
 
 
@@ -215,56 +314,46 @@ def record_matches_capability(record: EvidenceRecord, capability: CapabilityId) 
 
 
 def record_matches_need(record: EvidenceRecord, need: EvidenceNeed) -> bool:
-    """Metadata-first requirement matching; semantic ranking happens afterwards."""
-    text = _record_text(record)
-    assertion = _assertion(record)
-    source = record.source_name.lower()
-
-    if need is EvidenceNeed.identity_function:
-        return assertion in {"gene_identity", "protein_function"}
-    if need is EvidenceNeed.orthology_conservation:
-        return assertion == "orthology" or any(term in text for term in ("ortholog", "conservation", "homolog"))
-    if need is EvidenceNeed.structure_domain:
-        return assertion == "protein_structure" or any(term in text for term in ("domain", "structure", "alphafold", "pdbe", "cdd"))
-    if need is EvidenceNeed.expression_context:
-        return assertion in {"expression", "cell_type_expression"}
-    if need is EvidenceNeed.brain_expression:
-        return assertion in {"expression", "cell_type_expression"} and any(
-            term in text for term in ("brain", "cortex", "stri", "neuron", "glia", "caudate", "putamen")
-        )
-    if need is EvidenceNeed.experimental_evidence:
-        return assertion in {"perturbation", "knockout_phenotype"} or source in {"geo", "geo profiles", "mousemine"}
-    if need is EvidenceNeed.transcriptional_regulation:
-        return assertion == "transcription_factor_association" or "transcription factor" in text
-    if need is EvidenceNeed.protein_interaction:
-        return assertion == "ppi" or source in {"string", "biogrid"}
-    if need is EvidenceNeed.pathway_membership:
-        return assertion == "pathway_membership" or source in {"reactome", "wikipathways"}
-    if need is EvidenceNeed.hd_literature:
-        return assertion == "literature_summary" and any(
-            term in text for term in ("huntington", "huntingtin", "cag", "hd literature")
-        )
-    if need is EvidenceNeed.disease_association:
-        return assertion == "disease_association"
-    if need is EvidenceNeed.human_genetic_association:
-        if assertion != "variant_association":
-            return False
-        return any(term in text for term in ("huntington", "cag", "modifier", "age at onset", "gwas", "somatic expansion"))
-    if need is EvidenceNeed.repeat_instability_mechanism:
-        return any(term in text for term in ("cag", "repeat instability", "repeat expansion", "somatic expansion", "mismatch repair"))
-    if need is EvidenceNeed.model_organism:
-        return assertion in {"knockout_phenotype", "orthology"} or source == "mousemine"
-    if need is EvidenceNeed.chemical_perturbation:
-        return assertion in {"chemical_interaction", "perturbation"} and (source == "ctd" or "chemical" in text)
-    if need is EvidenceNeed.therapeutic_perturbability:
-        return assertion in {"chemical_tool", "chemical_interaction"}
-    return False
+    """Return whether one record qualifies under the deterministic evidence contract."""
+    requirement = EvidenceRequirement(
+        id=f"compat-{need.value}",
+        label=need.value,
+        description=need.value,
+        genes=[record.gene_symbol.upper()],
+        evidence_need=need,
+        capability_ids=[],
+        required=True,
+        minimum_support=1,
+        rationale="Compatibility evidence check.",
+    )
+    disease_contexts = (
+        ["Huntington disease"]
+        if need
+        in {
+            EvidenceNeed.hd_literature,
+            EvidenceNeed.human_genetic_association,
+            EvidenceNeed.repeat_instability_mechanism,
+        }
+        else []
+    )
+    return evaluate_evidence(
+        record,
+        requirement,
+        gene=record.gene_symbol,
+        disease_contexts=disease_contexts,
+    ).eligible
 
 
-def qualifying_records(records: list[EvidenceRecord], requirement: EvidenceRequirement) -> list[EvidenceRecord]:
-    genes = set(requirement.genes)
-    return [
-        record
-        for record in records
-        if record.gene_symbol.upper() in genes and record_matches_need(record, requirement.evidence_need)
-    ]
+def qualifying_records(
+    records: list[EvidenceRecord], requirement: EvidenceRequirement
+) -> list[EvidenceRecord]:
+    """Return canonical representatives for compatibility callers.
+
+    The orchestrator uses the richer canonicalization result directly so it can
+    disclose contextual and excluded records as well.
+    """
+    selected: list[EvidenceRecord] = []
+    for gene in requirement.genes:
+        result = canonicalize_requirement_evidence(records, requirement, gene=gene)
+        selected.extend(item.canonical_record for item in result.qualifying)
+    return selected

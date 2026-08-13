@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from gene_dossier.api import main as api_main
+from gene_dossier.agent.evidence import public_evidence_reference, public_run_reference
 from gene_dossier.agent.models import (
     AgentEvidenceUniverse,
     AnswerMode,
@@ -31,6 +33,7 @@ from gene_dossier.db import (
     get_generated_report,
     init_db,
     save_dossier_run,
+    save_evidence_record,
     session_scope,
 )
 from gene_dossier.models import (
@@ -273,9 +276,7 @@ def test_fresh_job_artifacts_returns_generated_report(completed_fresh_job) -> No
     assert artifacts.report is not None
     assert artifacts.report.id == "report-fresh-run-test-123"
     assert artifacts.report.geneSymbol == "CDH10"
-    assert artifacts.report.htmlUrl.endswith(
-        "/api/reports/report-fresh-run-test-123/html"
-    )
+    assert artifacts.report.htmlUrl.endswith("/api/reports/report-fresh-run-test-123/html")
     assert artifacts.report.pdfUrl is None
 
 
@@ -307,9 +308,7 @@ def test_generated_report_survives_runtime_cache_loss(completed_fresh_job) -> No
         row = get_generated_report(session, report_id)
         assert row is not None
         assert not Path(row.html_path).is_absolute()
-        assert row.html_path.endswith(
-            f"/{completed_fresh_job['run_id']}/section_1.html"
-        )
+        assert row.html_path.endswith(f"/{completed_fresh_job['run_id']}/section_1.html")
 
 
 def test_missing_generated_html_is_truthfully_unavailable(completed_fresh_job) -> None:
@@ -395,10 +394,7 @@ def test_reports_and_recent_include_durable_generated_report(completed_fresh_job
     assert generated.reportOrigin == "generated"
     assert generated.dossierRunId == completed_fresh_job["run_id"]
     recent = api_main.list_recent_endpoint()
-    assert any(
-        item["href"] == f"/reports/{completed_fresh_job['report_id']}"
-        for item in recent
-    )
+    assert any(item["href"] == f"/reports/{completed_fresh_job['report_id']}" for item in recent)
     assert generated.id != "rep-srebf2"
 
 
@@ -409,13 +405,7 @@ def test_recovery_report_resolves_durably_with_exact_artifact(
     run_id = "3b599459b3da4af8afcee4bf5891ad6d"
     report_id = f"report-{run_id}"
     output_root = api_main.PROJECT_ROOT / "data" / "outputs"
-    exact_html = (
-        output_root
-        / "section_validation"
-        / "SREBF2"
-        / run_id
-        / "section_1.html"
-    )
+    exact_html = output_root / "section_validation" / "SREBF2" / run_id / "section_1.html"
     assert exact_html.is_file()
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'recovery-test.db'}",
@@ -693,7 +683,9 @@ def test_ask_stored_ppi_rag_does_not_invoke_tool(monkeypatch) -> None:
     ]
 
     monkeypatch.setattr(api_main, "init_db", lambda: None)
-    monkeypatch.setattr(api_main, "_load_domain_records_for_universe", lambda *_args, **_kwargs: records)
+    monkeypatch.setattr(
+        api_main, "_load_domain_records_for_universe", lambda *_args, **_kwargs: records
+    )
     monkeypatch.setattr(
         api_main,
         "_retrieve_grounded_hits",
@@ -704,7 +696,9 @@ def test_ask_stored_ppi_rag_does_not_invoke_tool(monkeypatch) -> None:
         "_execute_controlled_tool",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("tool should not run")),
     )
-    monkeypatch.setattr(api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic"))
+    monkeypatch.setattr(
+        api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic")
+    )
 
     response = api_main._handle_legacy_ask_question(
         api_main.AskRequest(question="What proteins interact with CDH10?", gene_symbol="CDH10")
@@ -734,8 +728,7 @@ def test_ask_refresh_ppi_invokes_overlay_tool(monkeypatch) -> None:
         ),
     ]
     tool_records = [
-        rec.model_copy(update={"dossier_run_id": "tool-run-ppi"})
-        for rec in baseline_records
+        rec.model_copy(update={"dossier_run_id": "tool-run-ppi"}) for rec in baseline_records
     ]
 
     def fake_load(_gene, universe, **_kwargs):
@@ -771,7 +764,9 @@ def test_ask_refresh_ppi_invokes_overlay_tool(monkeypatch) -> None:
             "indexedRecords": 2,
         },
     )
-    monkeypatch.setattr(api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic"))
+    monkeypatch.setattr(
+        api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic")
+    )
 
     response = api_main._handle_legacy_ask_question(
         api_main.AskRequest(
@@ -855,7 +850,9 @@ def test_real_embedding_backend_can_label_semantic(monkeypatch) -> None:
         method="semantic",
         source_id=f"{record.dossier_run_id}:{record.id}",
     )
-    monkeypatch.setattr(api_main, "_persistent_chroma_index", lambda: _FakeRealIndex([semantic_hit]))
+    monkeypatch.setattr(
+        api_main, "_persistent_chroma_index", lambda: _FakeRealIndex([semantic_hit])
+    )
 
     hits, method, _activity, backend = api_main._retrieve_grounded_hits(
         question="protein interaction partners",
@@ -1059,15 +1056,9 @@ def test_accepted_cdh10_job_keeps_registered_report_id() -> None:
 
 def test_generate_page_has_no_accepted_report_fallback() -> None:
     frontend_root = api_main.PROJECT_ROOT / "frontend" / "src"
-    source = (
-        frontend_root / "pages" / "GenerateDossierPage.tsx"
-    ).read_text(encoding="utf-8")
-    reports_source = (frontend_root / "pages" / "ReportsPage.tsx").read_text(
-        encoding="utf-8"
-    )
-    viewer_source = (frontend_root / "components" / "ReportViewer.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (frontend_root / "pages" / "GenerateDossierPage.tsx").read_text(encoding="utf-8")
+    reports_source = (frontend_root / "pages" / "ReportsPage.tsx").read_text(encoding="utf-8")
+    viewer_source = (frontend_root / "components" / "ReportViewer.tsx").read_text(encoding="utf-8")
 
     assert "artifact?.id ?? 'rep-srebf2'" not in source
     assert "Report artifact is not available." in source
@@ -1075,9 +1066,12 @@ def test_generate_page_has_no_accepted_report_fallback() -> None:
     assert "getJob(initialJobId)" in source
     assert "This job session has expired." in source
     assert "next.delete('job')" in source
-    assert "startDossierJob" not in source.split("useEffect(() => {", 1)[1].split(
-        "}, [initialJobId, params, setParams])", 1
-    )[0]
+    assert (
+        "startDossierJob"
+        not in source.split("useEffect(() => {", 1)[1].split(
+            "}, [initialJobId, params, setParams])", 1
+        )[0]
+    )
     assert "PDF not generated" in source
     assert "href={report.pdfUrl || '#'}" not in reports_source
     assert "href={report.pdfUrl || '#'}" not in viewer_source
@@ -1093,36 +1087,71 @@ def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
     activity_source = (frontend_root / "components" / "AgentActivity.tsx").read_text(
         encoding="utf-8"
     )
+    home_source = (frontend_root / "pages" / "HomePage.tsx").read_text(encoding="utf-8")
+    client_source = (frontend_root / "api" / "client.ts").read_text(encoding="utf-8")
 
-    assert "const [selectedGene, setSelectedGene]" in ask_source
-    assert "const initialQ = params.get('q') ?? ''" in ask_source
-    assert "useState<AskGene>(initialGene)" in ask_source
-    assert "if (initialQ.trim())" in ask_source
-    assert "void submit(initialQ)" in ask_source
+    assert "const [contextGene, setContextGene]" in ask_source
+    assert "const initialQuestion = params.get('q') ?? ''" in ask_source
+    assert "useState<string | null>(initialContext)" in ask_source
+    assert "!initialQuestion.trim()" in ask_source
+    assert "void submit(initialQuestion, initialContext, initialMode)" in ask_source
     assert "What evidence suggests SREBF2 can be pharmacologically manipulated?" not in ask_source
-    assert "const requestGene = selectedGene" in ask_source
-    assert "askEvidenceQuestion(q, requestGene" in ask_source
+    assert "askEvidenceQuestion(question.trim(), selectedContext" in ask_source
     assert "requestGeneration.current" in ask_source
     assert "setResponse(null)" in ask_source
     assert "new URLSearchParams(current)" in ask_source
-    assert "next.set('gene', gene)" in ask_source
+    assert "else next.delete('gene')" in ask_source
     assert "response.citations[ordinal - 1]" in ask_source
     assert "<AgentActivity steps={response.agentActivity} />" in ask_source
-    assert "onSelectGene={selectGene}" in ask_source
-    assert "Context Gene:" in (frontend_root / "components" / "SearchComposer.tsx").read_text(encoding="utf-8")
+    assert "onSelectGene={selectContextGene}" in ask_source
+    assert "Context Gene:" in (frontend_root / "components" / "SearchComposer.tsx").read_text(
+        encoding="utf-8"
+    )
     assert "evidenceSelection: 'accepted_or_latest_generated'" in ask_source
     assert "response.comparisonMatrix" in ask_source
     assert "response.evidenceGaps" in ask_source
-    assert "response.evidenceCategories" in ask_source
+    assert "response.answerSections" in ask_source
     assert "response.recommendations" in ask_source
-    assert "response.failures" in ask_source
-    assert 'label="Evidence" evidenceRecordId={recordId}' in ask_source
+    assert "result.failures" in ask_source
+    assert 'label="Evidence" evidenceReference={item.public_evidence_ref}' in ask_source
     assert "label={`[${index + 1}]`}" not in ask_source
     assert "cells: Record<string, AgentComparisonCell>" in (
         frontend_root / "api" / "types.ts"
     ).read_text(encoding="utf-8")
-    assert "onSelectGene(g)" in composer_source
+    assert "onSelectGene?.(null)" in composer_source
+    assert "No context gene" in composer_source
+    assert "Stored Evidence Only" in composer_source
+    assert "Math.min(Math.max(textarea.scrollHeight, 92), 240)" in composer_source
+    assert "textarea.scrollHeight > 240 ? 'auto' : 'hidden'" in composer_source
+    assert "onClick={() => onChange(suggestion)}" in composer_source
+    assert "onClick={() => onSelectGene?.(suggestion)}" not in composer_source
     assert "const isActive = loading && i === steps.length - 1" in activity_source
+    assert "useState<string | null>(null)" in home_source
+    assert "if (contextGene) params.set('gene', contextGene)" in home_source
+    assert "context_gene: contextGene" in client_source
+    assert "geneSymbol = 'SREBF2'" not in client_source
+    assert "gene === 'SREBF2'" in client_source
+    assert "Mock mode has no qualifying persisted evidence" in client_source
+    assert "const autoSubmitted = useRef(false)" in ask_source
+    assert "autoSubmitted.current = true" in ask_source
+    assert "const next = new URLSearchParams(current)" in ask_source
+    assert "const REQUEST_TIMEOUT_MS = 120_000" in ask_source
+    assert "backend_unavailable" in ask_source
+    assert "provider_failure" in ask_source
+    assert "cell.citationOrdinals.slice(0, 3)" in ask_source
+    assert "View all {cell.evidenceCount}" in ask_source
+    ordered_components = [
+        "<StructuredAnswer",
+        "<RequirementSummary",
+        "<ComparisonDecisionSummary",
+        "<HdModifierMatrix",
+        "<EvidenceGapSummary",
+        "<RecommendationSummary",
+        "<Limitations",
+        "<TechnicalDiagnostics",
+    ]
+    positions = [ask_source.index(component) for component in ordered_components]
+    assert positions == sorted(positions)
     assert "const isLast = i === steps.length - 1" not in activity_source
 
 
@@ -1217,16 +1246,94 @@ def test_general_ask_adapter_exposes_authoritative_per_gene_contract(monkeypatch
 
     assert response.geneSymbol == "CDH10"
     assert response.contextGene == "SREBF2"
-    assert response.evidenceUniverses["CDH10"].dossierRunIds == ["d94f"]
+    assert response.evidenceUniverses["CDH10"].dossierRunIds == []
+    assert response.evidenceUniverseRefs["CDH10"]["dossierRunRefs"] == [
+        public_run_reference("d94f")
+    ]
     assert response.evidenceRequirements[0]["required"] is True
     assert response.requirementAssessments[0]["status"] == "sufficient"
-    assert response.citations[0].evidenceRecordId == record.id
+    assert response.citations[0].publicEvidenceRef == public_evidence_reference(record)
     assert response.citationRegistry == []
     assert response.evidenceCategories == []
     assert response.recommendations == []
     assert response.failures == []
     assert response.generationMethod == "hybrid"
     assert response.metadata["grounding"]["fallbackSlotCount"] == 1
+    serialized = json.dumps(response.model_dump(mode="json"), sort_keys=True)
+    assert record.id not in serialized
+    assert "d94f" not in serialized
+    assert response.citations[0].publicEvidenceRef in serialized
+
+
+def test_ask_adapter_recursively_blocks_contextual_private_identifier_leak(monkeypatch) -> None:
+    private_id = "private-contextual-record-id"
+
+    class FakeService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute(self, request):
+            return ScientificAgentResult(
+                status=AnswerStatus.insufficient_evidence,
+                question=request.question,
+                context_gene=None,
+                summary=f"Unsafe contextual payload {private_id}",
+                private_identifiers={private_id},
+            )
+
+    monkeypatch.setattr(api_main, "ScientificAgentService", FakeService)
+
+    with pytest.raises(api_main.HTTPException, match="serialized safely"):
+        api_main.handle_ask_question(api_main.AskRequest(question="What evidence is available?"))
+
+
+def test_public_evidence_detail_lookup_returns_public_safe_record(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'public-evidence.db'}",
+        raw_data_dir=tmp_path / "raw",
+        output_dir=tmp_path / "outputs",
+        index_dir=tmp_path / "indexes",
+    )
+    engine = get_engine(settings.database_url)
+    init_db(engine)
+    record = _evidence_record(
+        section="Protein interactions",
+        source_name="STRING",
+        gene_symbol="CDH10",
+        assertion_type=AssertionType.ppi,
+    )
+    with session_scope(engine) as session:
+        save_dossier_run(
+            session,
+            DossierRun(
+                id="run-test",
+                gene_symbol="CDH10",
+                status="completed",
+                run_type="offline_public_detail_test",
+            ),
+        )
+        save_evidence_record(session, record)
+
+    @contextmanager
+    def disposable_session_scope():
+        with session_scope(engine) as session:
+            yield session
+
+    monkeypatch.setattr(api_main, "init_db", lambda: None)
+    monkeypatch.setattr(api_main, "session_scope", disposable_session_scope)
+    public_ref = public_evidence_reference(record)
+
+    detail = api_main.handle_get_evidence_record(public_ref)
+
+    assert detail.id == public_ref
+    assert detail.geneSymbol == "CDH10"
+    assert detail.sourceName == "STRING"
+    assert detail.sourceIdentifier == record.source_id
+    assert detail.apiRunId is None
+    assert detail.rawArtifactId is None
 
 
 def test_ask_adapter_preserves_context_gene_omitted_null_and_explicit(monkeypatch) -> None:
@@ -1281,6 +1388,70 @@ def test_ask_adapter_preserves_context_gene_omitted_null_and_explicit(monkeypatc
     assert explicit_null.contextGene is None
     assert explicit_msh3.contextGene == "MSH3"
     assert explicit_srebf2.contextGene == "SREBF2"
+
+
+def test_explicit_research_mode_supersedes_legacy_acquisition_flag(monkeypatch) -> None:
+    captured: list[object] = []
+    plan = ScientificQuestionPlan(
+        intent=ScientificIntent.single_gene_question,
+        entities=ScientificEntities(genes=["MSH3"]),
+        primary_gene="MSH3",
+        objective="offline research-mode precedence",
+        analysis_lens="general",
+        answer_mode=AnswerMode.synthesis,
+        evidence_requirements=[],
+        requires_multi_gene=False,
+        planner_method=PlannerMethod.deterministic_fallback,
+    )
+
+    class FakeService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute(self, request):
+            captured.append(request)
+            return ScientificAgentResult(
+                status=AnswerStatus.insufficient_evidence,
+                question=request.question,
+                context_gene=request.context_gene,
+                plan=plan,
+                summary="No evidence.",
+            )
+
+    monkeypatch.setattr(api_main, "ScientificAgentService", FakeService)
+    cases = [
+        api_main.AskRequest(
+            question="MSH3 evidence",
+            research_mode="auto",
+            allow_tool_acquisition=False,
+        ),
+        api_main.AskRequest(
+            question="MSH3 evidence",
+            research_mode="deep_research",
+            allow_tool_acquisition=False,
+        ),
+        api_main.AskRequest(
+            question="MSH3 evidence",
+            research_mode="stored_only",
+            allow_tool_acquisition=True,
+        ),
+        api_main.AskRequest(question="MSH3 evidence", allow_tool_acquisition=False),
+    ]
+    for body in cases:
+        api_main.handle_ask_question(body)
+
+    assert [request.research_mode.value for request in captured] == [
+        "auto",
+        "deep_research",
+        "stored_only",
+        "auto",
+    ]
+    assert [request.allow_tool_acquisition for request in captured] == [
+        True,
+        True,
+        False,
+        False,
+    ]
 
 
 def test_accepted_report_html_resolves_validated_full_artifacts() -> None:
@@ -1375,9 +1546,7 @@ def test_friday_baseline_chemical_perturbations_are_zero() -> None:
 
 
 def test_compare_defaults_to_baseline_universes_only() -> None:
-    response = api_main.handle_compare_genes(
-        api_main.CompareRequest(genes=["SREBF2", "CDH10"])
-    )
+    response = api_main.handle_compare_genes(api_main.CompareRequest(genes=["SREBF2", "CDH10"]))
     chemical_row = next(
         row for row in response.matrix if row["dimension"] == "Chemical Perturbations"
     )
@@ -1385,8 +1554,6 @@ def test_compare_defaults_to_baseline_universes_only() -> None:
     assert response.evidenceUniverses["SREBF2"].dossierRunIds == [
         "407e1a4293c6424e8b6b830a1f0a7c60"
     ]
-    assert response.evidenceUniverses["CDH10"].dossierRunIds == [
-        "d94f392f4a3941d5a59f697f58d18234"
-    ]
+    assert response.evidenceUniverses["CDH10"].dossierRunIds == ["d94f392f4a3941d5a59f697f58d18234"]
     assert chemical_row["cells"]["SREBF2"].evidenceCount == 0
     assert chemical_row["cells"]["CDH10"].evidenceCount == 0

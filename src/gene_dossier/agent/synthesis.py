@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 _CITATION_RE = re.compile(r"\[\[(\d+)\]\]")
 _ANY_CITATION_MARKER_RE = re.compile(r"\[\[|\]\]|(?<!\[)\[\s*-?\d+\s*\](?!\])")
 _MALFORMED_CITATION_RE = re.compile(r"(?<!\[)\[\d+\](?!\])|\[\[[^\]\d][^\]]*\]\]|\[\[\d+\](?!\])")
-_RANKING_RE = re.compile(r"\b(winner|ranked first|best overall|score|outperforms|superior)\b", re.IGNORECASE)
+_RANKING_RE = re.compile(
+    r"\b(winner|ranked first|best overall|score|outperforms|superior)\b", re.IGNORECASE
+)
 _CAUSAL_RE = re.compile(
     r"\b(cause[sd]?|causal(?:ly)?|drive[sn]?|led to|leads to|result(?:s|ed)? in|prove[sd]?|validate[sd]?)\b",
     re.IGNORECASE,
@@ -40,7 +42,10 @@ _DIRECTIONAL_RE = re.compile(
     r"\b(increase[sd]?|decrease[sd]?|reduce[sd]?|enhance[sd]?|suppress(?:es|ed)?|up-?regulat(?:e[sd]?|ion)|down-?regulat(?:e[sd]?|ion)|gain|loss)\b",
     re.IGNORECASE,
 )
-_CONFLICT_RE = re.compile(r"\b(conflict(?:s|ing)?|contradict(?:s|ory)?|disagree(?:s|ment)?|argues? against)\b", re.IGNORECASE)
+_CONFLICT_RE = re.compile(
+    r"\b(conflict(?:s|ing)?|contradict(?:s|ory)?|disagree(?:s|ment)?|argues? against)\b",
+    re.IGNORECASE,
+)
 _PREDICTED_RESULT_RE = re.compile(
     r"\b(will|would)\s+(validate|prove|confirm|demonstrate|show|establish)\b",
     re.IGNORECASE,
@@ -152,7 +157,10 @@ def _grade(record: EvidenceRecord) -> str:
 def _record_has_direction_metadata(record: EvidenceRecord) -> bool:
     for key, value in (record.value or {}).items():
         key_text = str(key).lower()
-        if any(term in key_text for term in ("direction", "effect", "change", "modulation", "regulation")) and value not in (None, "", []):
+        if any(
+            term in key_text
+            for term in ("direction", "effect", "change", "modulation", "regulation")
+        ) and value not in (None, "", []):
             return True
     return False
 
@@ -205,7 +213,9 @@ def _policy_for_records(records: list[EvidenceRecord]) -> ClaimLanguagePolicy:
     return ClaimLanguagePolicy.descriptive_only
 
 
-def _role_for_records(records: list[EvidenceRecord], category: EvidenceNeed | None) -> EpistemicRole:
+def _role_for_records(
+    records: list[EvidenceRecord], category: EvidenceNeed | None
+) -> EpistemicRole:
     assertions = {_assertion(record) for record in records}
     if assertions & {
         "variant_association",
@@ -224,7 +234,9 @@ def _role_for_records(records: list[EvidenceRecord], category: EvidenceNeed | No
     return EpistemicRole.supporting_evidence
 
 
-def _record_sort_key(record: EvidenceRecord, input_order: dict[str, int]) -> tuple[int, int, str, str]:
+def _record_sort_key(
+    record: EvidenceRecord, input_order: dict[str, int]
+) -> tuple[int, int, str, str]:
     return (
         _GRADE_ORDER.get(_grade(record), 99),
         input_order.get(record.id, 9999),
@@ -240,10 +252,11 @@ def _fallback_for_evidence_slot(
     evidence_text: tuple[str, ...],
 ) -> str:
     gene_label = " and ".join(genes)
+    category_label = category.value.replace("_", " ")
     if not evidence_text:
-        return f"No qualifying {category.value.replace('_', ' ')} evidence was available for {gene_label}."
+        return f"No qualifying {category_label} evidence was available for {gene_label}."
     joined = "; ".join(text.rstrip(". ") for text in evidence_text[:3])
-    return f"For {gene_label}, the selected {category.value.replace('_', ' ')} evidence reports: {joined}."
+    return f"For {gene_label}, the selected {category_label} evidence reports: {joined}."
 
 
 def _slot_from_records(
@@ -270,7 +283,9 @@ def _slot_from_records(
         gene_symbols=genes,
         evidence_category=category,
         epistemic_role=_role_for_records(records, category),
-        citation_ordinals=tuple(ordinal_by_id[record.id] for record in records if record.id in ordinal_by_id),
+        citation_ordinals=tuple(
+            ordinal_by_id[record.id] for record in records if record.id in ordinal_by_id
+        ),
         language_policy=policy,
         evidence_text=evidence_text,
         public_sources=tuple(dict.fromkeys(record.source_name for record in records)),
@@ -289,8 +304,12 @@ def _slot_from_records(
         ),
         stable_order=stable_order,
         heading_label=heading_label,
-        allow_directional_language=any(_record_has_direction_metadata(record) for record in records),
-        allow_causal_language=any(_assertion(record) in {"perturbation", "knockout_phenotype"} for record in records),
+        allow_directional_language=any(
+            _record_has_direction_metadata(record) for record in records
+        ),
+        allow_causal_language=any(
+            _assertion(record) in {"perturbation", "knockout_phenotype"} for record in records
+        ),
     )
 
 
@@ -322,7 +341,9 @@ def build_grounded_prose_slots(
 
     assessment_records: list[tuple[EvidenceRequirementAssessment, list[EvidenceRecord]]] = []
     for assessment in ordered_assessments:
-        matched = [record_by_id[item] for item in assessment.evidence_record_ids if item in record_by_id]
+        matched = [
+            record_by_id[item] for item in assessment.evidence_record_ids if item in record_by_id
+        ]
         matched.sort(key=lambda record: _record_sort_key(record, input_order))
         if matched:
             assessment_records.append((assessment, matched))
@@ -368,7 +389,9 @@ def build_grounded_prose_slots(
                 cell = row.cells.get(gene)
                 if cell is None:
                     continue
-                matched = [record_by_id[item] for item in cell.evidence_record_ids if item in record_by_id]
+                matched = [
+                    record_by_id[item] for item in cell.evidence_record_ids if item in record_by_id
+                ]
                 matched.sort(key=lambda record: _record_sort_key(record, input_order))
                 if not matched:
                     continue
@@ -409,7 +432,12 @@ def build_grounded_prose_slots(
                 assessment.evidence_need
                 for assessment in ordered_assessments
                 if recommendation.gap_ids
-                and any(gap_id.startswith(f"{assessment.gene_symbol.lower()}:{assessment.evidence_need.value}:") for gap_id in recommendation.gap_ids)
+                and any(
+                    gap_id.startswith(
+                        f"{assessment.gene_symbol.lower()}:{assessment.evidence_need.value}:"
+                    )
+                    for gap_id in recommendation.gap_ids
+                )
             ),
             None,
         )
@@ -423,7 +451,10 @@ def build_grounded_prose_slots(
                 assessment.gene_symbol
                 for assessment in ordered_assessments
                 if recommendation.gap_ids
-                and any(gap_id.startswith(f"{assessment.gene_symbol.lower()}:") for gap_id in recommendation.gap_ids)
+                and any(
+                    gap_id.startswith(f"{assessment.gene_symbol.lower()}:")
+                    for gap_id in recommendation.gap_ids
+                )
             )
         ) or tuple(plan.entities.genes[:1])
         stable_order += 1
@@ -441,7 +472,9 @@ def build_grounded_prose_slots(
                     _remove_private_values(record.display_text, private_values)
                     for record in rationale_records
                 ),
-                public_sources=tuple(dict.fromkeys(record.source_name for record in rationale_records)),
+                public_sources=tuple(
+                    dict.fromkeys(record.source_name for record in rationale_records)
+                ),
                 public_source_ids=tuple(
                     dict.fromkeys(
                         record.source_id
@@ -484,7 +517,10 @@ def build_grounded_prose_prompt(
     for slot in sorted(slots, key=lambda item: item.stable_order):
         sources = ", ".join(slot.public_sources) or "none"
         source_ids = ", ".join(slot.public_source_ids) or "none"
-        evidence = "\n".join(f"- {text}" for text in slot.evidence_text) or "- No compatible rationale record; this is a gap-driven recommendation."
+        evidence = (
+            "\n".join(f"- {text}" for text in slot.evidence_text)
+            or "- No compatible rationale record; this is a gap-driven recommendation."
+        )
         slot_blocks.append(
             "\n".join(
                 (
@@ -524,7 +560,9 @@ Slots:
 """
 
 
-def _fragment_issue(slot: GroundedProseSlot, code: str, rule: str, explanation: str) -> GroundingValidationIssue:
+def _fragment_issue(
+    slot: GroundedProseSlot, code: str, rule: str, explanation: str
+) -> GroundingValidationIssue:
     return GroundingValidationIssue(
         code=code,
         answer_section=slot.section.value,
@@ -544,7 +582,14 @@ def validate_prose_fragment(
     """Validate scientific wording only within its assigned prose slot."""
     text = fragment.text.strip()
     if not text:
-        return [_fragment_issue(slot, "empty_fragment", "slot_fragment_must_be_nonempty", "The prose fragment was empty.")]
+        return [
+            _fragment_issue(
+                slot,
+                "empty_fragment",
+                "slot_fragment_must_be_nonempty",
+                "The prose fragment was empty.",
+            )
+        ]
     issues: list[GroundingValidationIssue] = []
     if _ANY_CITATION_MARKER_RE.search(text):
         issues.append(
@@ -615,7 +660,9 @@ def validate_prose_fragment(
                 "The fragment asserted a conflict not authorized by deterministic analysis.",
             )
         )
-    if slot.language_policy is ClaimLanguagePolicy.recommendation and _PREDICTED_RESULT_RE.search(text):
+    if slot.language_policy is ClaimLanguagePolicy.recommendation and _PREDICTED_RESULT_RE.search(
+        text
+    ):
         issues.append(
             _fragment_issue(
                 slot,
@@ -629,8 +676,7 @@ def validate_prose_fragment(
 
 def _render_slot(slot: GroundedProseSlot, text: str) -> str:
     citations = " ".join(f"[[{ordinal}]]" for ordinal in slot.citation_ordinals)
-    label = slot.heading_label
-    return f"[{label} · {slot.epistemic_role.value}] {text.strip()} {citations}".strip()
+    return f"{text.strip()} {citations}".strip()
 
 
 def validate_rendered_answer(
@@ -706,7 +752,9 @@ def _render_with_fragments(
 ) -> GroundedSynthesisResult:
     slot_by_id = {slot.slot_id: slot for slot in slots}
     supplied_fragments = fragments or []
-    counts = Counter(fragment.slot_id for fragment in supplied_fragments if fragment.slot_id in slot_by_id)
+    counts = Counter(
+        fragment.slot_id for fragment in supplied_fragments if fragment.slot_id in slot_by_id
+    )
     fragments_by_id = {
         fragment.slot_id: fragment
         for fragment in supplied_fragments
@@ -775,7 +823,7 @@ def _render_with_fragments(
         else "The selected provenance-backed evidence supports the following grounded synthesis."
     )
     gap_lines = [
-        f"[Evidence gap] {item.gene_symbol} {item.evidence_need.value.replace('_', ' ')}: {item.detail}"
+        f"Evidence gap for {item.gene_symbol} {item.evidence_need.value.replace('_', ' ')}: {item.detail}"
         for item in sorted(
             assessments,
             key=lambda item: (item.gene_symbol, item.requirement_id, item.evidence_need.value),
@@ -803,7 +851,9 @@ def _render_with_fragments(
     issues.extend(structural_issues)
     accepted_count = len(accepted)
     fallback_count = len(slots) - accepted_count
-    method = "grounded_llm" if fallback_count == 0 else "hybrid" if accepted_count else "deterministic"
+    method = (
+        "grounded_llm" if fallback_count == 0 else "hybrid" if accepted_count else "deterministic"
+    )
     return GroundedSynthesisResult(
         summary=answer,
         generation_method=method,
@@ -820,7 +870,9 @@ def citations_are_valid(text: str, evidence_ids: list[str]) -> bool:
     """Compatibility helper for ordinal syntax/range and exact private-ID checks."""
     if _MALFORMED_CITATION_RE.search(text) or _contains_actual_record_id(text, evidence_ids):
         return False
-    return all(1 <= int(match.group(1)) <= len(evidence_ids) for match in _CITATION_RE.finditer(text))
+    return all(
+        1 <= int(match.group(1)) <= len(evidence_ids) for match in _CITATION_RE.finditer(text)
+    )
 
 
 def deterministic_summary(
@@ -939,7 +991,11 @@ def try_grounded_synthesis(
                     ],
                 )
                 continue
-            draft = raw if isinstance(raw, GroundedProseDraft) else GroundedProseDraft.model_validate(raw)
+            draft = (
+                raw
+                if isinstance(raw, GroundedProseDraft)
+                else GroundedProseDraft.model_validate(raw)
+            )
             result = _render_with_fragments(
                 slots=slots,
                 fragments=draft.fragments,
@@ -952,7 +1008,9 @@ def try_grounded_synthesis(
             )
             return result
         except Exception as exc:  # noqa: BLE001
-            logger.warning("grounded synthesis failed via %s: %s", candidate.provider, type(exc).__name__)
+            logger.warning(
+                "grounded synthesis failed via %s: %s", candidate.provider, type(exc).__name__
+            )
             message = str(exc).lower()
             failure_type = "provider_failure"
             issue_code = "provider_failure"
@@ -985,7 +1043,9 @@ def try_grounded_synthesis(
             "failure_type": last_failure[0],
             "failure_message": last_failure[1],
             "validation_issues": combined_issues,
-            "diagnostic_counts": dict(sorted(Counter(issue.code for issue in combined_issues).items())),
+            "diagnostic_counts": dict(
+                sorted(Counter(issue.code for issue in combined_issues).items())
+            ),
         }
     )
 

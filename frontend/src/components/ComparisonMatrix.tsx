@@ -45,8 +45,8 @@ export function ComparisonMatrix({
                         type="button"
                         className="w-full rounded-xl border border-transparent p-2 text-left transition hover:border-border hover:bg-white/[0.03]"
                         onClick={() => {
-                          const id = cell.evidenceRecordIds[0]
-                          if (id) void openEvidence(id)
+                          const reference = cell.evidenceRecordIds[0]
+                          if (reference) void openEvidence(reference)
                         }}
                       >
                         <StatusBadge status={cell.status} />

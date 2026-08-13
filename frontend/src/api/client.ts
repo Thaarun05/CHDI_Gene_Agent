@@ -17,6 +17,7 @@ import type {
   RecentWorkItem,
   ReportArtifact,
   WorkflowJob,
+  ResearchMode,
 } from '@/api/types'
 import {
   askResponseSrebf2,
@@ -110,15 +111,17 @@ export async function getGene(symbol: string): Promise<Gene> {
 function baselineMeta(symbol: string) {
   const gene = symbol.toUpperCase()
   const baseEvidenceRunId =
-    gene === 'CDH10'
-      ? 'd94f392f4a3941d5a59f697f58d18234'
-      : '407e1a4293c6424e8b6b830a1f0a7c60'
+    gene === 'SREBF2'
+      ? '407e1a4293c6424e8b6b830a1f0a7c60'
+      : gene === 'CDH10'
+        ? 'd94f392f4a3941d5a59f697f58d18234'
+        : null
   return {
     geneSymbol: gene,
     baseEvidenceRunId,
     toolRunIds: [],
-    dossierRunIds: [baseEvidenceRunId],
-    evidenceUniverse: 'accepted_demo' as const,
+    dossierRunIds: baseEvidenceRunId ? [baseEvidenceRunId] : [],
+    evidenceUniverse: baseEvidenceRunId ? ('accepted_demo' as const) : ('no_base_evidence' as const),
   }
 }
 
@@ -300,38 +303,68 @@ export async function getReport(id: string): Promise<ReportArtifact> {
 
 export async function askEvidenceQuestion(
   question: string,
-  geneSymbol = 'SREBF2',
+  contextGene: string | null,
   options?: {
     dossierRunId?: string
     refreshIfAvailable?: boolean
     toolRunIds?: string[]
     allowToolAcquisition?: boolean
     evidenceSelection?: 'accepted_only' | 'accepted_or_latest_generated' | 'explicit_only'
+    researchMode?: ResearchMode
+    signal?: AbortSignal
   },
 ): Promise<AskResponse> {
   if (USE_MOCKS) {
     await delay(700)
-    const meta = baselineMeta(geneSymbol)
+    if (contextGene === 'SREBF2') {
+      return {
+        ...askResponseSrebf2,
+        ...baselineMeta(contextGene),
+        question,
+        geneSymbol: contextGene,
+        contextGene,
+      }
+    }
+    const meta = contextGene ? baselineMeta(contextGene) : null
     return {
-      ...askResponseSrebf2,
-      ...meta,
-      status: askResponseSrebf2.status ?? 'answered',
-      embeddingBackend: askResponseSrebf2.embeddingBackend ?? 'local_minilm',
+      ...(meta ?? {
+        baseEvidenceRunId: null,
+        toolRunIds: [],
+        dossierRunIds: [],
+        evidenceUniverse: 'no_base_evidence' as const,
+      }),
+      status: 'insufficient_evidence',
+      summary: 'Mock mode has no qualifying persisted evidence for this request.',
+      retrievalMethod: 'abstain',
+      generationMethod: 'abstain',
+      embeddingBackend: 'unavailable',
       question,
-      geneSymbol: meta.geneSymbol,
+      geneSymbol: contextGene,
+      contextGene,
+      evidenceBlocks: [],
+      limitations: ['Use the live scientific backend to resolve and retrieve evidence for this question.'],
+      citations: [],
+      evidenceUsedCount: 0,
+      sourcesCount: 0,
+      sourcesUsed: [],
+      toolsInvokedCount: 0,
+      toolActivity: [],
+      agentActivity: ['Mock mode did not infer a context gene or scientific evidence universe.'],
     }
   }
   return http('/ask', {
     method: 'POST',
+    signal: options?.signal,
     body: JSON.stringify({
       question,
-      gene_symbol: geneSymbol,
-      context_gene: geneSymbol,
+      gene_symbol: contextGene,
+      context_gene: contextGene,
       dossier_run_id: options?.dossierRunId,
       refresh_if_available: options?.refreshIfAvailable ?? false,
       tool_run_ids: options?.toolRunIds ?? [],
       allow_tool_acquisition: options?.allowToolAcquisition ?? true,
       evidence_selection: options?.evidenceSelection ?? 'accepted_or_latest_generated',
+      research_mode: options?.researchMode ?? 'auto',
     }),
   })
 }
