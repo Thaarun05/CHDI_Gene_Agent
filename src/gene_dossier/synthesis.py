@@ -1,7 +1,7 @@
 """Report-section synthesis from evidence records (MVP).
 
-Uses LangChain for optional LLM section writing when an OpenAI, NVIDIA NIM, or
-Anthropic API key is configured. Without keys (or on LLM failure), falls back to
+Uses LangChain for optional LLM section writing when an OpenAI, NVIDIA NIM,
+Anthropic, or Google Gemini API key is configured. Without keys (or on LLM failure), falls back to
 deterministic markdown built only from :class:`~gene_dossier.models.EvidenceRecord`
 fields — the LLM is never treated as a source of truth. Multiple providers are
 tried in order at invocation time so one failing vendor does not block synthesis.
@@ -98,6 +98,7 @@ blank.
 """
 
 SynthesisMode = Literal["deterministic", "llm", "empty", "deferred"]
+LlmPurpose = Literal["section", "planner", "answer"]
 
 
 class SectionClaimDraft(BaseModel):
@@ -346,10 +347,12 @@ DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_NIM_MODEL = "meta/llama-3.1-8b-instruct"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_GOOGLE_GEMINI_MODEL = "gemini-3.5-flash"
 
 PROVIDER_OPENAI = "openai"
 PROVIDER_NVIDIA_NIM = "nvidia_nim"
 PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GOOGLE_GEMINI = "google_gemini"
 
 
 class LlmModelCandidate(BaseModel):
@@ -361,7 +364,12 @@ class LlmModelCandidate(BaseModel):
 
 def _normalized_provider(settings: Settings) -> str:
     raw = (settings.default_llm_provider or "").strip().lower()
-    if raw in {PROVIDER_OPENAI, PROVIDER_NVIDIA_NIM, PROVIDER_ANTHROPIC}:
+    if raw in {
+        PROVIDER_OPENAI,
+        PROVIDER_NVIDIA_NIM,
+        PROVIDER_ANTHROPIC,
+        PROVIDER_GOOGLE_GEMINI,
+    }:
         return raw
     return ""
 
@@ -369,7 +377,12 @@ def _normalized_provider(settings: Settings) -> str:
 def _provider_order(settings: Settings) -> list[str]:
     """Ordered provider names for construction / invocation fallback."""
     preferred = _normalized_provider(settings)
-    auto = [PROVIDER_OPENAI, PROVIDER_NVIDIA_NIM, PROVIDER_ANTHROPIC]
+    auto = [
+        PROVIDER_OPENAI,
+        PROVIDER_NVIDIA_NIM,
+        PROVIDER_ANTHROPIC,
+        PROVIDER_GOOGLE_GEMINI,
+    ]
     if not preferred:
         return auto
     rest = [p for p in auto if p != preferred]
@@ -385,18 +398,53 @@ def _sanitize_llm_error(exc: BaseException, *, limit: int = 200) -> str:
     return collapsed[: limit - 3] + "..."
 
 
-def _build_openai_chat(settings: Settings) -> Any | None:
+def _build_openai_chat(settings: Settings, *, purpose: LlmPurpose = "section") -> Any | None:
     if not settings.has_key("openai_api_key"):
         return None
     try:
         from langchain_openai import ChatOpenAI
 
-        model_name = (settings.default_llm_model or DEFAULT_OPENAI_MODEL).strip()
+        if purpose in {"planner", "answer"}:
+            model_name = (settings.openai_model or "").strip() or "gpt-5.6-terra"
+            reasoning_effort = (
+                settings.openai_planner_reasoning_effort
+                if purpose == "planner"
+                else settings.openai_answer_reasoning_effort
+            )
+            max_tokens = (
+                settings.openai_planner_max_output_tokens
+                if purpose == "planner"
+                else settings.openai_answer_max_output_tokens
+            )
+            timeout = settings.openai_timeout_seconds
+            use_responses_api = True
+        else:
+            model_name = (settings.default_llm_model or DEFAULT_OPENAI_MODEL).strip()
+            reasoning_effort = None
+            max_tokens = None
+            timeout = settings.http_timeout_seconds
+            use_responses_api = None
+        api_key = settings.openai_api_key
+        if hasattr(api_key, "get_secret_value"):
+            api_key = api_key.get_secret_value()
         kwargs: dict[str, Any] = {
             "model": model_name,
-            "api_key": settings.openai_api_key,
-            "temperature": 0,
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": 0,
         }
+        if purpose == "section":
+            kwargs["temperature"] = 0
+        else:
+            kwargs.update(
+                {
+                    "reasoning_effort": reasoning_effort,
+                    "max_completion_tokens": max_tokens,
+                    "use_responses_api": use_responses_api,
+                    "store": False,
+                    "service_tier": "default",
+                }
+            )
         base_url = (settings.openai_base_url or "").strip()
         if base_url:
             kwargs["base_url"] = base_url
@@ -420,11 +468,16 @@ def _build_nvidia_nim_chat(settings: Settings) -> Any | None:
             or (settings.default_llm_model or "").strip()
             or DEFAULT_NIM_MODEL
         )
+        api_key = settings.nvidia_nim_api_key
+        if hasattr(api_key, "get_secret_value"):
+            api_key = api_key.get_secret_value()
         return ChatOpenAI(
             model=model_name,
-            api_key=settings.nvidia_nim_api_key,
+            api_key=api_key,
             base_url=base_url,
             temperature=0,
+            timeout=settings.nvidia_nim_timeout_seconds,
+            max_retries=0,
         )
     except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
         logger.warning(
@@ -444,6 +497,8 @@ def _build_anthropic_chat(settings: Settings) -> Any | None:
             model=model_name,
             api_key=settings.anthropic_api_key,
             temperature=0,
+            timeout=settings.http_timeout_seconds,
+            max_retries=0,
         )
     except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
         logger.warning(
@@ -452,8 +507,31 @@ def _build_anthropic_chat(settings: Settings) -> Any | None:
         return None
 
 
+def _build_google_gemini_chat(settings: Settings) -> Any | None:
+    if not settings.has_key("google_api_key"):
+        return None
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model_name = (settings.google_gemini_model or "").strip() or DEFAULT_GOOGLE_GEMINI_MODEL
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=settings.google_api_key,
+            thinking_level="low",
+            timeout=settings.http_timeout_seconds,
+            max_retries=0,
+        )
+    except Exception as exc:  # noqa: BLE001 — soft-fail to next provider
+        logger.warning(
+            "Failed to build Google Gemini chat model: %s", _sanitize_llm_error(exc)
+        )
+        return None
+
+
 def build_chat_model_candidates(
     settings: Settings | None = None,
+    *,
+    purpose: LlmPurpose = "section",
 ) -> list[LlmModelCandidate]:
     """Build ordered LLM candidates for invocation-time fallback.
 
@@ -465,13 +543,17 @@ def build_chat_model_candidates(
         PROVIDER_OPENAI: _build_openai_chat,
         PROVIDER_NVIDIA_NIM: _build_nvidia_nim_chat,
         PROVIDER_ANTHROPIC: _build_anthropic_chat,
+        PROVIDER_GOOGLE_GEMINI: _build_google_gemini_chat,
     }
     out: list[LlmModelCandidate] = []
     for provider in _provider_order(cfg):
         builder = builders.get(provider)
         if builder is None:
             continue
-        model = builder(cfg)
+        if provider == PROVIDER_OPENAI:
+            model = builder(cfg, purpose=purpose)
+        else:
+            model = builder(cfg)
         if model is None:
             continue
         out.append(LlmModelCandidate(provider=provider, model=model))
@@ -483,7 +565,7 @@ def build_chat_model(settings: Settings | None = None) -> Any | None:
 
     Prefer :func:`build_chat_model_candidates` when invocation-time fallback
     across providers is needed. Supports OpenAI, NVIDIA NIM (OpenAI-compatible),
-    and Anthropic.
+    Anthropic, and Google Gemini.
     """
     candidates = build_chat_model_candidates(settings)
     if not candidates:
@@ -769,6 +851,8 @@ __all__ = [
     "CHDI_REPORT_SECTIONS",
     "SYNTHESIS_SYSTEM_PROMPT",
     "DEFAULT_NIM_BASE_URL",
+    "DEFAULT_GOOGLE_GEMINI_MODEL",
+    "PROVIDER_GOOGLE_GEMINI",
     "LlmModelCandidate",
     "SectionClaimDraft",
     "SectionDraft",

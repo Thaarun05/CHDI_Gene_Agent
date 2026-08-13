@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from gene_dossier.config import Settings
 from gene_dossier.models import ToolResult
 from gene_dossier.tools import mousemine
 
@@ -109,3 +110,71 @@ def test_prefer_mouse_mgi_id_filters_mus_musculus():
         },
     ]
     assert mousemine.prefer_mouse_mgi_id(rows) == "MGI:107585"
+
+
+def test_fetch_mouse_annotations_uses_validated_request_contract(monkeypatch):
+    payloads = [
+        {
+            "results": [
+                [
+                    "MGI:107585",
+                    "Srebf2",
+                    "sterol regulatory element binding factor 2",
+                    "Mus musculus/domesticus",
+                    "20788",
+                ]
+            ]
+        },
+        {"results": []},
+        {"results": []},
+        {"results": []},
+    ]
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class _Response:
+        status_code = 200
+        text = ""
+        is_success = True
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, params=None):
+            calls.append((url, dict(params or {})))
+            return _Response(payloads.pop(0))
+
+    monkeypatch.setattr(mousemine.httpx, "Client", _Client)
+    result = mousemine.fetch_mouse_annotations(
+        ncbi_gene_number=20788,
+        gene_symbol="SREBF2",
+        settings=Settings(http_timeout_seconds=1),
+    )
+
+    assert result.success
+    assert result.source_name == "MouseMine"
+    assert result.endpoint_name == "fetch_mouse_annotations"
+    assert result.request_params["ncbi_gene_number"] == "20788"
+    assert result.request_params["mgi_id"] == "MGI:107585"
+    assert len(calls) == 4
+    assert all(url == mousemine.MOUSEMINE_RESULTS_URL for url, _ in calls)
+    assert all(params["format"] == "json" for _, params in calls)
+    assert 'constraint path="Gene.ncbiGeneNumber" op="=" value="20788"' in calls[0][1]["query"]
+    assert all(
+        'constraint path="Allele.feature.primaryIdentifier" op="=" value="MGI:107585"'
+        in params["query"]
+        for _, params in calls[1:]
+    )
+    assert result.request_url.startswith(mousemine.MOUSEMINE_RESULTS_URL)

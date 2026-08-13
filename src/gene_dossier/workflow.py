@@ -262,7 +262,18 @@ def _client_pubmed(
 ) -> ToolResult:
     from gene_dossier.tools import pubmed
 
-    return pubmed.search_hd_literature(gene_symbol, settings=settings)
+    aliases = [
+        str(alias).strip()
+        for alias in (gene_ids.get("pubmed_aliases") or gene_ids.get("aliases") or [])
+        if str(alias).strip()
+    ]
+    full_name = gene_ids.get("full_name") or gene_ids.get("gene_name")
+    return pubmed.search_hd_literature(
+        gene_symbol,
+        aliases=aliases,
+        full_name=str(full_name).strip() if full_name else None,
+        settings=settings,
+    )
 
 
 def _client_gtex(
@@ -674,6 +685,27 @@ def extract_gene_ids_from_tool_result(
     updated = dict(gene_ids)
     source = tool_result.source_name
 
+    def _merge_aliases(raw_aliases: Any) -> None:
+        existing = [
+            str(alias).strip()
+            for alias in (updated.get("pubmed_aliases") or updated.get("aliases") or [])
+            if str(alias).strip()
+        ]
+        incoming: list[str] = []
+        if isinstance(raw_aliases, str):
+            incoming = [part.strip() for part in raw_aliases.replace("|", ",").split(",")]
+        elif isinstance(raw_aliases, list):
+            incoming = [str(alias).strip() for alias in raw_aliases]
+        seen = {alias.casefold() for alias in existing}
+        for alias in incoming:
+            if not alias or alias.casefold() in seen:
+                continue
+            seen.add(alias.casefold())
+            existing.append(alias)
+        if existing:
+            updated["pubmed_aliases"] = existing
+            updated["aliases"] = existing
+
     if source == "NCBI Gene":
         gid = data.get("selected_gene_id")
         tax = data.get("expected_taxid")
@@ -709,6 +741,12 @@ def extract_gene_ids_from_tool_result(
         chrom = summary.get("chromosome")
         if chrom and tax_int == 9606:
             updated["chromosome"] = str(chrom)
+        if tax_int == 9606:
+            _merge_aliases(summary.get("otheraliases"))
+            full_name = summary.get("nomenclaturename") or summary.get("description")
+            if full_name:
+                updated["full_name"] = str(full_name)
+                updated["gene_name"] = str(full_name)
     elif source == "Ensembl":
         eid = data.get("ensembl_id") or data.get("id")
         if not eid and isinstance(data.get("summary"), dict):
@@ -753,6 +791,12 @@ def extract_gene_ids_from_tool_result(
         if acc:
             if tax_int == 9606:
                 updated["uniprot_accession"] = str(acc)
+                gene_synonyms = selected_entry.get("gene_synonyms")
+                if not gene_synonyms and selected_entry.get("gene_names"):
+                    names = selected_entry.get("gene_names")
+                    if isinstance(names, list):
+                        gene_synonyms = names[1:]
+                _merge_aliases(gene_synonyms)
                 protein_length = (
                     selected_entry.get("protein_length")
                     or selected_entry.get("sequence_length")

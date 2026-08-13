@@ -18,6 +18,7 @@ from gene_dossier.source_ids import make_source_id
 from gene_dossier.workflow import (
     WorkflowTransientContext,
     _client_opentargets,
+    _client_pubmed,
     _client_reactome,
     _coverage_updates_from_state,
     extract_gene_ids_from_tool_result,
@@ -43,6 +44,8 @@ def _ncbi_tool_result() -> ToolResult:
             "selection_method": "exact_symbol",
             "selected_summary": {
                 "nomenclaturesymbol": "SREBF2",
+                "nomenclaturename": "sterol regulatory element binding transcription factor 2",
+                "otheraliases": "SREBP2, SREBP-2",
                 "chromosome": "22",
                 "uid": "6721",
             },
@@ -75,6 +78,13 @@ def _uniprot_tool_result() -> ToolResult:
         data={
             "selected_accession": "Q12772",
             "gene_symbol": "SREBF2",
+            "entries": [
+                {
+                    "primaryAccession": "Q12772",
+                    "organism_id": 9606,
+                    "gene_synonyms": ["SREBP2", "bHLHd2"],
+                }
+            ],
         },
     )
 
@@ -110,6 +120,8 @@ def test_extract_gene_ids_from_identity_tool_results():
     assert gene_ids["ensembl_id"] == "ENSG00000198911"
     assert gene_ids["uniprot_accession"] == "Q12772"
     assert gene_ids["official_symbol"] == "SREBF2"
+    assert gene_ids["full_name"] == "sterol regulatory element binding transcription factor 2"
+    assert gene_ids["pubmed_aliases"] == ["SREBP2", "SREBP-2", "bHLHd2"]
 
 
 def test_extract_gene_ids_from_gtex_derives_ensembl_id():
@@ -125,6 +137,38 @@ def test_extract_gene_ids_from_gtex_derives_ensembl_id():
     gene_ids = extract_gene_ids_from_tool_result(tr, {})
     assert gene_ids["gtex_gencode_id"] == "ENSG00000198911.11"
     assert gene_ids["ensembl_id"] == "ENSG00000198911"
+
+
+def test_pubmed_client_uses_identity_aliases_not_planner_values(monkeypatch):
+    from gene_dossier.tools import pubmed
+
+    captured: dict[str, object] = {}
+
+    def fake_search_hd_literature(gene_symbol, **kwargs):
+        captured.update(kwargs)
+        return ToolResult(
+            source_name="PubMed",
+            endpoint_name="search_hd_literature",
+            success=True,
+            gene_symbol=gene_symbol,
+            request_url="https://example.test/pubmed",
+            data={"pmids": []},
+        )
+
+    monkeypatch.setattr(pubmed, "search_hd_literature", fake_search_hd_literature)
+
+    _client_pubmed(
+        gene_symbol="SREBF2",
+        gene_ids={
+            "pubmed_aliases": ["SREBP2"],
+            "full_name": "sterol regulatory element binding transcription factor 2",
+            "planner_aliases": ["MADEUP"],
+        },
+        settings=get_settings(),
+    )
+
+    assert captured["aliases"] == ["SREBP2"]
+    assert captured["full_name"] == "sterol regulatory element binding transcription factor 2"
 
 
 def test_preloaded_identity_results_populate_gene_ids_offline():
@@ -282,7 +326,6 @@ def test_ucsc_live_figure_stays_out_of_serializable_state(tmp_path: Path, monkey
 
     # Four UCSC fact types after normalization, with figure artifact ID wired.
     import json
-    from gene_dossier.normalize.ucsc_conservation import build_conservation_evidence
 
     search = json.loads(
         (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_search_relevant.json").read_text()
@@ -366,7 +409,6 @@ def test_failed_final_move_cleans_new_json_and_image(tmp_path: Path, monkeypatch
     from gene_dossier.tools.ucsc import UCSCLiveFigurePayload
     from gene_dossier.raw_store import RawStore
     from gene_dossier.workflow import _persist_ucsc_result_with_live_figure
-    import gene_dossier.ucsc_figure as uf
 
     png = (Path(__file__).parent / "fixtures" / "ucsc" / "srebf2_comprehensive_conservation.png").read_bytes()
     expected_sha = "3d165b72c20d11a0c921d16bf2cd17418a5169c2d0cec0537e297de5be0e3d6a"

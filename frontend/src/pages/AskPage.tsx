@@ -42,6 +42,8 @@ export function AskPage() {
     try {
       const res = await askEvidenceQuestion(q, requestGene, {
         refreshIfAvailable,
+        allowToolAcquisition: true,
+        evidenceSelection: 'accepted_or_latest_generated',
       })
       if (generation === requestGeneration.current) {
         setResponse(res)
@@ -101,10 +103,10 @@ export function AskPage() {
           <AgentActivity
             loading={loading}
             steps={[
-              `Resolved ${selectedGene}`,
-              'Searching stored evidence',
-              'Checking chemical-tool evidence',
-              'Building grounded answer',
+              `Using ${selectedGene} as context`,
+              'Planning scientific evidence needs',
+              'Retrieving and assessing evidence',
+              'Building a provenance-grounded answer',
             ]}
           />
           <LoadingSkeleton rows={5} />
@@ -119,18 +121,28 @@ export function AskPage() {
 
           <article className="surface-card space-y-6 p-6">
             <section className="flex flex-wrap gap-2 text-xs text-text-secondary">
+              {response.status && (
+                <span className="rounded-full border border-border px-2.5 py-1">
+                  {response.status.replaceAll('_', ' ')}
+                </span>
+              )}
+              {response.plannerMethod && (
+                <span className="rounded-full border border-border px-2.5 py-1">
+                  Plan: {response.plannerMethod.replaceAll('_', ' ')}
+                </span>
+              )}
               <span className="rounded-full border border-border px-2.5 py-1">
-                {response.retrievalMethod === 'semantic' ? 'Semantic Retrieval' : 'Keyword Retrieval'}
+                {retrievalLabel(response.retrievalMethod)}
               </span>
               <span className="rounded-full border border-border px-2.5 py-1">
-                {response.generationMethod === 'grounded_llm'
-                  ? 'Grounded LLM'
-                  : 'Deterministic Grounded Summary'}
+                {generationLabel(response.generationMethod)}
               </span>
               <span className="rounded-full border border-border px-2.5 py-1">
                 Embedding: {response.embeddingBackend}
               </span>
             </section>
+
+            <ResolvedEntities response={response} />
 
             <section>
               <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
@@ -140,6 +152,29 @@ export function AskPage() {
                 <InlineCitationSummary response={response} />
               </p>
             </section>
+
+            <RequirementSummary response={response} />
+
+            <HdModifierMatrix response={response} />
+
+            <FailureSummary response={response} />
+
+            <EvidenceCategorySummary response={response} />
+
+            {!!response.evidenceGaps?.length && (
+              <section>
+                <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+                  Evidence gaps
+                </h2>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-text-secondary">
+                  {response.evidenceGaps.map((gap) => (
+                    <li key={gap}>{gap}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            <RecommendationSummary response={response} />
 
             <section>
               <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
@@ -226,8 +261,9 @@ export function AskPage() {
                   {response.toolActivity.map((tool, i) => (
                     <div key={i}>
                       <p>Selected tool: {String(tool.toolName ?? 'unknown')}</p>
+                      <p>Gene: {String(tool.geneSymbol ?? 'unknown')}</p>
                       <p>Sections: {Array.isArray(tool.sectionKeys) ? tool.sectionKeys.join(', ') : 'none'}</p>
-                      <p>New evidence run: {String(tool.dossierRunId ?? 'none')}</p>
+                      <p>{tool.reused ? 'Reused evidence run' : 'New evidence run'}: {String(tool.dossierRunId ?? 'none')}</p>
                       <p>Evidence re-indexed: {String(tool.indexedRecords ?? 0)}</p>
                     </div>
                   ))}
@@ -238,6 +274,211 @@ export function AskPage() {
         </div>
       )}
     </div>
+  )
+}
+
+function retrievalLabel(method: string) {
+  if (method === 'semantic') return 'Semantic Retrieval'
+  if (method === 'keyword') return 'Keyword Retrieval'
+  if (method === 'metadata') return 'Metadata Retrieval'
+  return 'No Retrieval'
+}
+
+function generationLabel(method: string) {
+  if (method === 'grounded_llm') return 'Grounded LLM'
+  if (method === 'hybrid') return 'Hybrid Grounded Synthesis'
+  if (method === 'deterministic') return 'Deterministic Grounded Summary'
+  return 'No Synthesis'
+}
+
+function ResolvedEntities({ response }: { response: AskResponse }) {
+  const groups = response.resolvedEntities
+    ? Object.entries(response.resolvedEntities).filter(([, values]) => values?.length)
+    : []
+  if (!groups.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        Resolved entities
+      </h2>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {groups.flatMap(([kind, values]) =>
+          (values ?? []).map((value) => (
+            <span key={`${kind}-${value}`} className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary">
+              {value}
+            </span>
+          )),
+        )}
+      </div>
+    </section>
+  )
+}
+
+function RequirementSummary({ response }: { response: AskResponse }) {
+  const assessments = response.requirementAssessments ?? []
+  if (!assessments.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        Evidence requirements
+      </h2>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[540px] text-left text-xs">
+          <thead className="text-text-muted">
+            <tr className="border-b border-border">
+              <th className="px-2 py-2 font-medium">Gene</th>
+              <th className="px-2 py-2 font-medium">Requirement</th>
+              <th className="px-2 py-2 font-medium">Role</th>
+              <th className="px-2 py-2 font-medium">Status</th>
+              <th className="px-2 py-2 font-medium">Support</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assessments.map((item) => (
+              <tr key={`${item.requirement_id}-${item.gene_symbol}`} className="border-b border-border/60 text-text-secondary">
+                <td className="px-2 py-2 text-text">{item.gene_symbol}</td>
+                <td className="px-2 py-2">{item.evidence_need.replaceAll('_', ' ')}</td>
+                <td className="px-2 py-2">{item.required ? 'Required' : 'Supporting'}</td>
+                <td className="px-2 py-2">{item.status.replaceAll('_', ' ')}</td>
+                <td className="px-2 py-2">{item.qualifying_count}/{item.minimum_support}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function HdModifierMatrix({ response }: { response: AskResponse }) {
+  const rows = response.comparisonMatrix ?? []
+  const genes = response.resolvedEntities?.genes ?? []
+  if (!rows.length || !genes.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        HD modifier evidence matrix
+      </h2>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[680px] text-left text-xs">
+          <thead className="text-text-muted">
+            <tr className="border-b border-border">
+              <th className="px-2 py-2 font-medium">Dimension</th>
+              {genes.map((gene) => <th key={gene} className="px-2 py-2 font-medium">{gene}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.dimension} className="border-b border-border/60 align-top">
+                <th className="px-2 py-3 font-medium text-text">{row.dimension}</th>
+                {genes.map((gene) => {
+                  const cell = row.cells[gene]
+                  return (
+                    <td key={gene} className="px-2 py-3 text-text-secondary">
+                      <p className="font-medium text-text">{cell?.status ?? 'Missing'}</p>
+                      <p className="mt-1">{cell?.summary ?? 'No qualifying evidence.'}</p>
+                      {!!cell?.evidenceRecordIds.length && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {cell.evidenceRecordIds.map((recordId) => (
+                            <CitationChip key={recordId} label="Evidence" evidenceRecordId={recordId} />
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function FailureSummary({ response }: { response: AskResponse }) {
+  const failures = response.failures ?? []
+  if (!failures.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        Generation status
+      </h2>
+      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-text-secondary">
+        {failures.map((failure, index) => (
+          <li key={index}>
+            {String(failure.failure_type ?? 'failure').replaceAll('_', ' ')}: {String(failure.message ?? 'No detail available')}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function EvidenceCategorySummary({ response }: { response: AskResponse }) {
+  const categories = response.evidenceCategories ?? []
+  if (!categories.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        Evidence categories
+      </h2>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-xs">
+          <thead className="text-text-muted">
+            <tr className="border-b border-border">
+              <th className="px-2 py-2 font-medium">Gene</th>
+              <th className="px-2 py-2 font-medium">Category</th>
+              <th className="px-2 py-2 font-medium">Evidence system</th>
+              <th className="px-2 py-2 font-medium">Claim type</th>
+              <th className="px-2 py-2 font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((item, index) => (
+              <tr key={index} className="border-b border-border/60 text-text-secondary">
+                <td className="px-2 py-2 text-text">{String(item.gene_symbol ?? '')}</td>
+                <td className="px-2 py-2">{String(item.category ?? '').replaceAll('_', ' ')}</td>
+                <td className="px-2 py-2">{String(item.evidence_system ?? 'not specified')}</td>
+                <td className="px-2 py-2">{String(item.claim_type ?? 'not specified')}</td>
+                <td className="px-2 py-2">{String(item.status ?? '').replaceAll('_', ' ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function RecommendationSummary({ response }: { response: AskResponse }) {
+  const recommendations = response.recommendations ?? []
+  if (!recommendations.length) return null
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium tracking-wide text-text-muted uppercase">
+        Recommendations
+      </h2>
+      <ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-text-secondary">
+        {recommendations.map((item, index) => (
+          <li key={index}>
+            <span className="text-text">{String(item.label ?? 'Recommendation')}:</span>{' '}
+            {String(item.description ?? '')}
+            {Array.isArray(item.gap_ids) && item.gap_ids.length ? (
+              <span className="block text-xs text-text-muted">
+                Gaps: {item.gap_ids.map(String).join(', ')}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

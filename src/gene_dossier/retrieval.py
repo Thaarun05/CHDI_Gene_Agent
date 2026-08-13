@@ -23,7 +23,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from gene_dossier.config import Settings, get_settings
 from gene_dossier.models import EvidenceGrade, EvidenceRecord
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "evidence_records"
 _TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
+INDEX_SCHEMA_VERSION = 1
 
 
 # --------------------------------------------------------------------------------------
@@ -401,6 +402,103 @@ class ChromaIndexStatus:
     error: str | None = None
     indexed_count: int = 0
     embedding_backend: str = "unavailable"  # local_minilm | real | hash_test_fallback | unavailable
+    embedding_model: str = "unknown"
+    embedding_dimension: int | None = None
+    index_identity: str | None = None
+
+
+@dataclass(frozen=True)
+class EmbeddingIndexIdentity:
+    """Stable identity for a Chroma collection's embedding configuration."""
+
+    provider: str
+    model: str
+    dimension: int
+    schema_version: int = INDEX_SCHEMA_VERSION
+
+    @property
+    def key(self) -> str:
+        return (
+            f"schema{self.schema_version}"
+            f"__{self.provider}"
+            f"__{self.model}"
+            f"__dim{self.dimension}"
+        )
+
+    def metadata(self) -> dict[str, str | int]:
+        return {
+            "gene_dossier_index_schema": self.schema_version,
+            "gene_dossier_embedding_provider": self.provider,
+            "gene_dossier_embedding_model": self.model,
+            "gene_dossier_embedding_dimension": self.dimension,
+            "gene_dossier_index_identity": self.key,
+        }
+
+
+def _safe_collection_component(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    text = re.sub(r"_+", "_", text).strip("._-")
+    return text[:40] or "unknown"
+
+
+def _dimension_of_vector(vector: Any) -> int | None:
+    try:
+        return len(vector)
+    except TypeError:
+        return None
+
+
+def _infer_embedding_dimension(embedding_function: Any) -> int | None:
+    explicit = getattr(embedding_function, "dimensions", None)
+    if isinstance(explicit, int) and explicit > 0:
+        return explicit
+    try:
+        sample = embedding_function(["gene dossier embedding dimension probe"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Embedding dimension probe failed: %s", exc)
+        return None
+    if not sample:
+        return None
+    return _dimension_of_vector(sample[0])
+
+
+def _embedding_identity(
+    embedding_function: Any,
+    *,
+    embedding_backend: str,
+) -> EmbeddingIndexIdentity | None:
+    dimension = _infer_embedding_dimension(embedding_function)
+    if not dimension:
+        return None
+    provider = (
+        getattr(embedding_function, "provider", None)
+        or getattr(embedding_function, "_gene_dossier_embedding_provider", None)
+        or embedding_backend
+        or "unknown"
+    )
+    model = (
+        getattr(embedding_function, "model", None)
+        or getattr(embedding_function, "_gene_dossier_embedding_model", None)
+        or getattr(embedding_function, "name", lambda: "unknown")()
+    )
+    return EmbeddingIndexIdentity(
+        provider=_safe_collection_component(str(provider)),
+        model=_safe_collection_component(str(model)),
+        dimension=dimension,
+    )
+
+
+def collection_name_for_embedding(
+    base_collection_name: str,
+    identity: EmbeddingIndexIdentity,
+) -> str:
+    """Return a deterministic Chroma collection name scoped to embedding identity."""
+    base = _safe_collection_component(base_collection_name)
+    digest = hashlib.sha1(identity.key.encode("utf-8")).hexdigest()[:12]
+    suffix = f"{identity.provider}_{identity.model}_d{identity.dimension}_{digest}"
+    name = f"{base}__{suffix}"
+    # Chroma collection names must be 3-63 characters.
+    return name[:63].rstrip("._-")
 
 
 class ChromaEvidenceIndex:
@@ -419,10 +517,14 @@ class ChromaEvidenceIndex:
         ephemeral: bool = False,
         allow_hash_fallback: bool = True,
         allow_external_embedding_provider: bool = True,
+        read_only: bool = False,
+        read_only_client_factory: Callable[[Path], Any] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
+        self.requested_collection_name = collection_name
         self.collection_name = collection_name
         self.embedding_backend = "unavailable"
+        self.read_only = read_only
         if embedding_function is not None:
             self.embedding_function = embedding_function
             self.embedding_backend = getattr(
@@ -460,6 +562,23 @@ class ChromaEvidenceIndex:
             )
             return
 
+        self.index_identity = _embedding_identity(
+            self.embedding_function,
+            embedding_backend=self.embedding_backend,
+        )
+        if self.index_identity is None:
+            self.status = ChromaIndexStatus(
+                available=False,
+                backend="unavailable",
+                error="embedding dimension could not be determined",
+                embedding_backend=self.embedding_backend,
+            )
+            return
+        self.collection_name = collection_name_for_embedding(
+            self.requested_collection_name,
+            self.index_identity,
+        )
+
         try:
             import chromadb
         except Exception as exc:  # noqa: BLE001
@@ -474,6 +593,8 @@ class ChromaEvidenceIndex:
 
         try:
             if ephemeral:
+                if read_only:
+                    raise ValueError("read-only Chroma requires a persistent collection")
                 self._client = chromadb.EphemeralClient()
                 backend = "ephemeral"
                 path_str = None
@@ -481,17 +602,44 @@ class ChromaEvidenceIndex:
                 path = Path(
                     persist_directory
                     if persist_directory is not None
-                    else self.settings.index_path
+                        else self.settings.index_path
                 )
-                path.mkdir(parents=True, exist_ok=True)
-                self._client = chromadb.PersistentClient(path=str(path))
+                if read_only and not path.is_dir():
+                    raise FileNotFoundError("read-only Chroma directory does not exist")
+                if not read_only:
+                    path.mkdir(parents=True, exist_ok=True)
+                if read_only:
+                    if read_only_client_factory is None:
+                        raise RuntimeError(
+                            "installed Chroma PersistentClient cannot guarantee "
+                            "non-mutating access; read-only semantic retrieval disabled"
+                        )
+                    self._client = read_only_client_factory(path)
+                else:
+                    self._client = chromadb.PersistentClient(path=str(path))
                 backend = "persistent"
                 path_str = str(path)
-            self._collection = self._client.get_or_create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"},
-            )
+            if read_only:
+                self._collection = self._client.get_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function,
+                )
+            else:
+                self._collection = self._client.get_or_create_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function,
+                    metadata={
+                        "hnsw:space": "cosine",
+                        **self.index_identity.metadata(),
+                    },
+                )
+            metadata = getattr(self._collection, "metadata", None) or {}
+            metadata_identity = metadata.get("gene_dossier_index_identity")
+            if metadata_identity and metadata_identity != self.index_identity.key:
+                raise ValueError(
+                    "Chroma collection embedding identity mismatch: "
+                    f"{metadata_identity!r} != {self.index_identity.key!r}"
+                )
             self.status = ChromaIndexStatus(
                 available=True,
                 backend=backend,
@@ -499,6 +647,9 @@ class ChromaEvidenceIndex:
                 path=path_str,
                 indexed_count=int(self._collection.count()),
                 embedding_backend=self.embedding_backend,
+                embedding_model=self.index_identity.model,
+                embedding_dimension=self.index_identity.dimension,
+                index_identity=self.index_identity.key,
             )
         except Exception as exc:  # noqa: BLE001
             self.status = ChromaIndexStatus(
@@ -506,6 +657,15 @@ class ChromaEvidenceIndex:
                 backend="unavailable",
                 error=str(exc),
                 embedding_backend=self.embedding_backend,
+                embedding_model=getattr(self, "index_identity", None).model
+                if getattr(self, "index_identity", None)
+                else "unknown",
+                embedding_dimension=getattr(self, "index_identity", None).dimension
+                if getattr(self, "index_identity", None)
+                else None,
+                index_identity=getattr(self, "index_identity", None).key
+                if getattr(self, "index_identity", None)
+                else None,
             )
             logger.warning("Chroma init failed; semantic search disabled: %s", exc)
             self._client = None
@@ -517,6 +677,8 @@ class ChromaEvidenceIndex:
 
     def upsert_evidence(self, records: Iterable[EvidenceRecord]) -> int:
         """Index / update records by run-qualified EvidenceRecord ID. Returns count upserted."""
+        if self.read_only:
+            return 0
         if not self.available or self._collection is None:
             return 0
         ids: list[str] = []
@@ -533,6 +695,14 @@ class ChromaEvidenceIndex:
         if not ids:
             return 0
         try:
+            metadata = getattr(self._collection, "metadata", None) or {}
+            expected = metadata.get("gene_dossier_embedding_dimension")
+            actual = getattr(getattr(self, "index_identity", None), "dimension", None)
+            if expected is not None and actual is not None and int(expected) != int(actual):
+                raise ValueError(
+                    "Chroma collection embedding dimension mismatch before upsert: "
+                    f"{expected} != {actual}"
+                )
             self._collection.upsert(
                 ids=ids, documents=documents, metadatas=metadatas
             )
@@ -729,6 +899,8 @@ __all__ = [
     "KeywordEvidenceIndex",
     "HashEmbeddingFunction",
     "build_local_minilm_embedding_function",
+    "EmbeddingIndexIdentity",
+    "collection_name_for_embedding",
     "ChromaIndexStatus",
     "ChromaEvidenceIndex",
     "tokenize",

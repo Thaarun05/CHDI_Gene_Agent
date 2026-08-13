@@ -74,7 +74,7 @@ export function SearchComposer({
                 onClick={() => setGeneOpen((o) => !o)}
                 className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary transition hover:bg-white/5"
               >
-                {selectedGene ? `Target Gene: ${selectedGene}` : 'Gene / Target'}
+                {selectedGene ? `Context Gene: ${selectedGene}` : 'Context Gene'}
                 <ChevronDown className="size-3" />
               </button>
               {geneOpen && (

@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -287,6 +288,35 @@ def get_engine(database_url: str | None = None):
 
     # Fallback for any other SQLAlchemy-supported URL.
     return create_engine(url, echo=False)
+
+
+def get_read_only_engine(database_url: str | None = None):
+    """Open an existing SQLite provenance database without permitting writes.
+
+    The immutable SQLite URI prevents table creation, migrations, run creation,
+    and evidence persistence. Read-only scientific-agent evaluation is local-only;
+    other database backends are rejected instead of receiving weaker guarantees.
+    """
+    raw_url = database_url or get_settings().database_url
+    url = normalize_database_url(raw_url)
+    if not is_sqlite_url(url):
+        raise ValueError("read-only scientific-agent mode requires SQLite")
+    path = _sqlite_path_from_url(url)
+    if path is None:
+        raise ValueError("read-only scientific-agent mode requires a file database")
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError("read-only provenance database does not exist")
+    sqlite_uri = f"{resolved.as_uri()}?mode=ro&immutable=1"
+    return create_engine(
+        "sqlite://",
+        echo=False,
+        creator=lambda: sqlite3.connect(
+            sqlite_uri,
+            uri=True,
+            check_same_thread=False,
+        ),
+    )
 
 
 def init_db(engine=None) -> None:
@@ -566,6 +596,7 @@ __all__ = [
     "is_postgres_url",
     "normalize_database_url",
     "get_engine",
+    "get_read_only_engine",
     "init_db",
     "session_scope",
     "dossier_run_to_row",

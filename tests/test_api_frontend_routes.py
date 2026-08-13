@@ -9,6 +9,21 @@ from types import SimpleNamespace
 import pytest
 
 from gene_dossier.api import main as api_main
+from gene_dossier.agent.models import (
+    AgentEvidenceUniverse,
+    AnswerMode,
+    AnswerStatus,
+    CapabilityId,
+    EvidenceNeed,
+    EvidenceRequirement,
+    EvidenceRequirementAssessment,
+    PlannerMethod,
+    RequirementStatus,
+    ScientificAgentResult,
+    ScientificEntities,
+    ScientificIntent,
+    ScientificQuestionPlan,
+)
 from gene_dossier import synthesis
 from gene_dossier.config import Settings
 from gene_dossier.db import (
@@ -691,7 +706,7 @@ def test_ask_stored_ppi_rag_does_not_invoke_tool(monkeypatch) -> None:
     )
     monkeypatch.setattr(api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic"))
 
-    response = api_main.handle_ask_question(
+    response = api_main._handle_legacy_ask_question(
         api_main.AskRequest(question="What proteins interact with CDH10?", gene_symbol="CDH10")
     )
 
@@ -758,7 +773,7 @@ def test_ask_refresh_ppi_invokes_overlay_tool(monkeypatch) -> None:
     )
     monkeypatch.setattr(api_main, "_try_grounded_llm_summary", lambda **_kwargs: (None, "deterministic"))
 
-    response = api_main.handle_ask_question(
+    response = api_main._handle_legacy_ask_question(
         api_main.AskRequest(
             question="What proteins interact with CDH10?",
             gene_symbol="CDH10",
@@ -1094,9 +1109,178 @@ def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
     assert "response.citations[ordinal - 1]" in ask_source
     assert "<AgentActivity steps={response.agentActivity} />" in ask_source
     assert "onSelectGene={selectGene}" in ask_source
+    assert "Context Gene:" in (frontend_root / "components" / "SearchComposer.tsx").read_text(encoding="utf-8")
+    assert "evidenceSelection: 'accepted_or_latest_generated'" in ask_source
+    assert "response.comparisonMatrix" in ask_source
+    assert "response.evidenceGaps" in ask_source
+    assert "response.evidenceCategories" in ask_source
+    assert "response.recommendations" in ask_source
+    assert "response.failures" in ask_source
+    assert 'label="Evidence" evidenceRecordId={recordId}' in ask_source
+    assert "label={`[${index + 1}]`}" not in ask_source
+    assert "cells: Record<string, AgentComparisonCell>" in (
+        frontend_root / "api" / "types.ts"
+    ).read_text(encoding="utf-8")
     assert "onSelectGene(g)" in composer_source
     assert "const isActive = loading && i === steps.length - 1" in activity_source
     assert "const isLast = i === steps.length - 1" not in activity_source
+
+
+def test_general_ask_adapter_exposes_authoritative_per_gene_contract(monkeypatch) -> None:
+    record = _evidence_record(
+        section="Protein-protein interaction partners",
+        source_name="STRING",
+        gene_symbol="CDH10",
+        assertion_type=AssertionType.ppi,
+    )
+    requirement = EvidenceRequirement(
+        id="ppi",
+        label="Protein interactions",
+        description="Qualifying CDH10 protein interaction evidence.",
+        genes=["CDH10"],
+        evidence_need=EvidenceNeed.protein_interaction,
+        capability_ids=[CapabilityId.ppi],
+        required=True,
+        minimum_support=1,
+        rationale="The question asks for interacting proteins.",
+    )
+    plan = ScientificQuestionPlan(
+        intent=ScientificIntent.single_gene_question,
+        entities=ScientificEntities(genes=["CDH10"]),
+        primary_gene="CDH10",
+        objective="Identify CDH10 interaction evidence.",
+        analysis_lens="general",
+        answer_mode=AnswerMode.fact,
+        evidence_requirements=[requirement],
+        requires_multi_gene=False,
+        planner_method=PlannerMethod.deterministic_fallback,
+    )
+    result = ScientificAgentResult(
+        status=AnswerStatus.answered,
+        question="What proteins interact with CDH10?",
+        context_gene="SREBF2",
+        plan=plan,
+        evidence_universes={
+            "CDH10": AgentEvidenceUniverse(
+                gene_symbol="CDH10",
+                base_evidence_run_id="d94f",
+                explicit_run_ids=["d94f"],
+                dossier_run_ids=["d94f"],
+                evidence_universe="accepted_demo",
+            )
+        },
+        assessments=[
+            EvidenceRequirementAssessment(
+                requirement_id="ppi",
+                gene_symbol="CDH10",
+                evidence_need=EvidenceNeed.protein_interaction,
+                required=True,
+                minimum_support=1,
+                status=RequirementStatus.sufficient,
+                qualifying_count=1,
+                evidence_record_ids=[record.id],
+                contributing_capability_ids=[CapabilityId.ppi],
+                detail="Threshold met.",
+            )
+        ],
+        selected_records=[record],
+        summary="Stored evidence supports a CDH10 interaction. [[1]]",
+        retrieval_method="semantic",
+        generation_method="hybrid",
+        embedding_backend="local_minilm",
+        agent_activity=["Completed"],
+        metadata={
+            "grounding": {
+                "requestedSlotCount": 3,
+                "acceptedSlotCount": 2,
+                "fallbackSlotCount": 1,
+                "diagnosticCounts": {"missing_slot": 1},
+            }
+        },
+    )
+
+    class FakeService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute(self, _request):
+            return result
+
+    monkeypatch.setattr(api_main, "ScientificAgentService", FakeService)
+    response = api_main.handle_ask_question(
+        api_main.AskRequest(
+            question="What proteins interact with CDH10?",
+            gene_symbol="SREBF2",
+            context_gene="SREBF2",
+        )
+    )
+
+    assert response.geneSymbol == "CDH10"
+    assert response.contextGene == "SREBF2"
+    assert response.evidenceUniverses["CDH10"].dossierRunIds == ["d94f"]
+    assert response.evidenceRequirements[0]["required"] is True
+    assert response.requirementAssessments[0]["status"] == "sufficient"
+    assert response.citations[0].evidenceRecordId == record.id
+    assert response.citationRegistry == []
+    assert response.evidenceCategories == []
+    assert response.recommendations == []
+    assert response.failures == []
+    assert response.generationMethod == "hybrid"
+    assert response.metadata["grounding"]["fallbackSlotCount"] == 1
+
+
+def test_ask_adapter_preserves_context_gene_omitted_null_and_explicit(monkeypatch) -> None:
+    captured: list[object] = []
+    plan = ScientificQuestionPlan(
+        intent=ScientificIntent.single_gene_question,
+        entities=ScientificEntities(genes=["MSH3"]),
+        primary_gene="MSH3",
+        objective="offline context test",
+        analysis_lens="general",
+        answer_mode=AnswerMode.synthesis,
+        evidence_requirements=[],
+        requires_multi_gene=False,
+        planner_method=PlannerMethod.deterministic_fallback,
+    )
+
+    class FakeService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute(self, request):
+            captured.append(request)
+            return ScientificAgentResult(
+                status=AnswerStatus.insufficient_evidence,
+                question=request.question,
+                context_gene=request.context_gene,
+                plan=plan,
+                evidence_universes={},
+                summary="No evidence.",
+                agent_activity=["done"],
+            )
+
+    monkeypatch.setattr(api_main, "ScientificAgentService", FakeService)
+
+    omitted = api_main.handle_ask_question(
+        api_main.AskRequest(question="What evidence links MSH3 to HD?")
+    )
+    explicit_null = api_main.handle_ask_question(
+        api_main.AskRequest.model_validate(
+            {"question": "What evidence links MSH3 to HD?", "context_gene": None}
+        )
+    )
+    explicit_msh3 = api_main.handle_ask_question(
+        api_main.AskRequest(question="What evidence links MSH3 to HD?", context_gene="MSH3")
+    )
+    explicit_srebf2 = api_main.handle_ask_question(
+        api_main.AskRequest(question="What evidence links SREBF2 to HD?", context_gene="SREBF2")
+    )
+
+    assert [request.context_gene for request in captured] == [None, None, "MSH3", "SREBF2"]
+    assert omitted.contextGene is None
+    assert explicit_null.contextGene is None
+    assert explicit_msh3.contextGene == "MSH3"
+    assert explicit_srebf2.contextGene == "SREBF2"
 
 
 def test_accepted_report_html_resolves_validated_full_artifacts() -> None:

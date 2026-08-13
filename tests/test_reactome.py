@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from gene_dossier.models import ToolResult
 from gene_dossier.tools import reactome
 
 
@@ -176,3 +179,52 @@ def test_pathways_by_uniprot_missing_accession_not_retried(monkeypatch):
     assert result.success is False
     assert result.error_type == "invalid_request"
     assert calls["n"] == 0
+
+
+def test_fetch_pathways_uses_validated_request_contract(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_request_json(**kwargs: Any) -> ToolResult:
+        captured.update(kwargs)
+        return ToolResult(
+            source_name="Reactome",
+            endpoint_name=kwargs["endpoint_name"],
+            success=True,
+            gene_symbol=kwargs["gene_symbol"],
+            request_url=(
+                "https://reactome.org/ContentService/"
+                "data/mapping/UniProt/Q9Y2M0/pathways"
+            ),
+            request_params=kwargs["request_params"],
+            status_code=200,
+            data=[
+                {
+                    "stId": "R-HSA-73894",
+                    "displayName": "DNA Repair",
+                    "speciesName": "Homo sapiens",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(reactome, "_request_json", fake_request_json)
+    result = reactome.fetch_pathways(
+        "Q9Y2M0",
+        gene_symbol="FAN1",
+        max_attempts=1,
+        retry_sleep_seconds=0,
+    )
+
+    assert captured["endpoint_name"] == "pathways_by_uniprot"
+    assert captured["gene_symbol"] == "FAN1"
+    assert captured["path"] == "data/mapping/UniProt/Q9Y2M0/pathways"
+    assert captured["request_params"] == {
+        "uniprot_accession": "Q9Y2M0",
+        "max_attempts": 1,
+        "retry_sleep_seconds": 0.0,
+    }
+    assert result.success
+    assert result.source_name == "Reactome"
+    assert result.endpoint_name == "fetch_pathways"
+    assert result.request_url.endswith("/data/mapping/UniProt/Q9Y2M0/pathways")
+    assert result.request_params == captured["request_params"]
+    assert result.data["uniprot_accession"] == "Q9Y2M0"

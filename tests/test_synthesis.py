@@ -10,6 +10,7 @@ from gene_dossier.models import (
     SourceType,
 )
 from gene_dossier.synthesis import (
+    DEFAULT_GOOGLE_GEMINI_MODEL,
     DEFAULT_NIM_BASE_URL,
     LlmModelCandidate,
     SYNTHESIS_SYSTEM_PROMPT,
@@ -28,10 +29,19 @@ def _llm_settings(**overrides) -> Settings:
     base = {
         "openai_api_key": None,
         "openai_base_url": None,
+        "openai_model": "gpt-5.6-terra",
+        "openai_planner_reasoning_effort": "low",
+        "openai_answer_reasoning_effort": "medium",
+        "openai_planner_max_output_tokens": 4000,
+        "openai_answer_max_output_tokens": 12000,
+        "openai_timeout_seconds": 60.0,
         "anthropic_api_key": None,
         "nvidia_nim_api_key": None,
         "nvidia_nim_base_url": None,
         "nvidia_nim_model": None,
+        "nvidia_nim_timeout_seconds": 120.0,
+        "google_api_key": None,
+        "google_gemini_model": DEFAULT_GOOGLE_GEMINI_MODEL,
         "default_llm_model": None,
         "default_llm_provider": None,
     }
@@ -364,15 +374,84 @@ def test_nvidia_nim_preferred_constructs_chat_openai_with_nim_url(monkeypatch):
         default_llm_provider="nvidia_nim",
         nvidia_nim_api_key="nim-test-key",
         nvidia_nim_base_url="https://integrate.api.nvidia.com/v1",
-        nvidia_nim_model="meta/llama-3.1-70b-instruct",
+        nvidia_nim_model="meta/llama-3.1-8b-instruct",
     )
     candidates = build_chat_model_candidates(cfg)
     assert len(candidates) == 1
     assert candidates[0].provider == "nvidia_nim"
     assert captured["api_key"] == "nim-test-key"
     assert captured["base_url"] == "https://integrate.api.nvidia.com/v1"
-    assert captured["model"] == "meta/llama-3.1-70b-instruct"
+    assert captured["model"] == "meta/llama-3.1-8b-instruct"
     assert captured["temperature"] == 0
+    assert captured["timeout"] == cfg.nvidia_nim_timeout_seconds == 120.0
+    assert captured["max_retries"] == 0
+
+
+def test_google_configuration_absent_by_default() -> None:
+    cfg = _llm_settings()
+
+    assert cfg.google_api_key is None
+    assert cfg.google_gemini_model == "gemini-3.5-flash"
+    assert cfg.has_llm() is False
+
+
+def test_google_gemini_preferred_uses_native_bounded_candidate(monkeypatch):
+    google_builds: list[dict] = []
+    openai_builds: list[dict] = []
+
+    class FakeGoogleModel:
+        def __init__(self, **kwargs):
+            google_builds.append(dict(kwargs))
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            openai_builds.append(dict(kwargs))
+
+    monkeypatch.setattr(
+        "langchain_google_genai.ChatGoogleGenerativeAI",
+        FakeGoogleModel,
+    )
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChatOpenAI)
+    cfg = _llm_settings(
+        default_llm_provider="google_gemini",
+        google_api_key="google-test-key",
+        google_gemini_model="gemini-3.5-flash",
+        nvidia_nim_api_key="nim-test-key",
+        nvidia_nim_model="meta/llama-3.1-8b-instruct",
+    )
+
+    candidates = build_chat_model_candidates(cfg)
+
+    assert cfg.has_llm() is True
+    assert [candidate.provider for candidate in candidates] == [
+        "google_gemini",
+        "nvidia_nim",
+    ]
+    google_kwargs = google_builds[0]
+    assert google_kwargs["model"] == "gemini-3.5-flash"
+    assert google_kwargs["thinking_level"] == "low"
+    assert google_kwargs["timeout"] == cfg.http_timeout_seconds
+    assert google_kwargs["max_retries"] == 0
+    assert "temperature" not in google_kwargs
+    assert openai_builds[0]["base_url"] == DEFAULT_NIM_BASE_URL
+
+
+def test_google_api_key_is_redacted_from_settings_dump_and_repr() -> None:
+    secret = "google-secret-that-must-not-leak"
+    cfg = _llm_settings(google_api_key=secret)
+
+    assert cfg.model_dump()["google_api_key"] == "***"
+    assert secret not in repr(cfg)
+    assert secret not in str(cfg.model_dump())
+
+
+def test_nvidia_nim_api_key_is_redacted_from_settings_dump_and_repr() -> None:
+    secret = "nim-secret-that-must-not-leak"
+    cfg = _llm_settings(nvidia_nim_api_key=secret)
+
+    assert cfg.model_dump()["nvidia_nim_api_key"] == "***"
+    assert secret not in repr(cfg)
+    assert secret not in str(cfg.model_dump())
 
 
 def test_nvidia_nim_base_url_defaults_when_omitted(monkeypatch):
@@ -395,6 +474,7 @@ def test_nvidia_nim_base_url_defaults_when_omitted(monkeypatch):
     assert candidates[0].provider == "nvidia_nim"
     assert captured["base_url"] == DEFAULT_NIM_BASE_URL
     assert captured["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert captured["timeout"] == 120.0
 
 
 def test_openai_preferred_uses_openai_path_not_nim_url(monkeypatch):
@@ -419,9 +499,72 @@ def test_openai_preferred_uses_openai_path_not_nim_url(monkeypatch):
     openai_kwargs = builds[0]
     assert openai_kwargs["api_key"] == "openai-test-key"
     assert openai_kwargs["model"] == "gpt-4o-mini"
+    assert openai_kwargs["timeout"] == cfg.http_timeout_seconds
+    assert openai_kwargs["max_retries"] == 0
+    assert openai_kwargs["temperature"] == 0
+    assert "use_responses_api" not in openai_kwargs
     assert "base_url" not in openai_kwargs
     nim_kwargs = builds[1]
     assert nim_kwargs["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert nim_kwargs["timeout"] == cfg.nvidia_nim_timeout_seconds
+    assert nim_kwargs["max_retries"] == 0
+
+
+def test_openai_planner_uses_terra_responses_api_without_temperature(monkeypatch):
+    builds: list[dict] = []
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            builds.append(dict(kwargs))
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChatOpenAI)
+    cfg = _llm_settings(default_llm_provider="openai", openai_api_key="openai-test-key")
+
+    candidates = build_chat_model_candidates(cfg, purpose="planner")
+
+    assert [candidate.provider for candidate in candidates] == ["openai"]
+    kwargs = builds[0]
+    assert kwargs["api_key"] == "openai-test-key"
+    assert kwargs["model"] == "gpt-5.6-terra"
+    assert kwargs["use_responses_api"] is True
+    assert kwargs["store"] is False
+    assert kwargs["service_tier"] == "default"
+    assert kwargs["reasoning_effort"] == "low"
+    assert kwargs["max_completion_tokens"] == 4000
+    assert kwargs["timeout"] == 60.0
+    assert kwargs["max_retries"] == 0
+    assert "temperature" not in kwargs
+
+
+def test_openai_answer_uses_medium_effort_and_answer_token_cap(monkeypatch):
+    builds: list[dict] = []
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            builds.append(dict(kwargs))
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChatOpenAI)
+    cfg = _llm_settings(default_llm_provider="openai", openai_api_key="openai-test-key")
+
+    candidates = build_chat_model_candidates(cfg, purpose="answer")
+
+    assert [candidate.provider for candidate in candidates] == ["openai"]
+    kwargs = builds[0]
+    assert kwargs["model"] == "gpt-5.6-terra"
+    assert kwargs["reasoning_effort"] == "medium"
+    assert kwargs["max_completion_tokens"] == 12000
+    assert kwargs["use_responses_api"] is True
+    assert kwargs["store"] is False
+    assert "temperature" not in kwargs
+
+
+def test_openai_api_key_is_redacted_from_settings_dump_and_repr() -> None:
+    secret = "openai-secret-that-must-not-leak"
+    cfg = _llm_settings(openai_api_key=secret)
+
+    assert cfg.model_dump()["openai_api_key"] == "***"
+    assert secret not in repr(cfg)
+    assert secret not in str(cfg.model_dump())
 
 
 def test_no_keys_returns_no_candidates_and_deterministic_fallback():

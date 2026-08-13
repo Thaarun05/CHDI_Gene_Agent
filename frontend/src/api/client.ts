@@ -305,6 +305,8 @@ export async function askEvidenceQuestion(
     dossierRunId?: string
     refreshIfAvailable?: boolean
     toolRunIds?: string[]
+    allowToolAcquisition?: boolean
+    evidenceSelection?: 'accepted_only' | 'accepted_or_latest_generated' | 'explicit_only'
   },
 ): Promise<AskResponse> {
   if (USE_MOCKS) {
@@ -324,9 +326,12 @@ export async function askEvidenceQuestion(
     body: JSON.stringify({
       question,
       gene_symbol: geneSymbol,
+      context_gene: geneSymbol,
       dossier_run_id: options?.dossierRunId,
       refresh_if_available: options?.refreshIfAvailable ?? false,
       tool_run_ids: options?.toolRunIds ?? [],
+      allow_tool_acquisition: options?.allowToolAcquisition ?? true,
+      evidence_selection: options?.evidenceSelection ?? 'accepted_or_latest_generated',
     }),
   })
 }

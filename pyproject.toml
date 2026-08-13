@@ -37,6 +37,7 @@ dependencies = [
     "langgraph>=0.2",
     "langchain-openai>=0.2",
     "langchain-anthropic>=0.2",
+    "langchain-google-genai>=2.0",
     "langchain-community>=0.3",
     # MVP vector index over EvidenceRecord display text (NOT the source of truth).
     "chromadb>=0.5",

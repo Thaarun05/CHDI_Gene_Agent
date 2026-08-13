@@ -20,10 +20,16 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from gene_dossier import __version__
+from gene_dossier.agent.models import EvidenceSelection
+from gene_dossier.agent.orchestrator import (
+    ScientificAgentRequest,
+    ScientificAgentService,
+    summarize_agent_result_runs,
+)
 from gene_dossier.config import PROJECT_ROOT, Settings, get_settings
 from gene_dossier.db import (
     DossierRunRow,
@@ -196,11 +202,19 @@ EvidenceUniverseName = Literal[
     "accepted_demo",
     "explicit_run",
     "accepted_demo_with_tool_overlay",
+    "explicit_run_with_tool_overlay",
+    "latest_generated",
+    "latest_generated_with_tool_overlay",
+    "no_base_evidence",
+    "tool_overlay_only",
+    "multi_gene",
 ]
 
 
 class EvidenceUniverseOut(BaseModel):
     baseEvidenceRunId: str | None = None
+    reusedToolRunIds: list[str] = Field(default_factory=list)
+    createdToolRunIds: list[str] = Field(default_factory=list)
     toolRunIds: list[str] = Field(default_factory=list)
     dossierRunIds: list[str] = Field(default_factory=list)
     evidenceUniverse: EvidenceUniverseName
@@ -528,20 +542,27 @@ class CitationOut(BaseModel):
 class AskRequest(BaseModel):
     question: str
     gene_symbol: str = "SREBF2"
+    context_gene: str | None = None
     dossier_run_id: str | None = None
+    dossier_run_ids: dict[str, list[str]] = Field(default_factory=dict)
     refresh_if_available: bool = False
-    tool_run_ids: list[str] = Field(default_factory=list)
+    tool_run_ids: list[str] | dict[str, list[str]] = Field(default_factory=list)
+    allow_tool_acquisition: bool = True
+    evidence_selection: EvidenceSelection = EvidenceSelection.accepted_only
 
 
 class AskResponseOut(BaseModel):
     status: str
     question: str
     geneSymbol: str
+    contextGene: str | None = None
     summary: str
     retrievalMethod: str  # 'semantic' | 'keyword' | 'abstain'
-    generationMethod: str  # 'grounded_llm' | 'deterministic' | 'abstain'
+    generationMethod: str  # 'grounded_llm' | 'hybrid' | 'deterministic' | 'abstain'
     embeddingBackend: str  # 'local_minilm' | 'real' | 'hash_test_fallback' | 'unavailable'
     baseEvidenceRunId: str | None = None
+    reusedToolRunIds: list[str] = Field(default_factory=list)
+    createdToolRunIds: list[str] = Field(default_factory=list)
     toolRunIds: list[str] = Field(default_factory=list)
     dossierRunIds: list[str] = Field(default_factory=list)
     evidenceUniverse: EvidenceUniverseName
@@ -554,6 +575,23 @@ class AskResponseOut(BaseModel):
     toolsInvokedCount: int
     toolActivity: list[dict[str, Any]]
     agentActivity: list[str]
+    plannerMethod: str | None = None
+    intent: str | None = None
+    resolvedEntities: dict[str, list[str]] = Field(default_factory=dict)
+    evidenceRequirements: list[dict[str, Any]] = Field(default_factory=list)
+    requirementAssessments: list[dict[str, Any]] = Field(default_factory=list)
+    evidenceUniverses: dict[str, EvidenceUniverseOut] = Field(default_factory=dict)
+    evidenceGaps: list[str] = Field(default_factory=list)
+    comparisonDimensions: list[str] = Field(default_factory=list)
+    comparisonMatrix: list[dict[str, Any]] = Field(default_factory=list)
+    evidenceCategories: list[dict[str, Any]] = Field(default_factory=list)
+    structuredGaps: list[dict[str, Any]] = Field(default_factory=list)
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    citationRegistry: list[dict[str, Any]] = Field(default_factory=list)
+    sourceAttempts: list[dict[str, Any]] = Field(default_factory=list)
+    retrievalTimestamps: list[str] = Field(default_factory=list)
+    failures: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CompareRequest(BaseModel):
@@ -1736,7 +1774,7 @@ def _try_grounded_llm_summary(
     return None, "deterministic"
 
 
-def handle_ask_question(body: AskRequest) -> AskResponseOut:
+def _handle_legacy_ask_question(body: AskRequest) -> AskResponseOut:
     """Answer a question grounded strictly in the selected EvidenceRecord universe."""
     MIN_EVIDENCE_FOR_ANSWER = 2
     RETRIEVE_LIMIT = 15
@@ -1921,6 +1959,193 @@ def handle_ask_question(body: AskRequest) -> AskResponseOut:
             f"Retrieved {len(hits)} hits via {retrieval_method} retrieval",
             f"Generation method: {generation_method}",
         ],
+    )
+
+
+def _agent_universe_out(universe: Any) -> EvidenceUniverseOut:
+    return EvidenceUniverseOut(
+        baseEvidenceRunId=universe.base_evidence_run_id,
+        reusedToolRunIds=list(universe.reused_tool_run_ids),
+        createdToolRunIds=list(universe.created_tool_run_ids),
+        toolRunIds=list(universe.tool_run_ids),
+        dossierRunIds=list(universe.dossier_run_ids),
+        evidenceUniverse=universe.evidence_universe,
+    )
+
+
+def _ask_context_gene(body: AskRequest) -> str | None:
+    if "context_gene" not in body.model_fields_set:
+        return None
+    return (body.context_gene or "").strip().upper() or None
+
+
+def _ask_request_maps(body: AskRequest, context_gene: str | None) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    explicit_runs = {
+        gene.strip().upper(): _unique_ids(run_ids)
+        for gene, run_ids in body.dossier_run_ids.items()
+        if gene.strip()
+    }
+    if body.dossier_run_id and context_gene and context_gene not in explicit_runs:
+        explicit_runs[context_gene] = [body.dossier_run_id]
+    if isinstance(body.tool_run_ids, dict):
+        tool_runs = {
+            gene.strip().upper(): _unique_ids(run_ids)
+            for gene, run_ids in body.tool_run_ids.items()
+            if gene.strip()
+        }
+    else:
+        tool_runs = {context_gene: _unique_ids(body.tool_run_ids)} if body.tool_run_ids and context_gene else {}
+    return explicit_runs, tool_runs
+
+
+def handle_ask_question(body: AskRequest) -> AskResponseOut:
+    """Run the bounded general scientific agent and adapt it to the public API."""
+    context_gene = _ask_context_gene(body)
+    explicit_runs, tool_runs = _ask_request_maps(body, context_gene)
+    accepted_baselines = {
+        gene: str(spec["base_evidence_run_id"])
+        for gene, spec in DEMO_GENE_REGISTRY.items()
+    }
+    service = ScientificAgentService(
+        accepted_baselines=accepted_baselines,
+        settings=get_settings(),
+        section_executor=run_section_bundle,
+        source_executor=run_gene_dossier_full_api_pass,
+    )
+    result = service.execute(
+        ScientificAgentRequest(
+            question=body.question,
+            context_gene=context_gene,
+            evidence_selection=body.evidence_selection,
+            explicit_run_ids=explicit_runs,
+            explicit_tool_run_ids=tool_runs,
+            refresh_if_available=body.refresh_if_available,
+            allow_tool_acquisition=body.allow_tool_acquisition,
+        )
+    )
+
+    plan = result.plan
+    genes = list(plan.entities.genes) if plan else ([context_gene] if context_gene else [])
+    public_universes = {
+        gene: _agent_universe_out(universe)
+        for gene, universe in result.evidence_universes.items()
+    }
+    if len(public_universes) == 1:
+        legacy_universe = next(iter(public_universes.values()))
+    elif public_universes:
+        legacy_universe = EvidenceUniverseOut(
+            baseEvidenceRunId=None,
+            reusedToolRunIds=_unique_ids([
+                run_id for universe in public_universes.values() for run_id in universe.reusedToolRunIds
+            ]),
+            createdToolRunIds=_unique_ids([
+                run_id for universe in public_universes.values() for run_id in universe.createdToolRunIds
+            ]),
+            toolRunIds=_unique_ids([
+                run_id for universe in public_universes.values() for run_id in universe.toolRunIds
+            ]),
+            dossierRunIds=_unique_ids([
+                run_id for universe in public_universes.values() for run_id in universe.dossierRunIds
+            ]),
+            evidenceUniverse="multi_gene",
+        )
+    else:
+        legacy_universe = EvidenceUniverseOut(evidenceUniverse="no_base_evidence")
+
+    citations: list[CitationOut] = []
+    items_by_gene: dict[str, list[dict[str, Any]]] = {}
+    for ordinal, record in enumerate(result.selected_records, start=1):
+        citation_id = f"cit-{ordinal}"
+        citations.append(
+            CitationOut(
+                id=citation_id,
+                label=f"[{ordinal}]",
+                evidenceRecordId=record.id,
+                sourceName=record.source_name,
+            )
+        )
+        items_by_gene.setdefault(record.gene_symbol.upper(), []).append(
+            {"text": record.display_text, "citationIds": [citation_id]}
+        )
+
+    comparison_matrix = [
+        {
+            "dimension": row.dimension,
+            "cells": {
+                gene: {
+                    "status": cell.status,
+                    "summary": cell.summary,
+                    "evidenceCount": cell.evidence_count,
+                    "evidenceRecordIds": cell.evidence_record_ids,
+                }
+                for gene, cell in row.cells.items()
+            },
+        }
+        for row in result.comparison_matrix
+    ]
+    tool_activity = [
+        {
+            "geneSymbol": item.gene_symbol,
+            "capabilityIds": [capability.value for capability in item.capability_ids],
+            "toolName": ", ".join(capability.value for capability in item.capability_ids),
+            "executorKind": item.executor_kind,
+            "status": item.status,
+            "dossierRunId": item.dossier_run_id,
+            "sectionKeys": item.section_keys,
+            "sources": item.sources,
+            "evidenceRecordsPersisted": item.evidence_records_persisted,
+            "indexedRecords": item.indexed_records,
+            "reused": item.reused,
+            "errors": item.errors,
+        }
+        for item in result.tool_activity
+    ]
+    run_summary = summarize_agent_result_runs(result)
+    source_set = sorted({record.source_name for record in result.selected_records if record.source_name})
+    gene_symbol = plan.primary_gene if plan and plan.primary_gene else (genes[0] if genes else context_gene)
+    return AskResponseOut(
+        status=result.status.value,
+        question=result.question,
+        geneSymbol=gene_symbol,
+        contextGene=context_gene,
+        summary=result.summary,
+        retrievalMethod=result.retrieval_method,
+        generationMethod=result.generation_method,
+        embeddingBackend=result.embedding_backend,
+        **legacy_universe.model_dump(),
+        evidenceBlocks=[
+            {"sourceGroup": f"{gene} Evidence Records", "items": items}
+            for gene, items in items_by_gene.items()
+        ],
+        limitations=result.limitations,
+        citations=citations,
+        evidenceUsedCount=len(result.selected_records),
+        sourcesCount=len(source_set),
+        sourcesUsed=source_set,
+        toolsInvokedCount=len([item for item in result.tool_activity if not item.reused]),
+        toolActivity=tool_activity,
+        agentActivity=result.agent_activity,
+        plannerMethod=plan.planner_method.value if plan else None,
+        intent=plan.intent.value if plan else None,
+        resolvedEntities=plan.entities.model_dump() if plan else {},
+        evidenceRequirements=[item.model_dump(mode="json") for item in plan.evidence_requirements] if plan else [],
+        requirementAssessments=[item.model_dump(mode="json") for item in result.assessments],
+        evidenceUniverses=public_universes,
+        evidenceGaps=result.evidence_gaps,
+        comparisonDimensions=result.comparison_dimensions,
+        comparisonMatrix=comparison_matrix,
+        evidenceCategories=[item.model_dump(mode="json") for item in result.evidence_categories],
+        structuredGaps=[item.model_dump(mode="json") for item in result.structured_gaps],
+        recommendations=[item.model_dump(mode="json") for item in result.recommendations],
+        citationRegistry=[item.model_dump(mode="json") for item in result.citation_registry],
+        sourceAttempts=[item.model_dump(mode="json") for item in result.source_attempts],
+        retrievalTimestamps=result.retrieval_timestamps,
+        failures=[item.model_dump(mode="json") for item in result.failures],
+        metadata={
+            "runSummary": run_summary,
+            "timings": result.metadata.get("timings", {}),
+            "grounding": result.metadata.get("grounding", {}),
+        },
     )
 
 

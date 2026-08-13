@@ -48,14 +48,23 @@ class Settings(BaseSettings):
     ucsc_browser_api_key: SecretStr | None = None
 
     # --- LLM providers (optional) ---
-    openai_api_key: str | None = None
+    openai_api_key: SecretStr | None = None
     openai_base_url: str | None = None
+    openai_model: str = "gpt-5.6-terra"
+    openai_planner_reasoning_effort: str = "low"
+    openai_answer_reasoning_effort: str = "medium"
+    openai_planner_max_output_tokens: int = Field(default=4000, gt=0)
+    openai_answer_max_output_tokens: int = Field(default=12000, gt=0)
+    openai_timeout_seconds: float = Field(default=60.0, gt=0)
     anthropic_api_key: str | None = None
-    nvidia_nim_api_key: str | None = None
+    nvidia_nim_api_key: SecretStr | None = None
     nvidia_nim_base_url: str | None = None
     nvidia_nim_model: str | None = None
+    nvidia_nim_timeout_seconds: float = Field(default=120.0, gt=0)
+    google_api_key: SecretStr | None = None
+    google_gemini_model: str = "gemini-3.5-flash"
     default_llm_model: str | None = None
-    # openai | anthropic | nvidia_nim | unset (auto: openai → nim → anthropic)
+    # openai | anthropic | nvidia_nim | google_gemini | unset (automatic order)
     default_llm_provider: str | None = None
 
     # --- Storage / database ---
@@ -88,9 +97,15 @@ class Settings(BaseSettings):
         return _resolve(self.index_dir)
 
     # --- Helpers ---
-    @field_serializer("ucsc_browser_api_key", when_used="always")
-    def _serialize_ucsc_key(self, value: SecretStr | None) -> str | None:
-        """Never expose the UCSC browser API key in dumps/repr."""
+    @field_serializer(
+        "ucsc_browser_api_key",
+        "openai_api_key",
+        "nvidia_nim_api_key",
+        "google_api_key",
+        when_used="always",
+    )
+    def _serialize_secret_key(self, value: SecretStr | None) -> str | None:
+        """Never expose secret API keys in settings dumps."""
         return None if value is None else "***"
 
     def has_key(self, name: str) -> bool:
@@ -110,6 +125,7 @@ class Settings(BaseSettings):
             self.has_key("openai_api_key")
             or self.has_key("anthropic_api_key")
             or self.has_key("nvidia_nim_api_key")
+            or self.has_key("google_api_key")
         )
 
     def ensure_dirs(self) -> None:

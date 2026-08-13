@@ -3,9 +3,10 @@
 Searches literature for a gene in the context of Huntington's disease. Does **not**
 normalize into evidence records — that belongs in ``normalize/literature.py``.
 
-Default search term (per platform spec)::
+Default controlled HD-literature search term (per platform spec)::
 
-    {gene_symbol}[Title/Abstract] AND "Huntington Disease"[MeSH Terms]
+    ("{gene_symbol}"[Title/Abstract] OR <validated aliases...>) AND
+    ("Huntington Disease"[MeSH Terms] OR <HD title/abstract context...>)
 
 Rules:
 - Do not assume every hit strongly supports a gene–HD link.
@@ -15,6 +16,8 @@ Rules:
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
@@ -28,6 +31,65 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
 DEFAULT_RETMAX = 50
 HD_MESH = '"Huntington Disease"[MeSH Terms]'
+MAX_GENE_ALIASES = 8
+_UNSAFE_ALIAS_STOPLIST = {
+    "AND",
+    "CAG",
+    "DNA",
+    "GENE",
+    "HD",
+    "HUMAN",
+    "MOUSE",
+    "NOT",
+    "NUC",
+    "OR",
+    "PROTEIN",
+    "RAT",
+    "RNA",
+    "SNP",
+}
+
+
+@dataclass(frozen=True)
+class PubMedGeneTerms:
+    canonical_symbol: str
+    aliases_used: tuple[str, ...] = ()
+    full_name_used: str | None = None
+
+
+def _clean_pubmed_term(term: Any, *, allow_spaces: bool = False) -> str | None:
+    text = str(term or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > 90:
+        return None
+    pattern = r"^[A-Za-z0-9][A-Za-z0-9_.\-/ ]*[A-Za-z0-9]$" if allow_spaces else r"^[A-Za-z0-9][A-Za-z0-9_.\-]*[A-Za-z0-9]$"
+    if not re.match(pattern, text):
+        return None
+    if not allow_spaces:
+        if len(text) < 3 or text.upper() in _UNSAFE_ALIAS_STOPLIST or text.isdigit():
+            return None
+    elif len(text) < 6:
+        return None
+    return text
+
+
+def _quote_title_abstract_term(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"[Title/Abstract]'
+
+
+def _dedupe_terms(terms: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(term)
+    return out
 
 
 def _tool_result(
@@ -73,9 +135,56 @@ def _safe_params(params: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def build_hd_search_term(gene_symbol: str) -> str:
-    """Build the default gene × Huntington Disease PubMed search term."""
-    return f'{gene_symbol}[Title/Abstract] AND {HD_MESH}'
+def build_gene_title_abstract_clause(
+    canonical_symbol: str,
+    aliases: list[str] | tuple[str, ...] | None = None,
+    *,
+    full_name: str | None = None,
+    max_aliases: int = MAX_GENE_ALIASES,
+) -> tuple[str, PubMedGeneTerms]:
+    """Build a bounded PubMed Title/Abstract clause from validated identity terms."""
+    canonical = _clean_pubmed_term(canonical_symbol) or str(canonical_symbol).strip()
+    alias_terms = [
+        clean
+        for alias in list(aliases or [])
+        if (clean := _clean_pubmed_term(alias)) is not None
+    ]
+    alias_terms = _dedupe_terms([term for term in alias_terms if term.casefold() != canonical.casefold()])
+    alias_terms = alias_terms[:max_aliases]
+    full = _clean_pubmed_term(full_name, allow_spaces=True) if full_name else None
+    all_terms = _dedupe_terms([canonical, *alias_terms, *([full] if full else [])])
+    rendered = [_quote_title_abstract_term(term) for term in all_terms]
+    clause = rendered[0] if len(rendered) == 1 else f"({' OR '.join(rendered)})"
+    return clause, PubMedGeneTerms(
+        canonical_symbol=canonical,
+        aliases_used=tuple(alias_terms),
+        full_name_used=full,
+    )
+
+
+def build_hd_context_clause() -> str:
+    """Return the deterministic HD context clause for controlled HD-literature search."""
+    return (
+        f"({HD_MESH} OR "
+        '"Huntington disease"[Title/Abstract] OR '
+        '"Huntington\'s disease"[Title/Abstract] OR '
+        '"huntingtin"[Title/Abstract])'
+    )
+
+
+def build_hd_search_term(
+    gene_symbol: str,
+    *,
+    aliases: list[str] | tuple[str, ...] | None = None,
+    full_name: str | None = None,
+) -> tuple[str, PubMedGeneTerms]:
+    """Build the controlled gene-alias × Huntington disease PubMed search term."""
+    gene_clause, gene_terms = build_gene_title_abstract_clause(
+        gene_symbol,
+        aliases,
+        full_name=full_name,
+    )
+    return f"{gene_clause} AND {build_hd_context_clause()}", gene_terms
 
 
 def _request(
@@ -167,7 +276,7 @@ def esearch(
 ) -> ToolResult:
     """Search PubMed. Default term is gene Title/Abstract + HD MeSH."""
     cfg = settings or get_settings()
-    search_term = term if term is not None else build_hd_search_term(gene_symbol)
+    search_term = term if term is not None else build_hd_search_term(gene_symbol)[0]
     params = {
         "db": "pubmed",
         "term": search_term,
@@ -332,6 +441,8 @@ def extract_id_list(esearch_result: ToolResult) -> list[str]:
 def search_hd_literature(
     gene_symbol: str,
     *,
+    aliases: list[str] | tuple[str, ...] | None = None,
+    full_name: str | None = None,
     retmax: int = DEFAULT_RETMAX,
     fetch_abstracts: bool = True,
     settings: Settings | None = None,
@@ -354,17 +465,39 @@ def search_hd_literature(
     Never raises.
     """
     cfg = settings or get_settings()
-    term = build_hd_search_term(gene_symbol)
+    term, gene_terms = build_hd_search_term(
+        gene_symbol,
+        aliases=aliases,
+        full_name=full_name,
+    )
     search = esearch(gene_symbol, term=term, retmax=retmax, settings=cfg)
+    provenance_params = {
+        "db": "pubmed",
+        "search_term": term,
+        "final_search_term": term,
+        "canonical_symbol": gene_terms.canonical_symbol,
+        "aliases_used": list(gene_terms.aliases_used),
+        "full_name_used": gene_terms.full_name_used,
+        "retmax": str(retmax),
+        "sort": "relevance",
+        "fetch_abstracts": fetch_abstracts,
+    }
     if not search.success:
         return _tool_result(
             endpoint_name="search_hd_literature",
             gene_symbol=gene_symbol,
             request_url=search.request_url,
-            request_params=search.request_params,
+            request_params=provenance_params,
             success=False,
             status_code=search.status_code,
-            data={"esearch": search.data, "search_term": term},
+            data={
+                "esearch": search.data,
+                "search_term": term,
+                "final_search_term": term,
+                "canonical_symbol": gene_terms.canonical_symbol,
+                "aliases_used": list(gene_terms.aliases_used),
+                "full_name_used": gene_terms.full_name_used,
+            },
             error_type=search.error_type or "esearch_failed",
             error_message=search.error_message or "PubMed ESearch failed",
         )
@@ -379,12 +512,16 @@ def search_hd_literature(
             endpoint_name="search_hd_literature",
             gene_symbol=gene_symbol,
             request_url=search.request_url,
-            request_params=search.request_params,
+            request_params=provenance_params,
             success=True,
             status_code=search.status_code,
             data={
                 "gene_symbol": gene_symbol,
                 "search_term": term,
+                "final_search_term": term,
+                "canonical_symbol": gene_terms.canonical_symbol,
+                "aliases_used": list(gene_terms.aliases_used),
+                "full_name_used": gene_terms.full_name_used,
                 "pmids": [],
                 "count": int(count_raw) if count_raw is not None else 0,
                 "esearch": search.data,
@@ -408,17 +545,20 @@ def search_hd_literature(
     return _tool_result(
         endpoint_name="search_hd_literature",
         gene_symbol=gene_symbol,
-        request_url=summary.request_url if summary.success else search.request_url,
+        request_url=search.request_url,
         request_params={
-            "search_term": term,
+            **provenance_params,
             "pmids": ids_for_fetch,
-            "fetch_abstracts": fetch_abstracts,
         },
         success=ok,
         status_code=summary.status_code or search.status_code,
         data={
             "gene_symbol": gene_symbol,
             "search_term": term,
+            "final_search_term": term,
+            "canonical_symbol": gene_terms.canonical_symbol,
+            "aliases_used": list(gene_terms.aliases_used),
+            "full_name_used": gene_terms.full_name_used,
             "pmids": ids_for_fetch,
             "count": int(count_raw) if count_raw is not None else len(pmids),
             "esearch": search.data,
@@ -528,6 +668,9 @@ __all__ = [
     "EUTILS_BASE",
     "DEFAULT_RETMAX",
     "HD_MESH",
+    "PubMedGeneTerms",
+    "build_gene_title_abstract_clause",
+    "build_hd_context_clause",
     "build_hd_search_term",
     "esearch",
     "esearch_custom",

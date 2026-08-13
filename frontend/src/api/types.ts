@@ -11,6 +11,13 @@ export type EvidenceStatus =
   | 'Stale'
   | 'Running'
 
+export type ComparisonStrength =
+  | 'Strong'
+  | 'Moderate'
+  | 'Limited'
+  | 'Weak'
+  | 'Missing'
+
 export type JobStatus = 'Queued' | 'Running' | 'Completed' | 'Partial' | 'Failed'
 
 export type JobStageStatus = 'Complete' | 'Running' | 'Queued' | 'Waiting' | 'Failed'
@@ -34,9 +41,17 @@ export type EvidenceUniverseName =
   | 'accepted_demo'
   | 'explicit_run'
   | 'accepted_demo_with_tool_overlay'
+  | 'explicit_run_with_tool_overlay'
+  | 'latest_generated'
+  | 'latest_generated_with_tool_overlay'
+  | 'no_base_evidence'
+  | 'tool_overlay_only'
+  | 'multi_gene'
 
 export interface EvidenceUniverseMeta {
   baseEvidenceRunId?: string | null
+  reusedToolRunIds?: string[]
+  createdToolRunIds?: string[]
   toolRunIds: string[]
   dossierRunIds: string[]
   evidenceUniverse: EvidenceUniverseName
@@ -132,11 +147,14 @@ export interface AskResponse {
   status: string
   question: string
   geneSymbol: string
+  contextGene?: string | null
   summary: string
   retrievalMethod: string
   generationMethod: string
   embeddingBackend: string
   baseEvidenceRunId?: string | null
+  reusedToolRunIds?: string[]
+  createdToolRunIds?: string[]
   toolRunIds: string[]
   dossierRunIds: string[]
   evidenceUniverse: EvidenceUniverseName
@@ -152,6 +170,55 @@ export interface AskResponse {
   toolsInvokedCount: number
   toolActivity: Array<Record<string, unknown>>
   agentActivity: string[]
+  plannerMethod?: string | null
+  intent?: string | null
+  resolvedEntities?: {
+    genes?: string[]
+    diseases?: string[]
+    biological_processes?: string[]
+    pathways?: string[]
+    chemicals?: string[]
+  }
+  evidenceRequirements?: Array<{
+    id: string
+    label: string
+    genes: string[]
+    evidence_need: string
+    required: boolean
+    minimum_support: number
+  }>
+  requirementAssessments?: Array<{
+    requirement_id: string
+    gene_symbol: string
+    evidence_need: string
+    required: boolean
+    minimum_support: number
+    status: string
+    qualifying_count: number
+    detail: string
+  }>
+  evidenceUniverses?: Record<string, EvidenceUniverseMeta>
+  evidenceGaps?: string[]
+  comparisonDimensions?: string[]
+  comparisonMatrix?: Array<{
+    dimension: string
+    cells: Record<string, AgentComparisonCell>
+  }>
+  evidenceCategories?: Array<Record<string, unknown>>
+  structuredGaps?: Array<Record<string, unknown>>
+  recommendations?: Array<Record<string, unknown>>
+  citationRegistry?: Array<Record<string, unknown>>
+  sourceAttempts?: Array<Record<string, unknown>>
+  retrievalTimestamps?: string[]
+  failures?: Array<Record<string, unknown>>
+  metadata?: Record<string, unknown>
+}
+
+export interface AgentComparisonCell {
+  status: ComparisonStrength
+  summary: string
+  evidenceCount: number
+  evidenceRecordIds: string[]
 }
 
 export interface ComparisonCell {

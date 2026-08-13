@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import OperationalError
 
 from gene_dossier import models as m
 from gene_dossier.db import (
     GeneratedReportRow,
     SourceCoverageResultRow,
     get_engine,
+    get_read_only_engine,
     get_evidence_by_source_id,
     get_generated_report,
     get_generated_report_for_run,
@@ -83,6 +86,24 @@ def test_init_db_creates_all_tables(engine):
     names = set(inspect(engine).get_table_names())
     assert EXPECTED_TABLES <= names
     assert SourceCoverageResultRow.__tablename__ == "source_coverage_results"
+
+
+def test_read_only_engine_opens_existing_database_and_rejects_writes(
+    tmp_path: Path,
+):
+    db_path = tmp_path / "provenance.db"
+    database_url = f"sqlite:///{db_path}"
+    writer = get_engine(database_url)
+    init_db(writer)
+
+    reader = get_read_only_engine(database_url)
+    assert EXPECTED_TABLES <= set(inspect(reader).get_table_names())
+    with reader.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM dossier_runs")).scalar() == 0
+        with pytest.raises(OperationalError, match="readonly database"):
+            connection.execute(text("CREATE TABLE forbidden_write (id INTEGER)"))
+
+    assert "forbidden_write" not in inspect(writer).get_table_names()
 
 
 def test_generated_report_upsert_is_canonical_and_idempotent(engine):
