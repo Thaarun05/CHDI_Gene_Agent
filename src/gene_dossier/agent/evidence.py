@@ -527,9 +527,18 @@ def evaluate_evidence(
         and _primary_need(record) is not requirement.evidence_need
         and requirement.evidence_need.value not in explicit_categories
     ):
-        return decision(
-            False, EvidenceDesignation.contextual, "cross_category_mapping_not_validated"
+        # PubMed literature often lacks structured evidence_categories. Allow it for
+        # repeat-instability only when the same record already lexically matches both
+        # HD context and mechanism terms via _base_category_match.
+        literature_mechanism_ok = (
+            requirement.evidence_need is EvidenceNeed.repeat_instability_mechanism
+            and assertion == "literature_summary"
+            and any(term in _record_text(record) for term in _HD_TERMS)
         )
+        if not literature_mechanism_ok:
+            return decision(
+                False, EvidenceDesignation.contextual, "cross_category_mapping_not_validated"
+            )
 
     human = _is_human(record)
     if policy.species_scope == "human" and human is False:
@@ -602,7 +611,10 @@ def evaluate_evidence(
                 False, EvidenceDesignation.contextual, "human_genetic_metadata_incomplete"
             )
 
-    if policy.causal_evidence_required:
+    if (
+        policy.causal_evidence_required
+        and requirement.evidence_need is EvidenceNeed.experimental_evidence
+    ):
         if assertion not in {"perturbation", "knockout_phenotype"}:
             return decision(
                 False, EvidenceDesignation.contextual, "noncausal_evidence_for_causal_question"

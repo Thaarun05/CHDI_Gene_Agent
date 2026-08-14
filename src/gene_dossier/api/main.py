@@ -757,18 +757,44 @@ def resolve_evidence_universe(
         )
 
     demo = DEMO_GENE_REGISTRY.get(gene)
-    if not demo:
-        raise HTTPException(
-            status_code=404, detail=f"No accepted demo evidence baseline for gene: {gene_symbol}"
+    if demo:
+        base_id = str(demo["base_evidence_run_id"])
+        overlay_ids = [rid for rid in tool_ids if rid != base_id]
+        return EvidenceUniverseOut(
+            baseEvidenceRunId=base_id,
+            toolRunIds=overlay_ids,
+            dossierRunIds=_unique_ids([base_id, *overlay_ids]),
+            evidenceUniverse="accepted_demo_with_tool_overlay" if overlay_ids else "accepted_demo",
         )
 
-    base_id = str(demo["base_evidence_run_id"])
+    # Non-demo genes: use the latest completed persisted dossier run when available.
+    init_db()
+    with session_scope() as session:
+        row = session.exec(
+            select(DossierRunRow)
+            .where(
+                DossierRunRow.gene_symbol == gene,
+                DossierRunRow.status.in_(["completed", "partial", "Completed", "Partial"]),
+            )
+            .order_by(DossierRunRow.completed_at.desc(), DossierRunRow.started_at.desc())
+        ).first()
+        base_id = str(row.id) if row is not None else None
+    if not base_id:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No accepted demo evidence baseline for gene: {gene_symbol}. "
+                "Generate a dossier first, or pass an explicit dossier_run_id."
+            ),
+        )
     overlay_ids = [rid for rid in tool_ids if rid != base_id]
     return EvidenceUniverseOut(
         baseEvidenceRunId=base_id,
         toolRunIds=overlay_ids,
         dossierRunIds=_unique_ids([base_id, *overlay_ids]),
-        evidenceUniverse="accepted_demo_with_tool_overlay" if overlay_ids else "accepted_demo",
+        evidenceUniverse=(
+            "latest_generated_with_tool_overlay" if overlay_ids else "latest_generated"
+        ),
     )
 
 

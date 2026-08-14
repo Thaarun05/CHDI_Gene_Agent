@@ -16,6 +16,8 @@ const SECTIONS = [
   'Chemical Tools',
 ]
 
+const ACCEPTED_DEMO_GENES = ['SREBF2', 'CDH10'] as const
+
 const SECTION_KEY_MAP: Record<string, string[]> = {
   'General Gene Information': ['1a', '1b', '1c', '1d', '1e'],
   Structure: ['1b', '1c', '1d'],
@@ -33,12 +35,18 @@ function sectionKeysFor(selectedSections: string[]) {
   )
 }
 
+function isAcceptedDemoGene(symbol: string) {
+  return (ACCEPTED_DEMO_GENES as readonly string[]).includes(symbol)
+}
+
 export function GenerateDossierPage() {
   const [params, setParams] = useSearchParams()
   const initialJobId = params.get('job')
-  const [gene, setGene] = useState(params.get('gene')?.toUpperCase() || 'SREBF2')
+  const initialGene = (params.get('gene') || 'SREBF2').trim().toUpperCase() || 'SREBF2'
+  const [gene, setGene] = useState(initialGene)
   const [selected, setSelected] = useState<string[]>([...SECTIONS])
-  const [useAccepted, setUseAccepted] = useState(true)
+  const [useAccepted, setUseAccepted] = useState(isAcceptedDemoGene(initialGene))
+  const acceptedAvailable = isAcceptedDemoGene(gene)
   const [job, setJob] = useState<WorkflowJob | null>(null)
   const [artifact, setArtifact] = useState<ReportArtifact | null>(null)
   const [artifactResolved, setArtifactResolved] = useState(false)
@@ -113,18 +121,27 @@ export function GenerateDossierPage() {
   }, [job])
 
   async function onGenerate() {
+    const normalized = gene.trim().toUpperCase()
+    if (!normalized) {
+      setSessionMessage('Enter a gene symbol to generate a dossier.')
+      return
+    }
+    if (normalized !== gene) {
+      setGene(normalized)
+    }
+    const useExistingAccepted = isAcceptedDemoGene(normalized) && useAccepted
     setStarting(true)
     setArtifact(null)
     setArtifactResolved(false)
     setSessionMessage(null)
     try {
-      const j = await startDossierJob(gene, {
+      const j = await startDossierJob(normalized, {
         sectionKeys: sectionKeysFor(selected),
-        useExistingAccepted: useAccepted,
+        useExistingAccepted,
       })
       setJob(j)
       const next = new URLSearchParams(params)
-      next.set('gene', gene)
+      next.set('gene', normalized)
       next.set('job', j.id)
       setParams(next, { replace: true })
       if (j.status === 'Completed' || j.status === 'Partial') {
@@ -135,14 +152,22 @@ export function GenerateDossierPage() {
     }
   }
 
-  function changeGene(nextGene: string) {
+  function changeGene(raw: string) {
+    const nextGene = raw.trim().toUpperCase()
     setGene(nextGene)
+    if (!isAcceptedDemoGene(nextGene)) {
+      setUseAccepted(false)
+    }
     setJob(null)
     setArtifact(null)
     setArtifactResolved(false)
     setSessionMessage(null)
     const next = new URLSearchParams(params)
-    next.set('gene', nextGene)
+    if (nextGene) {
+      next.set('gene', nextGene)
+    } else {
+      next.delete('gene')
+    }
     next.delete('job')
     setParams(next, { replace: true })
   }
@@ -168,14 +193,20 @@ export function GenerateDossierPage() {
       <div className="surface-card space-y-5 p-5">
         <label className="block">
           <span className="mb-1.5 block text-xs text-text-muted">Gene</span>
-          <select
+          <input
+            list="accepted-demo-genes"
             value={gene}
             onChange={(e) => changeGene(e.target.value)}
-            className="w-full rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm text-text outline-none"
-          >
-            <option value="SREBF2">SREBF2</option>
-            <option value="CDH10">CDH10</option>
-          </select>
+            placeholder="e.g. LRPAP1"
+            spellCheck={false}
+            autoCapitalize="characters"
+            className="w-full rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm uppercase text-text outline-none"
+          />
+          <datalist id="accepted-demo-genes">
+            {ACCEPTED_DEMO_GENES.map((symbol) => (
+              <option key={symbol} value={symbol} />
+            ))}
+          </datalist>
         </label>
 
         <div>
@@ -203,20 +234,34 @@ export function GenerateDossierPage() {
           </div>
         </div>
 
-        <label className="flex items-center justify-between gap-4 rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm text-text-secondary">
-          <span>Use accepted dossier (instant)</span>
-          <input
-            type="checkbox"
-            checked={useAccepted}
-            onChange={(e) => setUseAccepted(e.target.checked)}
-            className="accent-[var(--color-accent)]"
-          />
-        </label>
+        <div className="space-y-1.5">
+          <label
+            className={cn(
+              'flex items-center justify-between gap-4 rounded-xl border border-border bg-bg-secondary px-3 py-2.5 text-sm',
+              acceptedAvailable ? 'text-text-secondary' : 'text-text-muted',
+            )}
+          >
+            <span>Use accepted dossier (instant)</span>
+            <input
+              type="checkbox"
+              checked={acceptedAvailable && useAccepted}
+              disabled={!acceptedAvailable}
+              onChange={(e) => setUseAccepted(e.target.checked)}
+              className="accent-[var(--color-accent)]"
+            />
+          </label>
+          {!acceptedAvailable && (
+            <p className="px-1 text-xs text-text-muted">
+              Accepted dossiers are available only for SREBF2 and CDH10. Other genes run a fresh
+              job.
+            </p>
+          )}
+        </div>
 
         <button
           type="button"
           onClick={() => void onGenerate()}
-          disabled={starting || selected.length === 0}
+          disabled={starting || selected.length === 0 || !gene.trim()}
           className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-bg transition hover:brightness-110 disabled:opacity-40"
         >
           {starting ? 'Starting…' : 'Generate Dossier'}

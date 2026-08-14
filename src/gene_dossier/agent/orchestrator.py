@@ -579,6 +579,8 @@ class ScientificAgentService:
         plan: ScientificQuestionPlan | None = None,
     ) -> list[tuple[str, list[CapabilityId]]]:
         needed_capabilities = set(validated_capability_ids(requirement))
+        if not needed_capabilities:
+            needed_capabilities = set(NEED_CONTRIBUTORS.get(requirement.evidence_need, ()))
         with session_scope(self.engine) as session:
             runs = [
                 DossierRun.model_validate(row.model_dump())

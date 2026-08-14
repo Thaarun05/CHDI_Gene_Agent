@@ -61,6 +61,8 @@ The complete implemented bundle is:
 
 A fresh run executes the selected source workflows, retrieves source data, records acquisition metadata, stores raw artifacts, normalizes and persists `EvidenceRecord` objects, and renders dossier artifacts. Individual sources soft-fail with explicit coverage status rather than being silently omitted.
 
+The Rancho layout contract in `report_schema.py` still defines **15 major sections**. Polished generators stop at **7a**. Section **7b** (tractability) and majors **8–15** (eQTLs, SNPs, pathways, knockouts, labs, antibodies, patents, grants) are schema slots without polished section modules.
+
 ## Provenance Model
 
 The canonical chain is:
@@ -108,18 +110,7 @@ question
 → return a grounded response
 ```
 
-Current allowlist:
-
-| Tool | Deterministic sections |
-|---|---|
-| `get_identity` | `1a` |
-| `get_expression` | `2a`, `2b`, `2c` |
-| `get_geo` | `3a` |
-| `get_tf` | `4a` |
-| `get_ppi` | `5a`, `5b` |
-| `get_chemical_perturbations` | `6a` |
-| `get_chemical_tools` | `7a` |
-| `get_full_dossier` | Full implemented HD dossier bundle |
+Live `POST /api/ask` uses `ScientificAgentService` (`src/gene_dossier/agent/`). It plans a question, retrieves stored evidence, and may run **allowlisted capabilities** from `agent/capabilities.py` (section-bundle keys such as `1a`–`7a`, or source workflows such as Reactome / PubMed / MouseMine). Disease-association and human-genetic-association capabilities are retrieval-only in the current code. A legacy Friday tool table (`get_identity`, `get_expression`, …) still exists in `api/main.py` but is **not** the live Ask HTTP path.
 
 Tool-generated runs are request-local evidence overlays. They do not replace a stable accepted baseline or silently alter later baseline comparisons.
 
@@ -147,11 +138,11 @@ The React application defines these routes:
 
 ### Generate
 
-**Accepted mode** returns a registered, validated report without rerunning biological APIs. **Fresh mode** runs selected deterministic sections, creates a new dossier run, and persists new evidence. Fresh HTML and supplementary outputs are generated, but the current background-job-to-Report-Viewer artifact handoff is incomplete and background jobs intentionally skip PDF generation.
+**Accepted mode** returns a registered, validated report without rerunning biological APIs. **Fresh mode** runs selected deterministic sections (`1a`–`7a` by default in the API), creates a new dossier run, and persists new evidence. Background `/api/jobs` runs call `run_section_bundle(..., write_pdf=True)`. HTML is written as `section_1.html`. PDF is written as `section_1.pdf` when PyMuPDF (`fitz`) is installed; otherwise rendering soft-fails to HTML-only. PyMuPDF is used at runtime but is not declared in `pyproject.toml`. Job status lives in an in-memory `_JOB_STORE` and is lost if the API process restarts; generated files and EvidenceRecords on disk/DB remain. If `GET /api/jobs/{id}` returns 404 after a restart, completed reports may still appear under Reports.
 
 ### Ask
 
-Ask performs category inference, evidence-universe resolution, semantic retrieval, sufficiency checking, optional controlled refresh, and grounded response generation. Responses include EvidenceRecord citations, sources, retrieval/generation methods, embedding backend, evidence-universe metadata, limitations, and agent/tool activity.
+Ask runs `ScientificAgentService`: plan the question, resolve an evidence universe, retrieve (semantic then keyword), check sufficiency, optionally acquire via allowlisted capabilities, then return a grounded response. Citations are server-validated. HTTP `/compare` is a separate coverage matrix and does not use the agent.
 
 ### Compare
 
@@ -187,14 +178,18 @@ These are validated full 1a-7a report artifacts. Runtime data and reports are lo
 CHDI_Gene_Agent/
 ├── src/gene_dossier/
 │   ├── api/                  # FastAPI application and frontend-facing routes
+│   ├── agent/                # Ask planner, orchestrator, grounded synthesis
 │   ├── tools/                # Biological source clients
 │   ├── normalize/            # Raw source responses → EvidenceRecords
+│   ├── section_1c.py … section_7a.py
 │   ├── models.py             # Provenance and report models
 │   ├── db.py                 # SQLModel persistence
-│   ├── source_registry.py    # Source capabilities and key requirements
+│   ├── source_registry.py    # Source catalog (implementation flags are stale; see CLIENT_DISPATCH)
 │   ├── section_bundle.py     # Deterministic 1a-7a section orchestration
-│   ├── workflow.py           # Full dossier workflow
+│   ├── workflow.py           # LangGraph full dossier pass
 │   ├── retrieval.py          # Keyword and Chroma semantic retrieval
+│   ├── report_schema.py      # 15-section Rancho TOC contract
+│   ├── report_presentation.py
 │   └── rancho_report.py      # HTML/PDF report rendering
 ├── frontend/                 # React, TypeScript, Vite, and Tailwind application
 ├── scripts/                  # Workflow, acquisition, rendering, and diagnostic commands
@@ -208,7 +203,8 @@ CHDI_Gene_Agent/
 - Python 3.11 or later
 - Node.js and npm; the repository does not pin an exact Node version
 - Network access for live biological workflows and the first local MiniLM model download
-- Optional: Chromium for browser-backed source workflows
+- Optional: Chromium for browser-backed source workflows (`python -m playwright install chromium`)
+- Optional for PDF: `pip install pymupdf` until it is added to `pyproject.toml`
 - Optional: `cloudflared` only when reproducing the public Quick Tunnel setup
 
 ## Installation
@@ -316,6 +312,17 @@ npm run dev
 
 Vite serves the application at <http://127.0.0.1:5173>. Use the `frontend/.env.local` values above when connecting to the backend on port 8001.
 
+### Local port alignment
+
+| Process | Port | Source |
+|---|---|---|
+| Uvicorn (documented) | 8001 | this README |
+| Vite dev server | 5173 | `frontend/vite.config.ts` |
+| Vite `/api` proxy target | 8000 | `frontend/vite.config.ts` |
+| `frontend/.env.example` | 8000 | `VITE_API_BASE` |
+
+Recommended local setup: run Uvicorn on **8001** and set `frontend/.env.local` as shown above. That bypasses the Vite proxy. Alternatively, run Uvicorn on 8000 and use the proxy with default `VITE_API_BASE=/api`.
+
 Verification commands:
 
 ```bash
@@ -360,7 +367,7 @@ curl http://127.0.0.1:8001/api/jobs/JOB_ID
 curl http://127.0.0.1:8001/api/jobs/JOB_ID/artifacts
 ```
 
-Fresh jobs persist evidence and produce local artifacts, but the frontend handoff to a newly generated report is currently incomplete and background jobs do not generate a PDF.
+Fresh jobs persist evidence and write local HTML (and PDF if PyMuPDF is available). Poll `GET /api/jobs/{id}` then `GET /api/jobs/{id}/artifacts`. Job metadata is in-memory only; after an API restart, use `/api/reports` or `/api/history` for persisted runs.
 
 ### Ask evidence
 
@@ -413,7 +420,10 @@ Tests use fixtures and mocks for offline source behavior unless a test explicitl
 - The backend can attempt arbitrary gene symbols, but arbitrary-gene generation and explicit run selection are not fully exposed in the UI.
 - Ask requires an explicit `dossier_run_id` for non-demo genes; the UI does not expose that selection cleanly.
 - Compare API supports explicit run IDs, while the current UI is effectively limited to SREBF2/CDH10 baseline comparison.
-- Fresh report artifact handoff is incomplete, and background `/api/jobs` runs skip PDF generation.
+- Fresh `/api/jobs` runs request PDF generation, but PDF export requires PyMuPDF (`import fitz`), which is not listed in `pyproject.toml`. Without it, jobs still produce HTML.
+- Local port mismatch: this README and recommended `frontend/.env.local` use backend port **8001**. `frontend/vite.config.ts` proxies `/api` to **8000**, and `frontend/.env.example` uses `http://localhost:8000/api`. If `VITE_API_BASE` is unset, Vite talks to 8000, not 8001.
+- Polished Rancho generation covers **1a–7a**. The layout schema still defines **7b** and majors **8–15** without polished section modules.
+- There is no authentication, no CI, no Docker, and no `vercel.json`. The Vercel demo hosts only the frontend; the API is a local Uvicorn process plus an optional Cloudflare Quick Tunnel.
 - Frontend job state is backed by an in-memory `_JOB_STORE` and disappears when FastAPI restarts; persisted dossier runs and EvidenceRecords remain.
 - SQLite, Chroma, raw data, and report artifacts are local by default and are not committed to Git.
 - History simplifies run statuses and can display a running database run as Completed.

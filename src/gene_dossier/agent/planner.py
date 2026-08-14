@@ -198,7 +198,9 @@ def _validated_query_policy(
         species_scope=species_scope,
         provenance_focus=policy.provenance_focus or provenance_focus,
         analyze_conflicts=policy.analyze_conflicts or analyze_conflicts,
-        causal_evidence_required=policy.causal_evidence_required or causal_required,
+        # Only the scientist's wording may escalate causality. Model-set true values
+        # otherwise reject all literature and empty the stored-evidence universe.
+        causal_evidence_required=bool(causal_required),
         ranking_requested=policy.ranking_requested or ranking_requested,
         comparison_criteria=list(dict.fromkeys(criteria)),
     )

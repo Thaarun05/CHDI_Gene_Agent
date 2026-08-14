@@ -49,12 +49,17 @@ export function EvidencePage() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <FilterSelect
-          label="Gene"
-          value={gene}
-          onChange={setGene}
-          options={['', 'SREBF2', 'CDH10']}
-        />
+        <label className="block">
+          <span className="mb-1.5 block text-xs text-text-muted">Gene</span>
+          <input
+            value={gene}
+            onChange={(e) => setGene(e.target.value.trim().toUpperCase())}
+            placeholder="e.g. LRPAP1"
+            spellCheck={false}
+            autoCapitalize="characters"
+            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm uppercase text-text outline-none"
+          />
+        </label>
         <FilterSelect
           label="Source"
           value={source}

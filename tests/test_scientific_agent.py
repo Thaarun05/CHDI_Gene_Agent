@@ -3046,7 +3046,16 @@ def test_cross_category_mapping_requires_structured_metadata() -> None:
         CapabilityId.hd_literature,
         minimum=1,
     )
-    unclassified = _record(
+    expression_without_mapping = _record(
+        gene="GENE1",
+        run_id="run",
+        source="GTEx",
+        assertion=AssertionType.expression,
+        source_type=SourceType.expression_database,
+        text="GENE1 brain expression in Huntington disease somatic expansion models.",
+        value={"tissue": "Brain"},
+    )
+    literature_with_mechanism_terms = _record(
         gene="GENE1",
         run_id="run",
         source="PubMed",
@@ -3055,13 +3064,13 @@ def test_cross_category_mapping_requires_structured_metadata() -> None:
         text="GENE1 Huntington disease somatic CAG repeat expansion mechanism.",
         value={"pmid": "123"},
     )
-    classified = unclassified.model_copy(
+    expression_with_mapping = expression_without_mapping.model_copy(
         update={
             "id": new_id(),
             "value": {
-                **unclassified.value,
+                **expression_without_mapping.value,
                 "evidence_categories": [
-                    "hd_literature",
+                    "expression_context",
                     "repeat_instability_mechanism",
                 ],
             },
@@ -3069,13 +3078,19 @@ def test_cross_category_mapping_requires_structured_metadata() -> None:
     )
 
     without_mapping = canonicalize_requirement_evidence(
-        [unclassified],
+        [expression_without_mapping],
+        requirement,
+        gene="GENE1",
+        disease_contexts=["Huntington disease"],
+    )
+    literature_ok = canonicalize_requirement_evidence(
+        [literature_with_mechanism_terms],
         requirement,
         gene="GENE1",
         disease_contexts=["Huntington disease"],
     )
     with_mapping = canonicalize_requirement_evidence(
-        [classified],
+        [expression_with_mapping],
         requirement,
         gene="GENE1",
         disease_contexts=["Huntington disease"],
@@ -3083,6 +3098,7 @@ def test_cross_category_mapping_requires_structured_metadata() -> None:
 
     assert not without_mapping.qualifying
     assert without_mapping.contextual[0][1].reason_code == "cross_category_mapping_not_validated"
+    assert len(literature_ok.qualifying) == 1
     assert len(with_mapping.qualifying) == 1
 
 
@@ -3675,3 +3691,29 @@ def test_planner_derives_conflict_causal_and_ranking_policy_from_question() -> N
     assert plan.query_policy.ranking_requested is True
     assert plan.query_policy.analyze_conflicts is True
     assert plan.query_policy.causal_evidence_required is True
+
+
+def test_planner_does_not_let_model_escalate_causal_policy_without_question_support() -> None:
+    requirement = _requirement(
+        EvidenceNeed.hd_literature,
+        ["MSH3"],
+        CapabilityId.hd_literature,
+        minimum=1,
+    )
+    draft = ScientificQuestionPlanDraft(
+        intent=ScientificIntent.single_gene_question,
+        entities=ScientificEntities(genes=["MSH3"], diseases=["Huntington disease"]),
+        primary_gene="MSH3",
+        objective="Explain the role of MSH3.",
+        answer_mode=AnswerMode.synthesis,
+        evidence_requirements=[requirement],
+        requires_multi_gene=False,
+        query_policy=ScientificQueryPolicy(causal_evidence_required=True),
+    )
+    plan = _validate_plan(
+        draft,
+        question="What role does MSH3 play in Huntington disease somatic CAG-repeat expansion?",
+        context_gene=None,
+    )
+
+    assert plan.query_policy.causal_evidence_required is False

@@ -1078,6 +1078,22 @@ def test_generate_page_has_no_accepted_report_fallback() -> None:
     assert "report.reportOrigin === 'generated'" in reports_source
 
 
+def test_generate_page_supports_any_gene_with_accepted_gating() -> None:
+    frontend_root = api_main.PROJECT_ROOT / "frontend" / "src"
+    source = (frontend_root / "pages" / "GenerateDossierPage.tsx").read_text(encoding="utf-8")
+    evidence_source = (frontend_root / "pages" / "EvidencePage.tsx").read_text(encoding="utf-8")
+
+    assert "const ACCEPTED_DEMO_GENES" in source
+    assert "list=\"accepted-demo-genes\"" in source or "list='accepted-demo-genes'" in source
+    assert '<option value="SREBF2">SREBF2</option>' not in source
+    assert '<option value="CDH10">CDH10</option>' not in source
+    assert "disabled={!acceptedAvailable}" in source
+    assert "isAcceptedDemoGene(normalized) && useAccepted" in source
+    assert "Accepted dossiers are available only for SREBF2 and CDH10" in source
+    assert "options={['', 'SREBF2', 'CDH10']}" not in evidence_source
+    assert 'placeholder="e.g. LRPAP1"' in evidence_source
+
+
 def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
     frontend_root = api_main.PROJECT_ROOT / "frontend" / "src"
     ask_source = (frontend_root / "pages" / "AskPage.tsx").read_text(encoding="utf-8")
@@ -1135,7 +1151,8 @@ def test_ask_frontend_preserves_gene_activity_and_ordinal_contracts() -> None:
     assert "const autoSubmitted = useRef(false)" in ask_source
     assert "autoSubmitted.current = true" in ask_source
     assert "const next = new URLSearchParams(current)" in ask_source
-    assert "const REQUEST_TIMEOUT_MS = 360_000" in ask_source
+    assert "REQUEST_TIMEOUT_MS" not in ask_source
+    assert "The request timed out before completion" not in ask_source
     assert "backend_unavailable" in ask_source
     assert "provider_failure" in ask_source
     assert "cell.citationOrdinals.slice(0, 3)" in ask_source

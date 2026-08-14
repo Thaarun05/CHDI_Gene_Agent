@@ -10,9 +10,6 @@ import { SearchComposer } from '@/components/SearchComposer'
 import { TopBar } from '@/components/TopBar'
 
 const CONTEXT_GENE_RE = /^[A-Z0-9][A-Z0-9-]{1,14}$/
-// Ask can include planner + retrieval + optional acquisition + grounded synthesis.
-// Prior live runs exceeded 2 minutes (e.g. acquisition-heavy comparisons ~4–5 min).
-const REQUEST_TIMEOUT_MS = 360_000
 
 function parseContextGene(value: string | null): string | null {
   const normalized = value?.trim().toUpperCase() ?? ''
@@ -29,7 +26,7 @@ function humanize(value: string) {
 }
 
 type RequestError = {
-  kind: 'cancelled' | 'timeout' | 'backend_unavailable' | 'provider_failure' | 'request_failed'
+  kind: 'cancelled' | 'backend_unavailable' | 'provider_failure' | 'request_failed'
   message: string
 }
 
@@ -50,7 +47,7 @@ export function AskPage() {
   const [detail, setDetail] = useState<'evidence' | 'contextual' | 'sources' | 'tools' | null>(null)
   const requestGeneration = useRef(0)
   const activeController = useRef<AbortController | null>(null)
-  const timedOut = useRef(false)
+  const cancelledByUser = useRef(false)
   const autoSubmitted = useRef(false)
 
   async function submit(
@@ -63,11 +60,7 @@ export function AskPage() {
     activeController.current?.abort()
     const controller = new AbortController()
     activeController.current = controller
-    timedOut.current = false
-    const timeout = window.setTimeout(() => {
-      timedOut.current = true
-      controller.abort()
-    }, REQUEST_TIMEOUT_MS)
+    cancelledByUser.current = false
 
     setLoading(true)
     setError(null)
@@ -92,11 +85,11 @@ export function AskPage() {
     } catch (caught) {
       if (generation !== requestGeneration.current) return
       if (controller.signal.aborted) {
+        // React StrictMode remounts abort in-flight requests; only surface explicit user cancels.
+        if (!cancelledByUser.current) return
         setError({
-          kind: timedOut.current ? 'timeout' : 'cancelled',
-          message: timedOut.current
-            ? 'The request timed out before completion. You can retry without creating a duplicate request.'
-            : 'The request was cancelled.',
+          kind: 'cancelled',
+          message: 'The request was cancelled.',
         })
       } else {
         const message = caught instanceof Error ? caught.message : 'Unknown request failure'
@@ -109,7 +102,6 @@ export function AskPage() {
         })
       }
     } finally {
-      window.clearTimeout(timeout)
       if (generation === requestGeneration.current) {
         activeController.current = null
         setLoading(false)
@@ -118,7 +110,7 @@ export function AskPage() {
   }
 
   function cancelRequest() {
-    timedOut.current = false
+    cancelledByUser.current = true
     activeController.current?.abort()
   }
 
